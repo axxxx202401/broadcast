@@ -1,44 +1,74 @@
 use sqlx::{Row, SqlitePool};
 
+/// 单页最多可读取的消息数。
 pub const MAX_MESSAGE_PAGE_LIMIT: usize = 200;
+/// 分页查询允许的最大偏移量。
 pub const MAX_MESSAGE_PAGE_OFFSET: usize = 1_000_000;
 
-/// A record representing a group message to be persisted.
+/// 准备写入 `messages` 表的一条群消息。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MessageRecord {
+    /// 消息主键，对应 `messages.msg_id`。
     pub msg_id: i64,
+    /// 消息所属群组，对应 `messages.group_id`。
     pub group_id: i64,
+    /// 发送者标识，对应 `messages.send_uid`。
     pub send_uid: i64,
+    /// 消息类型值，对应 `messages.msg_type`。
     pub msg_type: i32,
+    /// 消息内容字节，对应 `messages.content`。
     pub content: Vec<u8>,
+    /// 发送时间值，对应 `messages.send_time`；其单位尚未由客户端契约验证。
     pub send_time: i64,
+    /// 内容摘要文本，对应 `messages.content_md5`；存储层不校验其格式或内容。
     pub content_md5: String,
+    /// 可选的原始协议字节，对应 `messages.raw_proto`。
     pub raw_proto: Option<Vec<u8>>,
 }
 
-/// A row returned from the messages table.
+/// 从 `messages` 表读取的一行消息。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MessageRow {
+    /// 消息主键，对应 `messages.msg_id`。
     pub msg_id: i64,
+    /// 消息所属群组，对应 `messages.group_id`。
     pub group_id: i64,
+    /// 发送者标识，对应 `messages.send_uid`。
     pub send_uid: i64,
+    /// 消息类型值，对应 `messages.msg_type`。
     pub msg_type: i32,
+    /// 消息内容字节，对应 `messages.content`。
     pub content: Vec<u8>,
+    /// 发送时间值，对应 `messages.send_time`；其单位尚未由客户端契约验证。
     pub send_time: i64,
+    /// 内容摘要文本，对应 `messages.content_md5`。
     pub content_md5: String,
+    /// 本存储写入该行时记录的 UTC Unix 时间戳，单位为毫秒。
     pub stored_at: i64,
+    /// 可选的原始协议字节，对应 `messages.raw_proto`。
     pub raw_proto: Option<Vec<u8>>,
 }
 
+/// 基于共享 SQLite 连接池的消息数据访问入口。
 pub struct MessageStore {
     pool: SqlitePool,
 }
 
 impl MessageStore {
+    /// 使用给定连接池创建消息数据访问入口。
+    ///
+    /// 本方法只保存连接池句柄，不连接数据库、不建表，也不执行 SQL。
     pub async fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
 
+    /// 写入或替换一条消息，并返回传入的消息主键。
+    ///
+    /// 写入使用 SQLite `INSERT OR REPLACE`，主键冲突时以传入记录替换既有行。
+    /// `stored_at` 不取自 [`MessageRecord`]，而是在每次写入时记录当前 UTC Unix
+    /// 毫秒时间戳；`send_time` 则原样写入，其单位尚未由客户端契约验证。
+    ///
+    /// SQL 执行失败时返回 [`sqlx::Error`]。
     pub async fn insert(&self, record: &MessageRecord) -> sqlx::Result<i64> {
         let stored_at = chrono::Utc::now().timestamp_millis();
         sqlx::query(
@@ -60,6 +90,13 @@ impl MessageStore {
         Ok(record.msg_id)
     }
 
+    /// 分页读取指定群组的消息。
+    ///
+    /// 结果按 `send_time DESC` 排列；发送时间相同时，SQL 未指定次级顺序。
+    /// `limit` 必须位于 `1..=`[`MAX_MESSAGE_PAGE_LIMIT`]，`offset` 不得超过
+    /// [`MAX_MESSAGE_PAGE_OFFSET`]，随后二者还必须能转换为 SQLite 绑定使用的 `i64`。
+    /// 参数越界时返回 [`sqlx::Error::Protocol`]，查询失败时返回对应的 SQLx 错误；
+    /// 没有匹配消息时返回空列表。
     pub async fn get_by_group(
         &self,
         group_id: i64,

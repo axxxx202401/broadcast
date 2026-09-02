@@ -1,4 +1,16 @@
-/// SQLite schema for the im-store layer.
+//! `im-store` 使用的 SQLite 表结构。
+
+/// 创建群组表、消息表及查询索引的 SQL。
+///
+/// `groups.available` 是远端快照中的软可见标记：`1` 表示当前可见，`0` 表示保留行但不在
+/// 当前群组列表中。`groups.monitored` 保存用户的监控选择；部分索引
+/// `idx_groups_monitored` 只收录值为 `1` 的行，用于缩小监控群组查询的索引范围。
+///
+/// `messages.raw_proto` 可为空，用于保存原始协议字节；`idx_messages_group_time` 按
+/// `(group_id, send_time)` 建索引，对应按群组筛选并按发送时间读取消息的查询。
+///
+/// 本常量只声明初始结构；旧版 `groups` 表缺少 `available` 列时，由
+/// [`crate::SqliteStore::new`] 另行迁移，并创建当前可见群组的部分索引。
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS groups (
     group_id    INTEGER PRIMARY KEY,

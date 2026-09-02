@@ -1,3 +1,8 @@
+//! SQLite 存储的建表、消息分页、群组同步与兼容迁移测试。
+//!
+//! 除基础读写外，本模块重点覆盖事务回滚、用户监控选择保留、远端快照软隐藏与恢复、
+//! 旧表结构迁移，以及分页参数边界。
+
 use super::*;
 use crate::group::GroupRow;
 use crate::message::MessageRecord;
@@ -21,7 +26,7 @@ async fn test_insert_and_fetch_message() {
             msg_id: 1001,
             group_id: 12345,
             send_uid: 779562,
-            msg_type: 0, // text
+            msg_type: 0, // 文本消息
             content: b"Hello, World!".to_vec(),
             send_time: 1725292800000,
             content_md5: "d41d8cd98f00b204e9800998ecf8427e".to_string(),
@@ -31,7 +36,7 @@ async fn test_insert_and_fetch_message() {
         .unwrap();
     assert_eq!(msg_id, 1001);
 
-    // Verify the row was written
+    // 直接查询底层表，确认写入确实落库。
     let row: Option<(i64,)> = sqlx::query_as("SELECT msg_id FROM messages WHERE msg_id = ?")
         .bind(1001)
         .fetch_optional(&store.pool)
@@ -45,7 +50,7 @@ async fn test_insert_and_fetch_message() {
 async fn test_get_by_group() {
     let store = SqliteStore::new(":memory:").await.unwrap();
 
-    // Insert three messages for group 12345
+    // 为目标群组写入三条不同发送时间的消息。
     for (i, time) in [1725292800000i64, 1725292801000, 1725292802000]
         .iter()
         .enumerate()
@@ -66,7 +71,7 @@ async fn test_get_by_group() {
             .unwrap();
     }
 
-    // Insert one message for a different group
+    // 另一个群组的消息不应混入查询结果。
     store
         .messages
         .insert(&MessageRecord {
@@ -84,17 +89,17 @@ async fn test_get_by_group() {
 
     let rows = store.messages.get_by_group(12345, 10, 0).await.unwrap();
     assert_eq!(rows.len(), 3);
-    // Should be ordered by send_time DESC
+    // 同一群组内按 send_time 降序返回。
     assert_eq!(rows[0].msg_id, 2002);
     assert_eq!(rows[1].msg_id, 2001);
     assert_eq!(rows[2].msg_id, 2000);
 
-    // Offset and limit
+    // limit 与 offset 共同确定分页窗口。
     let rows = store.messages.get_by_group(12345, 1, 2).await.unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].msg_id, 2000);
 
-    // Non-existent group returns empty
+    // 不存在的群组返回空列表。
     let rows = store.messages.get_by_group(0, 10, 0).await.unwrap();
     assert!(rows.is_empty());
 }
@@ -198,16 +203,16 @@ async fn test_toggle_monitored() {
         .await
         .unwrap();
 
-    // Initially monitored
+    // 初始状态为已监控。
     let monitored = store.groups.list_monitored().await.unwrap();
     assert_eq!(monitored.len(), 1);
 
-    // Toggle off
+    // 关闭监控后不再出现在监控列表。
     assert!(store.groups.toggle_monitored(12345, false).await.unwrap());
     let monitored = store.groups.list_monitored().await.unwrap();
     assert_eq!(monitored.len(), 0);
 
-    // Toggle back on
+    // 再次开启后恢复到监控列表。
     assert!(store.groups.toggle_monitored(12345, true).await.unwrap());
     let monitored = store.groups.list_monitored().await.unwrap();
     assert_eq!(monitored.len(), 1);
@@ -223,6 +228,7 @@ async fn toggle_monitored_reports_missing_group() {
 #[tokio::test]
 async fn sync_remote_groups_rolls_back_entire_batch_on_failure() {
     let store = SqliteStore::new(":memory:").await.unwrap();
+    // 用触发器令批次中第二条 INSERT 失败，证明此前的软隐藏和第一条写入一并回滚。
     sqlx::query(
         "CREATE TRIGGER reject_group_two
          BEFORE INSERT ON groups
@@ -263,6 +269,7 @@ async fn sync_remote_groups_preserves_concurrent_user_monitor_choice() {
         updated_at: 0,
     };
     store.groups.insert_or_update(&group).await.unwrap();
+    // 模拟用户在远端快照到达前开启监控；快照携带的旧值不得覆盖这一选择。
     assert!(store.groups.toggle_monitored(7, true).await.unwrap());
 
     group.name = "After".to_string();
@@ -307,6 +314,7 @@ async fn remote_snapshot_hides_missing_group_without_deleting_history_and_restor
 
     store.groups.sync_remote_groups(&groups[..1]).await.unwrap();
 
+    // 快照缺失只把群组标记为不可见，原监控值和消息历史仍保留。
     assert_eq!(
         store
             .groups
@@ -331,6 +339,7 @@ async fn remote_snapshot_hides_missing_group_without_deleting_history_and_restor
 
     store.groups.sync_remote_groups(&groups[1..]).await.unwrap();
 
+    // 群组再次出现在快照时恢复可见，并沿用软隐藏前的监控选择。
     let restored = store.groups.list_all().await.unwrap();
     assert_eq!(restored.len(), 1);
     assert_eq!(restored[0].group_id, 2);
@@ -376,6 +385,7 @@ async fn legacy_groups_table_is_migrated_with_existing_rows_available() {
     .unwrap();
     legacy_pool.close().await;
 
+    // 重新打开旧库时应补列；DEFAULT 1 使旧行迁移后立即可见。
     let store = SqliteStore::new(&dsn).await.unwrap();
 
     let available: i64 = sqlx::query_scalar("SELECT available FROM groups WHERE group_id = 7")
@@ -392,6 +402,7 @@ async fn legacy_groups_table_is_migrated_with_existing_rows_available() {
 async fn message_store_rejects_invalid_or_overflowing_pagination() {
     let store = SqliteStore::new(":memory:").await.unwrap();
 
+    // 覆盖零页长、超过业务上限的页长与偏移量，以及 64 位平台上的 i64 转换边界。
     assert!(store.messages.get_by_group(1, 0, 0).await.is_err());
     assert!(store.messages.get_by_group(1, 201, 0).await.is_err());
     assert!(store.messages.get_by_group(1, 1, 1_000_001).await.is_err());
@@ -423,7 +434,7 @@ async fn test_upsert_group_updates_fields() {
         .await
         .unwrap();
 
-    // Upsert with updated values
+    // 冲突更新远端字段，但保留首次写入的监控选择。
     store
         .groups
         .insert_or_update(&GroupRow {
@@ -459,7 +470,7 @@ async fn test_message_content_and_md5() {
             msg_id: 5001,
             group_id: 12345,
             send_uid: 779562,
-            msg_type: 7, // file
+            msg_type: 7, // 文件消息
             content: b"binary file content".to_vec(),
             send_time: 1725292800000,
             content_md5: "abc123".to_string(),

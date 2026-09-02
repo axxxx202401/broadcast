@@ -1,5 +1,13 @@
+//! 基于 SQLite 的群组与消息持久化。
+//!
+//! 本 crate 通过 [`SqliteStore`] 共享一个连接池，并分别由 [`message::MessageStore`]
+//! 和 [`group::GroupStore`] 提供消息、群组数据访问能力。
+
+/// 群组数据访问类型。
 pub mod group;
+/// 消息数据访问类型。
 pub mod message;
+/// SQLite 表结构定义。
 pub mod schema;
 
 #[cfg(test)]
@@ -13,16 +21,29 @@ use std::str::FromStr;
 use crate::group::GroupStore;
 use crate::message::MessageStore;
 
-/// High-level handle that owns the connection pool and exposes
-/// [MessageStore] and [GroupStore] sub-accessors.
+/// SQLite 存储的总入口。
+///
+/// 该类型持有共享连接池，并暴露消息与群组两个数据访问入口。
 pub struct SqliteStore {
+    /// 底层 SQLite 连接池，可供调用方执行本 crate 未封装的查询。
     pub pool: SqlitePool,
+    /// 使用同一连接池的消息数据访问入口。
     pub messages: MessageStore,
+    /// 使用同一连接池的群组数据访问入口。
     pub groups: GroupStore,
 }
 
 impl SqliteStore {
-    /// Create a new store, creating all tables if they do not exist.
+    /// 按 `dsn` 打开 SQLite 存储并初始化表结构。
+    ///
+    /// `dsn` 由 [`SqliteConnectOptions`] 解析；连接选项启用
+    /// `create_if_missing(true)`，因此目标数据库不存在时会尝试创建。连接成功后，本方法依次
+    /// 执行 [`SCHEMA_SQL`]、为旧版 `groups` 表补充默认值为 `1` 的 `available` 列，
+    /// 再创建仅覆盖 `available = 1` 行的索引。
+    ///
+    /// 返回后，`pool`、`messages` 与 `groups` 共享同一个连接池。解析 DSN、连接或任一
+    /// SQL 执行失败时返回对应的 [`sqlx::Error`]。初始化过程未包裹在事务中，因此失败前已
+    /// 创建的数据库文件、表、列或索引可能保留。
     pub async fn new(dsn: &str) -> Result<Self, sqlx::Error> {
         let options = SqliteConnectOptions::from_str(dsn)?.create_if_missing(true);
         let pool = SqlitePool::connect_with(options).await?;
