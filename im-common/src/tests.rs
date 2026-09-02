@@ -1,7 +1,11 @@
+//! `im-common` 的 AES、TCP 帧头、配置与版本请求头回归测试。
+
 use super::aes::AesCipher;
 use super::config::{AppConfig, DeviceConfig, ServerConfig};
 use super::tcp_head::TcpFrameHeader;
 use super::version_key::VersionKeyManager;
+
+// --- TCP 帧头 ---
 
 #[test]
 fn test_parse_encrypted_uncompressed() {
@@ -46,6 +50,8 @@ fn invalid_tcp_frame_marker_returns_error_instead_of_panicking() {
     assert!(error.to_string().contains("0xFF"));
 }
 
+// --- AES ---
+
 #[test]
 fn test_aes_encrypt_decrypt() {
     let key = b"97b1f52761ffc7f8";
@@ -60,7 +66,7 @@ fn test_aes_encrypt_decrypt() {
 fn test_aes_pkcs7_padding() {
     let key = b"97b1f52761ffc7f8";
     let cipher = AesCipher::new(key);
-    // 1 byte input -> should be padded to 16 bytes
+    // 单字节明文应补齐为一个 16 字节 AES 分组。
     let encrypted = cipher.encrypt(b"x").unwrap();
     assert_eq!(encrypted.len(), 16);
     let decrypted = cipher.decrypt(&encrypted).unwrap();
@@ -74,7 +80,7 @@ fn test_invalid_aes_key_returns_error() {
     assert!(matches!(error, super::error::AppError::Config(_)));
 }
 
-// --- config tests ---
+// --- 配置 ---
 
 #[test]
 fn test_default_server_config_values() {
@@ -131,7 +137,7 @@ fn test_server_config_clone_and_debug() {
     let _ = format!("{:?}", s1);
 }
 
-// --- version_key tests ---
+// --- 版本请求头 ---
 
 #[test]
 fn test_version_key_manager_creation() {
@@ -141,14 +147,14 @@ fn test_version_key_manager_creation() {
     );
     let x_one = manager.build_x_one().unwrap();
     assert!(!x_one.is_empty());
-    // AES-128 ECB with PKCS7: secret_name(32) + "," + timestamp(~13) = ~46 bytes
-    // padded to 48 bytes → 96 hex chars
+    // AES-128-ECB-PKCS7：32 字节 secret name、逗号和约 13 位时间戳
+    // 填充到 48 字节，十六进制编码后为 96 个字符。
     assert_eq!(x_one.len(), 96);
 }
 
 #[test]
 fn test_v_salt_constant() {
-    // V_L_SALT = md5("sjlkajsl*Rkfsdsd_tflklsjdf")[0..16]
+    // 兼容性夹具约定：V_L_SALT = MD5(指定字符串) 的前 16 字节。
     use md5::{Digest, Md5};
     let mut hasher = Md5::new();
     hasher.update(b"sjlkajsl*Rkfsdsd_tflklsjdf");

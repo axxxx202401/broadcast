@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[lints.rust]
+missing_docs = "warn"
+
 [dependencies]
 aes.workspace = true
 cipher.workspace = true

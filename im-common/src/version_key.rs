@@ -1,9 +1,17 @@
+//! OpenChat `X-One` 与 `X-Ten` 请求头生成。
+//!
+//! `X-One` 将 `secret_name` 与毫秒时间戳组合后加密，`X-Ten` 将客户端
+//! 信息 JSON 与同类时间戳组合后加密；两者均使用协议约定的
+//! AES-128-ECB-PKCS7，并将密文字节编码为小写十六进制字符串。
+
 use crate::aes::AesCipher;
 use crate::config::DeviceConfig;
 use crate::error::AppResult;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// V_L_SALT = first 16 bytes of MD5("sjlkajsl*Rkfsdsd_tflklsjdf")
+/// 计算兼容性测试使用的 `V_L_SALT`：指定字符串 MD5 结果的前 16 字节。
+///
+/// 该值只用于验证既有协议常量，不代表安全用途。
 #[cfg(test)]
 fn compute_v_l_salt() -> [u8; 16] {
     use md5::{Digest, Md5};
@@ -58,16 +66,25 @@ impl<'a> OpenChatClientInfo<'a> {
     }
 }
 
-/// X-One/X-Ten encrypted header generator.
+/// `X-One`、`X-Ten` 加密请求头生成器。
 ///
-/// X-One: `hex(AES(secret_name + "," + timestamp_ms))`
-/// X-Ten: `hex(AES(client_info_json + "//" + timestamp_ms))`
+/// - `X-One`：`hex(AES(secret_name + "," + timestamp_ms))`
+/// - `X-Ten`：`hex(AES(client_info_json + "//" + timestamp_ms))`
+///
+/// 其中 `timestamp_ms` 是 Unix 纪元起的毫秒时间戳，`AES` 表示协议兼容所需
+/// 的 AES-128-ECB-PKCS7，`hex` 表示小写十六进制编码。
 pub struct HeaderManager {
     secret_name: String,
     header_cipher: AesCipher,
 }
 
 impl HeaderManager {
+    /// 使用 secret name 和 16 字节 UTF-8 头部密钥创建生成器。
+    ///
+    /// # Panics
+    ///
+    /// 当 `header_key` 的 UTF-8 字节长度不等于 16 时 panic。需要处理配置
+    /// 错误的调用方应使用 [`Self::try_new`]。
     pub fn new(secret_name: String, header_key: String) -> Self {
         assert_eq!(
             header_key.len(),
@@ -80,6 +97,9 @@ impl HeaderManager {
         }
     }
 
+    /// 尝试使用 secret name 和 16 字节 UTF-8 头部密钥创建生成器。
+    ///
+    /// 当 `header_key` 的 UTF-8 字节长度不等于 16 时返回配置错误。
     pub fn try_new(secret_name: String, header_key: String) -> AppResult<Self> {
         Ok(Self {
             secret_name,
@@ -87,23 +107,33 @@ impl HeaderManager {
         })
     }
 
-    /// Generate the X-One header value.
+    /// 使用当前 Unix 毫秒时间戳生成 `X-One`。
+    ///
+    /// 明文格式为 `secret_name,timestamp_ms`；加密后返回小写十六进制密文。
     pub fn build_x_one(&self) -> AppResult<String> {
         self.build_x_one_at(current_timestamp_ms())
     }
 
+    /// 使用指定毫秒时间戳生成 `X-One`。
+    ///
+    /// `timestamp_ms` 应表示 Unix 纪元起的毫秒数。明文格式为
+    /// `secret_name,timestamp_ms`；加密后返回小写十六进制密文。
     pub fn build_x_one_at(&self, timestamp_ms: u128) -> AppResult<String> {
         self.encrypt_header(&format!("{},{}", self.secret_name, timestamp_ms))
     }
 
-    /// Generate an unauthenticated OpenChat X-Ten from device configuration.
+    /// 根据设备配置生成匿名 OpenChat `X-Ten`。
     ///
-    /// Session and token are deliberately empty so unauthorized requests cannot
-    /// leak an authenticated credential.
+    /// 该匿名形式会有意将 JSON 中的 `token` 和 `sessionId` 置为空字符串，
+    /// 不携带认证凭据；时间戳取当前 Unix 毫秒时间。
     pub fn build_x_ten(&self, device: &DeviceConfig) -> AppResult<String> {
         self.build_x_ten_at(device, current_timestamp_ms())
     }
 
+    /// 使用同一个当前毫秒时间戳生成匿名 `X-One` 与 `X-Ten`。
+    ///
+    /// 返回元组顺序为 `(X-One, X-Ten)`；`X-Ten` 中的 `token` 和
+    /// `sessionId` 均有意为空字符串。
     pub fn build_openchat_headers(&self, device: &DeviceConfig) -> AppResult<(String, String)> {
         let timestamp_ms = current_timestamp_ms();
         Ok((
@@ -112,6 +142,10 @@ impl HeaderManager {
         ))
     }
 
+    /// 使用同一个当前毫秒时间戳生成认证 `X-One` 与 `X-Ten`。
+    ///
+    /// 返回元组顺序为 `(X-One, X-Ten)`。`token` 和 `session_id` 会原样写入
+    /// `X-Ten` 客户端信息，包括调用方有意传入的空字符串。
     pub fn build_authenticated_openchat_headers(
         &self,
         device: &DeviceConfig,
@@ -125,12 +159,21 @@ impl HeaderManager {
         ))
     }
 
+    /// 使用指定毫秒时间戳生成匿名 `X-Ten`。
+    ///
+    /// 客户端信息 JSON 中的 `token` 和 `sessionId` 有意固定为空字符串，
+    /// 随后拼接 `//timestamp_ms`，执行 AES 加密并编码为小写十六进制。
     pub fn build_x_ten_at(&self, device: &DeviceConfig, timestamp_ms: u128) -> AppResult<String> {
         let client_info = serde_json::to_string(&OpenChatClientInfo::from(device))
             .map_err(|error| crate::error::AppError::Config(error.to_string()))?;
         self.encrypt_header(&format!("{client_info}//{timestamp_ms}"))
     }
 
+    /// 使用指定认证信息和毫秒时间戳生成 `X-Ten`。
+    ///
+    /// `token` 与 `session_id` 会原样序列化，包括任一值为空字符串的情况；
+    /// 客户端信息 JSON 随后拼接 `//timestamp_ms`，执行 AES 加密并编码为
+    /// 小写十六进制。
     pub fn build_authenticated_x_ten_at(
         &self,
         device: &DeviceConfig,
@@ -150,6 +193,7 @@ impl HeaderManager {
         Ok(hex::encode(encrypted))
     }
 
+    /// 返回生成 `X-One` 时使用的 secret name。
     pub fn secret_name(&self) -> &str {
         &self.secret_name
     }
@@ -162,10 +206,13 @@ fn current_timestamp_ms() -> u128 {
         .as_millis()
 }
 
+/// [`HeaderManager`] 的兼容名称。
 pub type VersionKeyManager = HeaderManager;
 
 #[cfg(test)]
 mod tests {
+    //! 版本请求头的兼容常量、构造、明文格式及认证信息测试。
+
     use crate::config::DeviceConfig;
 
     use super::*;
@@ -178,7 +225,8 @@ mod tests {
         let expected = hasher.finalize();
         assert_eq!(expected.len(), 16);
 
-        // Verify against known MD5: 79b461d1ffebcf44dd823aeec2cff3ad
+        // 与既有协议夹具中的已知 MD5 值核对：
+        // 79b461d1ffebcf44dd823aeec2cff3ad。
         let computed = compute_v_l_salt();
         assert_eq!(&computed[..], &expected[..]);
     }
@@ -191,8 +239,8 @@ mod tests {
         );
         let x_one = manager.build_x_one().unwrap();
         assert!(!x_one.is_empty());
-        // AES-128 ECB with PKCS7: secret_name(32) + "," + timestamp(~13) = ~46 bytes
-        // padded to 48 bytes → 96 hex chars
+        // AES-128-ECB-PKCS7：32 字节 secret name、逗号和约 13 位时间戳
+        // 填充到 48 字节，十六进制编码后为 96 个字符。
         assert_eq!(x_one.len(), 96);
     }
 
@@ -203,8 +251,7 @@ mod tests {
             "79b461d1ffebcf44".to_string(),
         );
         let x_one = manager.build_x_one().unwrap();
-        // plaintext is ~50+ chars, padded to multiple of 16, so encrypted len is 16..=32
-        // hex encoding doubles it → 32..=64 chars
+        // 这里只约束协议产物非空且为完整的十六进制字节编码，不固定实时戳长度。
         assert!(!x_one.is_empty());
         assert_eq!(x_one.len() % 2, 0);
     }
