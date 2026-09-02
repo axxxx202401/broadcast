@@ -53,11 +53,11 @@ enum MessageType {
     groupChatTrade = 21;
 }
 
-// 客户端运行平台；枚举名称与数值属于线上协议，包含既有拼写 `UNKOWN`。
+// 客户端运行平台；枚举标识用于生成 API，protobuf wire 使用对应数值。
 enum Platform {
     ANDROID = 0;
     IPHONE = 1;
-    // 未知平台；为保持协议兼容保留历史拼写，不应更名。
+    // 数值 2；保留既有拼写 `UNKOWN` 以维持生成 API 和调用源码兼容。
     UNKOWN = 2;
     MAC = 3;
     WIN = 4;
@@ -371,7 +371,7 @@ message GroupMessage {
     UploadChannelType channel_type = 16;
     // 消息来源编码，具体数值由服务端约定。
     int32 msg_from = 17;
-    // 编辑状态编码，具体数值由服务端约定。
+    // 服务端整型字段；具体业务语义尚未由当前客户端验证。
     int32 edit = 18;
     // 正文中的链接位置记录。
     repeated LinkObj links = 19;
@@ -388,10 +388,12 @@ message AtUser {
     FriendRelation friend_relation = 5;
 }
 
-// 正文中的链接及其位置范围。
+// 正文链接及服务端返回的位置相关字段。
 message LinkObj {
     string link = 1;
+    // 链接偏移；偏移单位和有效边界尚未由当前客户端验证，以服务端协议为准。
     int32 location = 2;
+    // 链接范围长度；长度单位和有效边界尚未由当前客户端验证，以服务端协议为准。
     int32 length = 3;
 }
 
@@ -464,7 +466,7 @@ message LoginResp {
     CommonResult common_result = 1;
     UserBase user = 2;
     string session_id = 3;
-    // 服务端审核模式编码；当前协议未定义其数值语义。
+    // 服务端整型字段；具体业务语义尚未由当前客户端验证。
     int32 review_model = 4;
     // 后续业务与长连接服务地址。
     UrlInfo urls = 5;
@@ -518,7 +520,8 @@ message UrlInfo {
     string payment_url = 17;
 }
 
-// 长连接返回的协议错误；消息名 `ErrrMessage` 是既有拼写，需保持生成 API 兼容。
+// 长连接返回的协议错误；保留既有拼写 `ErrrMessage` 以维持生成 API 和调用源码兼容。
+// protobuf wire 由消息字段号和类型决定。
 message ErrrMessage {
     // 协议错误码。
     int64 error_msg_code = 1;
