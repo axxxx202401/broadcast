@@ -10,8 +10,10 @@
 //! 入站回调只负责把帧送入有界队列。工作协程串行解码并处理 1201、2202 和 2205：
 //! 2202 中仅受监控群的消息写入数据库并尝试发送 `new_message` 事件，但所有成功
 //! 处理或无需持久化的消息都会按群汇总后发送 2102 回执。持久化失败的消息不回执；
-//! 事件发送失败只记录日志，仍视为已持久化并回执。取消采用 fail-closed 语义，
-//! 关闭接收端并丢弃剩余帧，避免陈旧连接继续写库或通知界面。
+//! 事件发送失败只记录日志，仍视为已持久化并回执。1201 解码失败会触发故障关闭
+//! （fail-closed）并取消连接；2202 解码失败则只记录警告、丢弃当前帧并继续。
+//! 取消会关闭接收端并丢弃仍排队及之后发送的帧，但不会回滚或阻止当前正在等待的
+//! SQLite/事件副作用，进行中的操作可能已经完成。
 
 use std::{
     fmt::Display,
@@ -813,12 +815,14 @@ async fn run_message_worker(
 
 /// 按入队顺序处理聊天推送及其副作用。
 ///
-/// 1201 必须能解码为 `PushLoginSuccessMessage` 才完成登录 oneshot；解码失败会取消
-/// 连接并停止 worker。2202 解码失败只丢弃该帧并继续；成功后逐条读取最新监控状态，
+/// 1201 必须能解码为 `PushLoginSuccessMessage` 才完成登录 oneshot；解码失败会触发
+/// 故障关闭（fail-closed）、取消连接并停止 worker。2202 解码失败则只记录警告、
+/// 丢弃当前帧并继续，不取消连接；成功后逐条读取最新监控状态，
 /// 受监控消息按“数据库 insert → 尝试 emit”处理，写库失败的不进入回执，未监控消息
 /// 不落库但仍回执。之后按群 ID 有序发送覆盖全部可处理消息的 2102；任一回执失败会
 /// 取消连接并停止后续处理。2205 当前仅记录预留日志。取消分支优先，退出时关闭
-/// receiver 并丢弃排队帧，防止陈旧连接产生写库或事件副作用。
+/// receiver 并丢弃仍排队及之后发送的帧；这不会回滚或保证阻止当前正在等待的
+/// SQLite 写入或事件发送，进行中的副作用可能已经完成。
 async fn run_message_worker_with_effects(
     mut receiver: mpsc::Receiver<IncomingFrame>,
     effects: Arc<dyn MessageEffects>,
@@ -901,8 +905,8 @@ async fn run_message_worker_with_effects(
             message_id => tracing::debug!("Ignoring unsupported chat message {message_id}"),
         }
     }
-    // 取消采用故障关闭（fail-closed）策略：丢弃接收端会清空排队帧，
-    // 从而阻止陈旧连接继续写入 SQLite 或发送界面事件。
+    // 关闭接收端会丢弃仍排队及之后发送的帧；它不会回滚或保证阻止当前正在等待的
+    // SQLite 写入或界面事件，进行中的副作用可能已经完成。
     receiver.close();
 }
 
@@ -2172,7 +2176,7 @@ mod tests {
         assert!(im_proto::PushLoginSuccessMessage::decode(payload.as_slice()).is_err());
     }
 
-    // fail-closed：取消先于收帧生效时，排队的 2202 不产生持久化副作用。
+    // 取消先于收帧生效：此场景下排队的 2202 被丢弃，不产生持久化副作用。
     #[tokio::test]
     async fn cancelled_message_worker_discards_queued_frames() {
         let effects = Arc::new(FakeMessageEffects {
