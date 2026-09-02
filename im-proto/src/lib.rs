@@ -1,10 +1,18 @@
-/// Generated protobuf types (produced by prost-build in `build.rs`).
-/// All messages and enums from `proto/broadcast.proto` are available here.
+//! 即时通信 protobuf 协议类型。
+//!
+//! 本 crate 的类型由构建脚本根据 `proto/broadcast.proto` 生成。生成实现集中在
+//! [`pb`] 模块中；crate 根仅重新导出调用方常用的协议类型，为应用代码提供稳定、
+//! 简洁的导入路径。
+
+/// `prost-build` 生成代码的边界。
+///
+/// 该模块直接包含构建产物，不应在源码中手工维护其中的消息和枚举定义。
+#[allow(missing_docs)]
 pub mod pb {
     include!(concat!(env!("OUT_DIR"), "/_.rs"));
 }
 
-// Re-export commonly used types at the crate root for convenience
+// 根级重新导出将调用方与生成文件名及内部布局隔离。
 pub use pb::{
     ClientInfo, CommonResult, CommonResultReq, ErrrMessage, GroupBase, GroupContactListReq,
     GroupContactListResp, GroupMemberBase, GroupMessage, KeyPairBase, LoginReq, LoginResp,
