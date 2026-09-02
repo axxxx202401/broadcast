@@ -144,9 +144,9 @@ pub(crate) fn build_login_frame(config: &AppConfig, token: &str, _uid: i64) -> A
 ///
 /// 函数先校验明文不超过 [`MAX_DECOMPRESSED_BODY_SIZE`]，生成 X-One 字符串，
 /// 再使用正文 AES 密钥加密 `content`。加密结果达到 128 字节时才进行 gzip。
-/// 帧头 metadata 标记客户端方向、正文加密状态及实际 gzip 状态；帧正文依次为
-/// 4 字节大端 X-One 长度、X-One 字节和加密后（可能 gzip）的正文，最后交给
-/// `encode_frame_with_header` 写入消息 ID 与线长。
+/// 帧头 metadata 标记正文已加密、是否按阈值进行 gzip、系统版本信息已加密、
+/// 非上报帧及协议版本 0；帧正文依次为 4 字节大端 X-One 长度、X-One 字节和
+/// 加密后（可能 gzip）的正文，最后交给 `encode_frame_with_header` 写入消息 ID 与线长。
 ///
 /// # 错误
 ///
