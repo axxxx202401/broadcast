@@ -16,11 +16,19 @@ pub struct GroupRow {
     pub host_id: Option<i64>,
     /// 群成员数量，对应 `groups.member_count`。
     pub member_count: i64,
-    /// 群组创建时间值，对应 `groups.created_at`；其单位尚未由客户端契约验证。
+    /// 调用方提供的群组创建时间值，对应 `groups.created_at`。
+    ///
+    /// 当前应用的远端群组映射因缺少远端创建时间而传入 `0` 作为占位值；存储层只在插入
+    /// 新行时保存该值，冲突更新不会改写它。其他调用方可传入不同来源的值，因此此字段
+    /// 本身不承诺统一时间单位。
     pub created_at: i64,
     /// 用户监控选择，对应 `groups.monitored`；列表查询以值 `1` 表示已监控。
     pub monitored: i32,
-    /// 群组更新时间值，对应 `groups.updated_at`；其单位尚未由客户端契约验证。
+    /// 调用方提供的群组更新时间值，对应 `groups.updated_at`。
+    ///
+    /// 当前应用的远端群组获取路径在收到快照后生成一次 UTC Unix 毫秒时间戳，并把它用于
+    /// 该批每个群组，再由 [`GroupStore::sync_remote_groups`] 保存；同步方法本身不生成
+    /// 时间。其他调用方仍可直接提供不同来源的值。
     pub updated_at: i64,
 }
 

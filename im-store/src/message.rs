@@ -64,7 +64,10 @@ impl MessageStore {
 
     /// 写入或替换一条消息，并返回传入的消息主键。
     ///
-    /// 写入使用 SQLite `INSERT OR REPLACE`，主键冲突时以传入记录替换既有行。
+    /// 写入使用 SQLite `INSERT OR REPLACE`：发生主键冲突时，SQLite 先删除冲突行，再插入
+    /// 新行，而不是原位执行 `UPDATE`。因此相关触发器与外键按删除、插入语义处理；其中
+    /// 删除触发器是否执行还受 SQLite `recursive_triggers` 设置影响。
+    ///
     /// `stored_at` 不取自 [`MessageRecord`]，而是在每次写入时记录当前 UTC Unix
     /// 毫秒时间戳；`send_time` 则原样写入，其单位尚未由客户端契约验证。
     ///
@@ -94,9 +97,10 @@ impl MessageStore {
     ///
     /// 结果按 `send_time DESC` 排列；发送时间相同时，SQL 未指定次级顺序。
     /// `limit` 必须位于 `1..=`[`MAX_MESSAGE_PAGE_LIMIT`]，`offset` 不得超过
-    /// [`MAX_MESSAGE_PAGE_OFFSET`]，随后二者还必须能转换为 SQLite 绑定使用的 `i64`。
-    /// 参数越界时返回 [`sqlx::Error::Protocol`]，查询失败时返回对应的 SQLx 错误；
-    /// 没有匹配消息时返回空列表。
+    /// [`MAX_MESSAGE_PAGE_OFFSET`]。代码随后将二者转换为 SQLite 绑定使用的 `i64`；由于
+    /// 当前两个上限都可由 `i64` 表示，通过前述检查后，转换失败不是实际的用户输入错误
+    /// 路径，转换检查仅作防御性保留。参数越界时返回 [`sqlx::Error::Protocol`]，查询失败
+    /// 时返回对应的 SQLx 错误；没有匹配消息时返回空列表。
     pub async fn get_by_group(
         &self,
         group_id: i64,

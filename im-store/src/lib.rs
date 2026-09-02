@@ -44,6 +44,10 @@ impl SqliteStore {
     /// 返回后，`pool`、`messages` 与 `groups` 共享同一个连接池。解析 DSN、连接或任一
     /// SQL 执行失败时返回对应的 [`sqlx::Error`]。初始化过程未包裹在事务中，因此失败前已
     /// 创建的数据库文件、表、列或索引可能保留。
+    ///
+    /// 旧表补列采用“先检查列、再执行 `ALTER TABLE`”的两步流程，不具备并发安全性。同一
+    /// 旧数据库若被多个调用方并发首次初始化，它们可能同时判断缺列，随后重复执行
+    /// `ALTER TABLE`，其中一个初始化因列已存在而报错。调用方应串行完成旧库的首次初始化。
     pub async fn new(dsn: &str) -> Result<Self, sqlx::Error> {
         let options = SqliteConnectOptions::from_str(dsn)?.create_if_missing(true);
         let pool = SqlitePool::connect_with(options).await?;
@@ -63,6 +67,9 @@ impl SqliteStore {
     }
 }
 
+/// 检查旧版 `groups` 表，并在缺失时补充 `available` 列。
+///
+/// 检查与 `ALTER TABLE` 不是原子操作；同一旧库的首次迁移必须由调用方串行执行。
 async fn migrate_groups_available(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let column_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('groups') WHERE name = 'available'",

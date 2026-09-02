@@ -402,7 +402,8 @@ async fn legacy_groups_table_is_migrated_with_existing_rows_available() {
 async fn message_store_rejects_invalid_or_overflowing_pagination() {
     let store = SqliteStore::new(":memory:").await.unwrap();
 
-    // 覆盖零页长、超过业务上限的页长与偏移量，以及 64 位平台上的 i64 转换边界。
+    // 覆盖零页长、超过各自 MAX 上限的页长与偏移，以及 64 位平台上的极大偏移；
+    // 这些无效输入都在 MAX 检查阶段被拒绝，不用于覆盖后续 usize 到 i64 的转换失败。
     assert!(store.messages.get_by_group(1, 0, 0).await.is_err());
     assert!(store.messages.get_by_group(1, 201, 0).await.is_err());
     assert!(store.messages.get_by_group(1, 1, 1_000_001).await.is_err());
