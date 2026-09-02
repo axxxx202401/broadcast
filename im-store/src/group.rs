@@ -33,14 +33,14 @@ impl GroupStore {
                    member_count = excluded.member_count,
                    updated_at = excluded.updated_at"#,
         )
-        .bind(&group.group_id)
+        .bind(group.group_id)
         .bind(&group.name)
         .bind(&group.pic)
-        .bind(&group.host_id)
-        .bind(&group.member_count)
-        .bind(&group.created_at)
-        .bind(&group.monitored)
-        .bind(&group.updated_at)
+        .bind(group.host_id)
+        .bind(group.member_count)
+        .bind(group.created_at)
+        .bind(group.monitored)
+        .bind(group.updated_at)
         .execute(&self.pool)
         .await?;
         Ok(())

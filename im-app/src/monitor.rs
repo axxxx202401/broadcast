@@ -7,12 +7,14 @@ use im_common::config::AppConfig;
 
 /// Background monitor task that manages the TCP connection lifecycle,
 /// including automatic reconnection on disconnect.
+#[allow(dead_code)]
 pub struct ChatMonitorTask {
     config: AppConfig,
     client: Arc<Mutex<Option<ChatClient>>>,
     connected: Arc<tokio::sync::RwLock<bool>>,
 }
 
+#[allow(dead_code)]
 impl ChatMonitorTask {
     pub fn new(
         config: AppConfig,
