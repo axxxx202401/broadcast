@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use im_common::config::AppConfig;
 use im_chat::ChatClient;
+use im_http::http_clients::AppHttpClients;
 use im_store::SqliteStore;
 
 pub struct AppState {
@@ -12,4 +13,5 @@ pub struct AppState {
     pub token: Arc<tokio::sync::RwLock<Option<String>>>,
     pub uid: Arc<tokio::sync::RwLock<Option<i64>>>,
     pub monitoring_groups: Arc<tokio::sync::RwLock<HashSet<i64>>>,
+    pub http: Arc<AppHttpClients>,
 }

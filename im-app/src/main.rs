@@ -21,6 +21,7 @@ fn main() {
                 im_store::SqliteStore::new("data/im_monitor.db").await
             })
             .unwrap();
+            let http = Arc::new(im_http::http_clients::AppHttpClients::new(&config));
             let state = AppState {
                 config: Arc::new(tokio::sync::RwLock::new(config)),
                 db: Arc::new(db),
@@ -28,6 +29,7 @@ fn main() {
                 token: Arc::new(tokio::sync::RwLock::new(None)),
                 uid: Arc::new(tokio::sync::RwLock::new(None)),
                 monitoring_groups: Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new())),
+                http,
             };
             app.manage(state);
             Ok(())

@@ -10,7 +10,7 @@ pub struct OpenChatUserClient {
     version_manager: VersionKeyManager,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct SendCodeResult {
     pub success: bool,
     pub message: Option<String>,

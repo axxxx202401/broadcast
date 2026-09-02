@@ -12,7 +12,7 @@ pub struct ImBizClient {
     x_one_manager: VersionKeyManager,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct GroupInfo {
     pub group_id: i64,
     pub name: String,
