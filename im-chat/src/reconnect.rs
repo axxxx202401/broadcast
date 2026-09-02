@@ -1,37 +1,71 @@
-use std::time::Duration;
-use tokio::time::sleep;
+use std::{future::Future, time::Duration};
+
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::client::ChatClient;
+#[derive(Debug, Clone)]
+pub struct ExponentialBackoff {
+    next: Duration,
+    maximum: Duration,
+}
 
-/// Attempts to reconnect to the server with exponential backoff.
-///
-/// Retries up to `max_retries` times; if `max_retries` is 0 the loop
-/// runs until the client disconnects.
-pub async fn reconnect_loop(client: &mut ChatClient, max_retries: u32) {
-    let mut retries: u32 = 0;
-    let mut backoff_ms: u64 = 1000;
-    let max_backoff_ms: u64 = 30_000;
-
-        loop {
-        info!("Attempting reconnect (attempt {})", retries + 1);
-        match client.connect().await {
-            Ok(()) => {
-                info!("Reconnected successfully");
-                break;
-            }
-            Err(e) => {
-                warn!("Reconnect attempt {} failed: {}", retries + 1, e);
-                retries += 1;
-                if max_retries > 0 && retries >= max_retries {
-                    warn!("Max reconnect retries reached, giving up");
-                    break;
-                }
-            }
+impl ExponentialBackoff {
+    pub fn new(initial: Duration, maximum: Duration) -> Self {
+        Self {
+            next: initial.min(maximum),
+            maximum,
         }
-        // Exponential backoff with cap
-        let backoff = Duration::from_millis(backoff_ms);
-        sleep(backoff).await;
-        backoff_ms = (backoff_ms * 2).min(max_backoff_ms);
     }
+}
+
+impl Default for ExponentialBackoff {
+    fn default() -> Self {
+        Self::new(Duration::from_secs(1), Duration::from_secs(30))
+    }
+}
+
+impl Iterator for ExponentialBackoff {
+    type Item = Duration;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let current = self.next;
+        self.next = self.next.saturating_mul(2).min(self.maximum);
+        Some(current)
+    }
+}
+
+/// Retries a complete connect-and-login action forever, until success or
+/// cancellation. Both the action and sleeper are injected so tests never need
+/// real network connections or production backoff delays.
+pub async fn reconnect_loop<T, E, Connect, ConnectFuture, Sleep, SleepFuture>(
+    cancellation: CancellationToken,
+    backoff: ExponentialBackoff,
+    mut connect_and_login: Connect,
+    mut sleep: Sleep,
+) -> Option<T>
+where
+    Connect: FnMut() -> ConnectFuture,
+    ConnectFuture: Future<Output = Result<T, E>>,
+    Sleep: FnMut(Duration) -> SleepFuture,
+    SleepFuture: Future<Output = ()>,
+    E: std::fmt::Display,
+{
+    for (attempt, delay) in backoff.enumerate() {
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return None,
+            _ = sleep(delay) => {}
+        }
+        info!("Attempting reconnect (attempt {})", attempt + 1);
+        let result = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return None,
+            result = connect_and_login() => result,
+        };
+        match result {
+            Ok(connected) => return Some(connected),
+            Err(error) => warn!("Reconnect attempt {} failed: {}", attempt + 1, error),
+        }
+    }
+    unreachable!("exponential backoff is infinite")
 }

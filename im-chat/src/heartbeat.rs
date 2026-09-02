@@ -1,8 +1,8 @@
-use tokio::time::{interval, Duration};
-use tracing::{info, debug};
+use std::{future::Future, time::Duration};
 
-use crate::client::ChatClient;
-use crate::frame::encode_frame;
+use tokio::time::{interval_at, Instant};
+use tokio_util::sync::CancellationToken;
+use tracing::debug;
 
 /// Message IDs
 pub const HEARTBEAT_MSG_ID: u16 = 1000;
@@ -11,19 +11,31 @@ pub const PUSH_LOGIN_SUCCESS: u16 = 1201;
 pub const PUSH_GROUP_MESSAGE: u16 = 2202;
 pub const PUSH_RECALL_GROUP_MESSAGE: u16 = 2205;
 
-/// Sends a periodic heartbeat to keep the TCP connection alive.
+pub fn heartbeat_message() -> (u16, &'static [u8]) {
+    (HEARTBEAT_MSG_ID, &[])
+}
+
+/// Sends a periodic heartbeat until its connection generation is cancelled.
 ///
-/// If `send_heartbeat` returns true the client should re-transmit the
-/// heartbeat; if it returns false the task exits cleanly.
-pub async fn heartbeat_loop(client: &ChatClient, interval_secs: u64) {
-    let mut ticker = interval(Duration::from_secs(interval_secs));
+/// The first deadline is one complete period in the future. This intentionally
+/// avoids `tokio::time::interval`'s immediate first tick.
+pub async fn heartbeat_loop<F, Fut, E>(
+    period: Duration,
+    cancellation: CancellationToken,
+    mut send_heartbeat: F,
+) -> Result<(), E>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<(), E>>,
+{
+    let mut ticker = interval_at(Instant::now() + period, period);
     loop {
-        ticker.tick().await;
-        debug!("Sending heartbeat");
-        let frame = encode_frame(HEARTBEAT_MSG_ID, &[], true, false);
-        if let Err(e) = client.send(HEARTBEAT_MSG_ID, &frame[8..]).await {
-            info!("Heartbeat send failed: {}", e);
-            break;
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Ok(()),
+            _ = ticker.tick() => {}
         }
+        debug!("Sending heartbeat");
+        send_heartbeat().await?;
     }
 }

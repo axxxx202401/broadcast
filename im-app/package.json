@@ -1,0 +1,8 @@
+{
+  "name": "im-monitor-app",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix ui run dev",
+    "build": "npm --prefix ui run build"
+  }
+}

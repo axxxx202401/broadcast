@@ -14,19 +14,34 @@ pub struct TcpFrameHeader {
 }
 
 impl TcpFrameHeader {
-    pub fn parse(head: [u8; 2]) -> Self {
-        assert_eq!(head[0], 0xC0, "Invalid TCP head byte[0]: expected 0xC0");
+    pub fn parse(head: [u8; 2]) -> crate::error::AppResult<Self> {
+        if head[0] != 0xC0 {
+            return Err(crate::error::AppError::TcpFrame(format!(
+                "invalid TCP head byte[0]: 0x{:02X}, expected 0xC0",
+                head[0]
+            )));
+        }
         let b1 = head[1];
-        Self {
+        Ok(Self {
             encrypted: (b1 & 0x80) != 0,
             zipped: (b1 & 0x40) != 0,
             encrypted_system_version: (b1 & 0x20) != 0,
             is_report: (b1 & 0x10) != 0,
             protocol_version: b1 & 0x0F,
-        }
+        })
     }
 
     pub fn build(encrypted: bool, zipped: bool) -> [u8; 2] {
+        Self::build_with_metadata(encrypted, zipped, false, false, 0)
+    }
+
+    pub fn build_with_metadata(
+        encrypted: bool,
+        zipped: bool,
+        encrypted_system_version: bool,
+        is_report: bool,
+        protocol_version: u8,
+    ) -> [u8; 2] {
         let mut b1 = 0x00u8;
         if encrypted {
             b1 |= 0x80;
@@ -34,6 +49,13 @@ impl TcpFrameHeader {
         if zipped {
             b1 |= 0x40;
         }
+        if encrypted_system_version {
+            b1 |= 0x20;
+        }
+        if is_report {
+            b1 |= 0x10;
+        }
+        b1 |= protocol_version & 0x0F;
         [0xC0, b1]
     }
 }

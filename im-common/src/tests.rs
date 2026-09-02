@@ -5,7 +5,7 @@ use super::version_key::VersionKeyManager;
 
 #[test]
 fn test_parse_encrypted_uncompressed() {
-    let head = TcpFrameHeader::parse([0xC0, 0x80]);
+    let head = TcpFrameHeader::parse([0xC0, 0x80]).unwrap();
     assert!(head.encrypted);
     assert!(!head.zipped);
     assert!(!head.encrypted_system_version);
@@ -14,7 +14,7 @@ fn test_parse_encrypted_uncompressed() {
 
 #[test]
 fn test_parse_encrypted_compressed() {
-    let head = TcpFrameHeader::parse([0xC0, 0xC0]);
+    let head = TcpFrameHeader::parse([0xC0, 0xC0]).unwrap();
     assert!(head.encrypted);
     assert!(head.zipped);
 }
@@ -34,9 +34,16 @@ fn test_build_encrypted_compressed() {
 #[test]
 fn test_roundtrip() {
     let original = [0xC0, 0x80];
-    let parsed = TcpFrameHeader::parse(original);
+    let parsed = TcpFrameHeader::parse(original).unwrap();
     let rebuilt = TcpFrameHeader::build(parsed.encrypted, parsed.zipped);
     assert_eq!(rebuilt, original);
+}
+
+#[test]
+fn invalid_tcp_frame_marker_returns_error_instead_of_panicking() {
+    let error = TcpFrameHeader::parse([0xFF, 0x80]).unwrap_err();
+
+    assert!(error.to_string().contains("0xFF"));
 }
 
 #[test]
@@ -58,6 +65,13 @@ fn test_aes_pkcs7_padding() {
     assert_eq!(encrypted.len(), 16);
     let decrypted = cipher.decrypt(&encrypted).unwrap();
     assert_eq!(decrypted, b"x");
+}
+
+#[test]
+fn test_invalid_aes_key_returns_error() {
+    let error = AesCipher::try_new(b"too-short").err().unwrap();
+
+    assert!(matches!(error, super::error::AppError::Config(_)));
 }
 
 // --- config tests ---
@@ -135,10 +149,9 @@ fn test_version_key_manager_creation() {
 #[test]
 fn test_v_salt_constant() {
     // V_L_SALT = md5("sjlkajsl*Rkfsdsd_tflklsjdf")[0..16]
-    use md5::{Md5, Digest};
+    use md5::{Digest, Md5};
     let mut hasher = Md5::new();
     hasher.update(b"sjlkajsl*Rkfsdsd_tflklsjdf");
     let result = hasher.finalize();
     assert_eq!(result.len(), 16);
 }
-

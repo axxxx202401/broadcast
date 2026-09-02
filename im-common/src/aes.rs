@@ -11,12 +11,17 @@ pub struct AesCipher {
 
 impl AesCipher {
     pub fn new(key: &[u8]) -> Self {
-        assert_eq!(key.len(), 16, "AES-128 key must be 16 bytes");
-        let key: [u8; 16] = key.try_into().unwrap();
-        Self {
+        Self::try_new(key).expect("AES-128 key must be 16 bytes")
+    }
+
+    pub fn try_new(key: &[u8]) -> AppResult<Self> {
+        let key: [u8; 16] = key.try_into().map_err(|_| {
+            AppError::Config(format!("AES-128 key must be 16 bytes, got {}", key.len()))
+        })?;
+        Ok(Self {
             encryptor: Encryptor::new(&key.into()),
             decryptor: Decryptor::new(&key.into()),
-        }
+        })
     }
 
     pub fn encrypt(&self, plaintext: &[u8]) -> AppResult<Vec<u8>> {

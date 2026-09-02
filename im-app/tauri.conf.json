@@ -3,21 +3,49 @@
   "version": "0.1.0",
   "identifier": "co.68chat.im-monitor",
   "build": {
-    "frontendDist": "src-tauri/assets"
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "ui/dist"
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "windows": [
       {
         "title": "IM Monitor",
         "width": 1200,
         "height": 800,
+        "minWidth": 760,
+        "minHeight": 600,
         "resizable": true,
         "fullscreen": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self' customprotocol: asset:",
+        "connect-src": "ipc: http://ipc.localhost https://static.geetest.com https://gcaptcha4.geetest.com https://monitor.geetest.com",
+        "img-src": "'self' asset: http://asset.localhost data: blob: https://static.geetest.com https://gcaptcha4.geetest.com",
+        "style-src": "'self' 'unsafe-inline' https://static.geetest.com https://gcaptcha4.geetest.com",
+        "script-src": "'self' https://static.geetest.com https://gcaptcha4.geetest.com",
+        "font-src": "'self' data: https://static.geetest.com https://gcaptcha4.geetest.com",
+        "frame-src": "https://static.geetest.com https://gcaptcha4.geetest.com",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "frame-ancestors": "'none'"
+      },
+      "devCsp": {
+        "default-src": "'self' customprotocol: asset:",
+        "connect-src": "'self' ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420 https://static.geetest.com https://gcaptcha4.geetest.com https://monitor.geetest.com",
+        "img-src": "'self' asset: http://asset.localhost data: blob: https://static.geetest.com https://gcaptcha4.geetest.com",
+        "style-src": "'self' 'unsafe-inline' https://static.geetest.com https://gcaptcha4.geetest.com",
+        "script-src": "'self' https://static.geetest.com https://gcaptcha4.geetest.com",
+        "font-src": "'self' data: https://static.geetest.com https://gcaptcha4.geetest.com",
+        "frame-src": "https://static.geetest.com https://gcaptcha4.geetest.com",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "frame-ancestors": "'none'"
+      }
     }
   },
   "bundle": {

@@ -6,21 +6,8 @@ pub mod pb {
 
 // Re-export commonly used types at the crate root for convenience
 pub use pb::{
-    ClientInfo,
-    CommonResult,
-    CommonResultReq,
-    UserBase,
-    GroupBase,
-    GroupMemberBase,
-    LoginReq,
-    LoginResp,
-    UrlInfo,
-    MessageType,
-    Platform,
-    GroupMessage,
-    PushGroupMessage,
-    LoginSessionMessage,
-    GroupContactListResp,
-    GroupContactListReq,
-    ErrrMessage,
+    ClientInfo, CommonResult, CommonResultReq, ErrrMessage, GroupBase, GroupContactListReq,
+    GroupContactListResp, GroupMemberBase, GroupMessage, KeyPairBase, LoginReq, LoginResp,
+    LoginSessionMessage, MessageType, Platform, PushGroupMessage, PushLoginSuccessMessage,
+    ReceiveGroupMessage, UrlInfo, UserBase,
 };

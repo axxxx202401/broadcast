@@ -1,4 +1,4 @@
-use sqlx::{SqlitePool, Row};
+use sqlx::{Row, SqlitePool};
 
 /// A row from the groups table.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -25,12 +25,14 @@ impl GroupStore {
     /// Upsert a group into the database.
     pub async fn insert_or_update(&self, group: &GroupRow) -> sqlx::Result<()> {
         sqlx::query(
-            r#"INSERT INTO groups (group_id, name, pic, host_id, member_count, created_at, monitored, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO groups (group_id, name, pic, host_id, member_count, created_at, monitored, available, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
                ON CONFLICT(group_id) DO UPDATE SET
                    name = excluded.name,
                    pic = excluded.pic,
+                   host_id = excluded.host_id,
                    member_count = excluded.member_count,
+                   available = 1,
                    updated_at = excluded.updated_at"#,
         )
         .bind(group.group_id)
@@ -46,11 +48,70 @@ impl GroupStore {
         Ok(())
     }
 
+    /// Atomically upsert a complete remote group-list snapshot.
+    ///
+    /// Existing `monitored` values remain untouched by the conflict clause.
+    pub async fn sync_remote_groups(&self, groups: &[GroupRow]) -> sqlx::Result<()> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("UPDATE groups SET available = 0")
+            .execute(&mut *transaction)
+            .await?;
+        for group in groups {
+            sqlx::query(
+                r#"INSERT INTO groups (group_id, name, pic, host_id, member_count, created_at, monitored, available, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+                   ON CONFLICT(group_id) DO UPDATE SET
+                       name = excluded.name,
+                       pic = excluded.pic,
+                       host_id = excluded.host_id,
+                       member_count = excluded.member_count,
+                       available = 1,
+                       updated_at = excluded.updated_at"#,
+            )
+            .bind(group.group_id)
+            .bind(&group.name)
+            .bind(&group.pic)
+            .bind(group.host_id)
+            .bind(group.member_count)
+            .bind(group.created_at)
+            .bind(group.monitored)
+            .bind(group.updated_at)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await
+    }
+
     /// Return all groups that are currently monitored.
     pub async fn list_monitored(&self) -> sqlx::Result<Vec<GroupRow>> {
         let rows = sqlx::query(
             "SELECT group_id, name, pic, host_id, member_count, created_at, monitored, updated_at
-             FROM groups WHERE monitored = 1 ORDER BY name",
+             FROM groups WHERE monitored = 1 AND available = 1 ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut result = Vec::with_capacity(rows.len());
+        for row in rows {
+            result.push(GroupRow {
+                group_id: row.get("group_id"),
+                name: row.get("name"),
+                pic: row.get("pic"),
+                host_id: row.get("host_id"),
+                member_count: row.get("member_count"),
+                created_at: row.get("created_at"),
+                monitored: row.get("monitored"),
+                updated_at: row.get("updated_at"),
+            });
+        }
+        Ok(result)
+    }
+
+    /// Return every group, including its current monitored state.
+    pub async fn list_all(&self) -> sqlx::Result<Vec<GroupRow>> {
+        let rows = sqlx::query(
+            "SELECT group_id, name, pic, host_id, member_count, created_at, monitored, updated_at
+             FROM groups WHERE available = 1 ORDER BY name",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -72,12 +133,13 @@ impl GroupStore {
     }
 
     /// Toggle the monitored flag for a group.
-    pub async fn toggle_monitored(&self, group_id: i64, monitored: bool) -> sqlx::Result<()> {
-        sqlx::query("UPDATE groups SET monitored = ? WHERE group_id = ?")
-            .bind(monitored as i32)
-            .bind(group_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+    pub async fn toggle_monitored(&self, group_id: i64, monitored: bool) -> sqlx::Result<bool> {
+        let result =
+            sqlx::query("UPDATE groups SET monitored = ? WHERE group_id = ? AND available = 1")
+                .bind(monitored as i32)
+                .bind(group_id)
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected() == 1)
     }
 }

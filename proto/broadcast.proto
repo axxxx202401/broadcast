@@ -181,33 +181,20 @@ message GroupBase {
     bool bf_join_check = 5;
     int64 create_time = 6;
     int64 member_count = 7;
-    string desc = 8;
-    int32 group_type = 9;
-    int32 status = 10;
-    int64 last_msg_time = 11;
-    string last_msg = 12;
-    int32 mute = 13;
-    int64 owner_uid = 14;
-    string alias = 15;
-    bool bf_quit = 16;
-    bool bf_disturb = 17;
-    bool bf_star = 18;
-    int32 member_limit = 19;
-    int32 show_group_name = 20;
-    int64 notice_id = 21;
-    string notice = 22;
-    int64 notice_time = 23;
-    string notice_user_id = 24;
-    int32 apply_join_type = 25;
-    int64 last_msg_id = 26;
-    int32 msg_count = 27;
-    int32 remark = 28;
-    string extra = 29;
-    bool bf_hide = 30;
+    bool bf_join_friend = 8;
+    bool bf_shutup = 9;
+    bool bf_group_read_cancel = 10;
+    int32 group_msg_cancel_time = 11;
+    bool bf_banned = 12;
+    string group_alias_name = 13;
+    string remark = 14;
+    int32 max_member_count = 15;
+    bool bf_join_notice = 16;
+    string notice = 17;
 }
 
 message GroupContactListReq {
-    CommonResultReq common_result_req = 1;
+    ClientInfo client_info = 1;
 }
 
 message GroupContactListResp {
@@ -221,6 +208,20 @@ message LoginSessionMessage {
     int64 latest_login_time = 2;
     string install_code = 3;
     int32 push_tag = 4;
+}
+
+message KeyPairBase {
+    string public_key = 1;
+    string private_key = 2;
+    string msg_key = 3;
+    int32 key_version = 4;
+}
+
+message PushLoginSuccessMessage {
+    int64 login_time = 1;
+    KeyPairBase user_key_pair = 2;
+    KeyPairBase web_key_pair = 3;
+    bool bf_web_online = 4;
 }
 
 message GroupMessage {
@@ -261,6 +262,11 @@ message LinkObj {
 message PushGroupMessage {
     repeated GroupMessage group_msg = 1;
     map<int64, int32> unread_count_map = 2;
+}
+
+message ReceiveGroupMessage {
+    repeated int64 msg_id = 1;
+    int64 group_id = 2;
 }
 
 message RecallMessage {
@@ -347,7 +353,9 @@ message UrlInfo {
 }
 
 message ErrrMessage {
-    int32 error_msg_code = 1;
+    int64 error_msg_code = 1;
     string error_msg = 2;
-    int32 message_protocol_id = 3;
+    int64 flag = 3;
+    int64 target_id = 4;
+    int32 message_protocol_id = 5;
 }

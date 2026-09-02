@@ -1,4 +1,7 @@
-use sqlx::{SqlitePool, Row};
+use sqlx::{Row, SqlitePool};
+
+pub const MAX_MESSAGE_PAGE_LIMIT: usize = 200;
+pub const MAX_MESSAGE_PAGE_OFFSET: usize = 1_000_000;
 
 /// A record representing a group message to be persisted.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -10,6 +13,7 @@ pub struct MessageRecord {
     pub content: Vec<u8>,
     pub send_time: i64,
     pub content_md5: String,
+    pub raw_proto: Option<Vec<u8>>,
 }
 
 /// A row returned from the messages table.
@@ -50,7 +54,7 @@ impl MessageStore {
         .bind(record.send_time)
         .bind(&record.content_md5)
         .bind(stored_at)
-        .bind(None::<Vec<u8>>)
+        .bind(&record.raw_proto)
         .execute(&self.pool)
         .await?;
         Ok(record.msg_id)
@@ -62,6 +66,20 @@ impl MessageStore {
         limit: usize,
         offset: usize,
     ) -> sqlx::Result<Vec<MessageRow>> {
+        if !(1..=MAX_MESSAGE_PAGE_LIMIT).contains(&limit) {
+            return Err(sqlx::Error::Protocol(format!(
+                "message limit must be between 1 and {MAX_MESSAGE_PAGE_LIMIT}"
+            )));
+        }
+        if offset > MAX_MESSAGE_PAGE_OFFSET {
+            return Err(sqlx::Error::Protocol(format!(
+                "message offset exceeds maximum {MAX_MESSAGE_PAGE_OFFSET}"
+            )));
+        }
+        let limit = i64::try_from(limit)
+            .map_err(|_| sqlx::Error::Protocol("message limit exceeds i64".to_string()))?;
+        let offset = i64::try_from(offset)
+            .map_err(|_| sqlx::Error::Protocol("message offset exceeds i64".to_string()))?;
         let rows = sqlx::query(
             r#"SELECT msg_id, group_id, send_uid, msg_type, content, send_time,
                       content_md5, stored_at, raw_proto
@@ -71,8 +89,8 @@ impl MessageStore {
                LIMIT ? OFFSET ?"#,
         )
         .bind(group_id)
-        .bind(limit as i64)
-        .bind(offset as i64)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 

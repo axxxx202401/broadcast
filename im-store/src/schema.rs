@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS groups (
     member_count INTEGER DEFAULT 0,
     created_at  INTEGER NOT NULL,
     monitored   INTEGER NOT NULL DEFAULT 1,
+    available   INTEGER NOT NULL DEFAULT 1,
     updated_at  INTEGER NOT NULL
 );
 
