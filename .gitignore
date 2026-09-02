@@ -1,2 +1,32 @@
-target/
-Cargo.lock
+# Rust
+/target/
+/**/*.rs.bk
+**/*.rmeta
+.DS_Store
+
+# Node
+/node_modules/
+/package-lock.json
+
+# Tauri
+/src-tauri/target/
+/target/release/
+/target/debug/build/tauri-codegen/
+
+# Database
+/data/
+*.db
+*.db-journal
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build artifacts
+**/*.dSYM/
+**/.*.swp
+
+# Temp
+tmp/

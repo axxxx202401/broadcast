@@ -6,7 +6,8 @@ use std::sync::Arc;
 use tauri::Manager;
 use state::AppState;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -18,8 +19,15 @@ fn main() {
         .setup(|app| {
             let app_handle = app.app_handle();
             let config = im_common::config::AppConfig::default();
+            // Use the tokio runtime (established by #[tokio::main]) instead of block_on
+            // Use the user's home directory for the database so it persists across runs
+            let db_path = std::env::var("HOME")
+                .map(|h| format!("{}/.im-monitor/im_monitor.db", h))
+                .unwrap_or_else(|_| "im_monitor.db".to_string());
+            std::fs::create_dir_all(std::path::Path::new(&db_path).parent().unwrap())
+                .ok();
             let db = futures::executor::block_on(async {
-                im_store::SqliteStore::new("data/im_monitor.db").await
+                im_store::SqliteStore::new(&db_path).await
             })
             .unwrap();
             let http = Arc::new(im_http::http_clients::AppHttpClients::new(&config));
