@@ -1,3 +1,8 @@
+//! 应用共享状态与聊天连接协调器。
+//!
+//! 本模块集中保存认证会话、已安装客户端和连接阶段，并用代际与尝试编号拒绝过期异步结果。
+//! 这些锁只保护各自注明的内存对象；跨锁流程依靠固定持锁顺序和当前性复核，而非事务原子性。
+
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
@@ -11,31 +16,53 @@ use tokio::sync::{watch, Mutex};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 当前认证凭据及其所属连接代际。
 pub struct AuthSession {
+    /// 后端用户标识。
     pub uid: i64,
+    /// 调用 HTTP 与聊天服务所需的认证令牌。
     pub token: String,
+    /// 会话当前绑定的连接代际；显式断开后可由协调器重新标记。
     pub generation: u64,
 }
 
+/// 串行协调连接状态迁移和状态发布。
+///
+/// `generation` 区分登录、登出或显式取消前后的生命周期，`attempt_id` 区分同一代际内的
+/// 多次连接尝试。二者共同标识一次尝试，但不会为外部网络操作提供事务原子性或公平性保证。
 pub struct ConnectionCoordinator {
+    /// 保护连接状态机、当前尝试和本代取消令牌。
     state: Mutex<ConnectionState>,
+    /// 串行执行状态复核及其发布闭包，防止并发状态通知相互穿插。
     status_publication: Mutex<()>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 协调器记录的聊天连接阶段。
 pub enum ConnectionPhase {
+    /// 没有正在建立或维持的连接。
     Idle,
+    /// 首次连接尝试正在执行。
     Connecting,
+    /// 当前尝试已安装可用客户端。
     Connected,
+    /// 已连接客户端自然掉线后正在重连。
     Reconnecting,
 }
 
+/// `ConnectionCoordinator::state` 互斥锁保护的可变状态。
 struct ConnectionState {
+    /// 当前认证/连接生命周期代际；显式取消或认证切换时递增。
     generation: u64,
+    /// 最近分配的尝试编号，在同一代际重试时仍单调递增。
     next_attempt_id: u64,
+    /// 当前阶段的所有者尝试；空闲时为空。
     current_attempt_id: Option<u64>,
+    /// 当前连接阶段。
     phase: ConnectionPhase,
+    /// 当前代际共享的取消令牌；取消后会替换为新令牌。
     cancellation: CancellationToken,
+    /// 尚需报告结束的首次连接操作。
     in_flight: Option<InFlightConnection>,
 }
 
@@ -52,26 +79,41 @@ impl Default for ConnectionState {
     }
 }
 
+/// 正在执行的首次连接及其完成通知。
 struct InFlightConnection {
+    /// 操作开始时的代际。
     generation: u64,
+    /// 操作开始时分配的尝试编号。
     attempt_id: u64,
+    /// 供取消流程直接终止该操作的令牌。
     cancellation: CancellationToken,
+    /// 连接任务结束时置为 `true`，供取消流程限时等待。
     finished: watch::Sender<bool>,
 }
 
+/// `begin_connect` 发放给单次连接任务的只读凭据。
+///
+/// 凭据存活到该连接任务结束；后续安装或收尾必须同时匹配其中的代际与尝试编号。
 pub struct ConnectionPermit {
+    /// 连接开始时的代际。
     generation: u64,
+    /// 本次连接的尝试编号。
     attempt_id: u64,
+    /// 与本代连接生命周期关联的取消令牌。
     cancellation: CancellationToken,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 已安装客户端的所有者键，由代际与尝试编号共同组成。
 pub struct ConnectionAttemptKey {
+    /// 所属连接代际。
     generation: u64,
+    /// 所属连接尝试编号。
     attempt_id: u64,
 }
 
 impl ConnectionAttemptKey {
+    /// 根据代际与尝试编号构造所有者键。
     pub fn new(generation: u64, attempt_id: u64) -> Self {
         Self {
             generation,
@@ -81,43 +123,56 @@ impl ConnectionAttemptKey {
 }
 
 #[derive(Debug)]
+/// 连同所有者键保存的聊天客户端。
 pub struct InstalledClient {
+    /// 标识安装该客户端的连接尝试。
     key: ConnectionAttemptKey,
+    /// 供聊天命令与后台任务使用的客户端。
     pub client: ChatClient,
 }
 
 impl InstalledClient {
+    /// 将客户端归属到指定连接尝试。
     pub fn new(key: ConnectionAttemptKey, client: ChatClient) -> Self {
         Self { key, client }
     }
 
+    /// 返回安装该客户端的连接尝试键。
     pub fn key(&self) -> ConnectionAttemptKey {
         self.key
     }
 }
 
+/// 保护可选已安装聊天客户端的互斥槽位。
+///
+/// 槽位从连接成功安装持续到断开流程取走客户端；锁只保护槽位内容，不保护客户端内部状态。
 pub type ClientSlot = tokio::sync::Mutex<Option<InstalledClient>>;
 
 impl ConnectionPermit {
+    /// 返回该许可所属代际。
     pub fn generation(&self) -> u64 {
         self.generation
     }
 
+    /// 返回该许可所属尝试编号。
     pub fn attempt_id(&self) -> u64 {
         self.attempt_id
     }
 
     #[cfg(test)]
+    /// 在测试中取得与许可对应的客户端所有者键。
     pub fn key(&self) -> ConnectionAttemptKey {
         ConnectionAttemptKey::new(self.generation, self.attempt_id)
     }
 
+    /// 克隆供连接任务监听的取消令牌。
     pub fn cancellation_token(&self) -> CancellationToken {
         self.cancellation.clone()
     }
 }
 
 impl ConnectionCoordinator {
+    /// 创建处于空闲第 0 代的连接协调器。
     pub fn new() -> Self {
         Self {
             state: Mutex::new(ConnectionState::default()),
@@ -125,6 +180,10 @@ impl ConnectionCoordinator {
         }
     }
 
+    /// 在指定代际开始一次首次连接并返回许可。
+    ///
+    /// 仅当前代际且阶段为 `Idle` 时成功；其他阶段返回重复连接或进行中错误，编号溢出也返回
+    /// 错误。成功后登记 in-flight 操作并进入 `Connecting`，尚未执行网络连接或安装客户端。
     pub async fn begin_connect(&self, generation: u64) -> Result<ConnectionPermit, String> {
         let mut state = self.state.lock().await;
         if generation != state.generation {
@@ -160,6 +219,10 @@ impl ConnectionCoordinator {
         })
     }
 
+    /// 报告指定首次连接任务已结束。
+    ///
+    /// 只有 in-flight 的代际和尝试编号都匹配时才发送完成通知；若该尝试仍拥有
+    /// `Connecting` 阶段，还会回到空闲并轮换已取消的令牌。过期调用不产生副作用。
     pub async fn finish_connect(&self, generation: u64, attempt_id: u64) {
         let mut state = self.state.lock().await;
         if state.in_flight.as_ref().is_some_and(|operation| {
@@ -179,6 +242,10 @@ impl ConnectionCoordinator {
         }
     }
 
+    /// 仅在指定尝试仍是当前首次连接时记录失败。
+    ///
+    /// 匹配时通知等待者、清除 in-flight 与当前尝试、回到空闲并轮换取消令牌；过期失败结果
+    /// 被忽略。此方法不清除认证会话，也不修改客户端槽位。
     pub async fn fail_connect_if_current(&self, generation: u64, attempt_id: u64) {
         let mut state = self.state.lock().await;
         let is_current = state.generation == generation
@@ -199,6 +266,10 @@ impl ConnectionCoordinator {
         }
     }
 
+    /// 在当前代际仍为已连接状态时串行执行发布闭包。
+    ///
+    /// 返回值表示闭包是否实际执行。发布锁覆盖当前性检查和整个异步闭包，因此同类状态发布按
+    /// 获锁顺序执行，但不承诺调度公平性，也不让闭包中的外部副作用具备事务原子性。
     pub async fn publish_connected_if_current<F, Fut>(&self, generation: u64, publish: F) -> bool
     where
         F: FnOnce() -> Fut,
@@ -216,6 +287,9 @@ impl ConnectionCoordinator {
         true
     }
 
+    /// 在代际和尝试编号仍拥有连接或重连阶段时串行发布“连接中”状态。
+    ///
+    /// 不匹配时返回 `false` 且不调用闭包；匹配时持有发布锁直至闭包结束。
     pub async fn publish_connecting_if_current<F, Fut>(
         &self,
         generation: u64,
@@ -243,6 +317,9 @@ impl ConnectionCoordinator {
         true
     }
 
+    /// 在当前代际尚非已连接状态时串行发布“已断开”状态。
+    ///
+    /// 此方法只筛选并发布状态，不改变连接阶段或客户端槽位。
     pub async fn publish_disconnected_if_current<F, Fut>(&self, generation: u64, publish: F) -> bool
     where
         F: FnOnce() -> Fut,
@@ -261,6 +338,7 @@ impl ConnectionCoordinator {
     }
 
     #[cfg(test)]
+    /// 测试辅助：若代际仍当前且阶段非空闲，则先切为空闲并轮换取消令牌，再串行发布断开。
     pub async fn disconnect_and_publish_if_current<F, Fut>(
         &self,
         generation: u64,
@@ -284,6 +362,10 @@ impl ConnectionCoordinator {
         true
     }
 
+    /// 将当前已连接尝试切换为重连阶段，并串行执行状态发布闭包。
+    ///
+    /// 代际、尝试编号或阶段不匹配时返回 `false` 且无副作用；成功不会递增代际，也不会取消
+    /// 当前代际令牌，使自然掉线后的重连仍可沿用原尝试所有权。
     pub async fn begin_reconnect_and_publish_if_current<F, Fut>(
         &self,
         generation: u64,
@@ -309,15 +391,23 @@ impl ConnectionCoordinator {
         true
     }
 
+    /// 返回锁内记录的当前连接阶段快照。
     pub async fn phase(&self) -> ConnectionPhase {
         self.state.lock().await.phase
     }
 
     #[cfg(test)]
+    /// 测试辅助：取消当前生命周期并返回递增后的代际。
     pub async fn cancel_and_advance(&self) -> Result<u64, String> {
         Ok(self.cancel_and_advance_with_owner().await?.0)
     }
 
+    /// 取消当前生命周期、递增代际，并返回此前的尝试所有者。
+    ///
+    /// 方法在发布锁内先递增 `generation`、切为空闲、取消当前令牌并替换新令牌；若存在
+    /// in-flight 操作，还会取消其令牌并在释放锁后最多等待一秒完成通知，随后仅在记录仍匹配
+    /// 时清除它。代际溢出返回错误；等待超时不会作为错误返回。该流程分阶段持锁，不保证与
+    /// 外部任务副作用原子提交。
     pub async fn cancel_and_advance_with_owner(
         &self,
     ) -> Result<(u64, Option<ConnectionAttemptKey>), String> {
@@ -370,6 +460,10 @@ impl ConnectionCoordinator {
         Ok((next_generation, cancelled_owner))
     }
 
+    /// 仅当预期代际和尝试编号仍为当前所有者时取消并递增代际。
+    ///
+    /// 不匹配返回 `Ok(None)` 且不修改状态；匹配时执行与无条件取消相同的令牌轮换和最长一秒
+    /// 等待，并返回新代际。代际溢出是唯一由本方法直接返回的错误。
     pub async fn cancel_and_advance_if_current(
         &self,
         expected_generation: u64,
@@ -423,6 +517,11 @@ impl ConnectionCoordinator {
         Ok(Some(next_generation))
     }
 
+    /// 在取消并递增连接代际的同时清除认证会话。
+    ///
+    /// 发布锁内依次取得会话写锁和状态锁，确认代际可递增后清空会话、取消连接并记录旧所有者；
+    /// 随后最多等待一秒让 in-flight 操作收尾。代际溢出时返回错误且不会清空会话；本方法不
+    /// 清理客户端槽位或监控群组。
     pub async fn cancel_and_advance_clearing_auth(
         &self,
         auth_session: &tokio::sync::RwLock<Option<AuthSession>>,
@@ -477,6 +576,12 @@ impl ConnectionCoordinator {
         Ok((next_generation, cancelled_owner))
     }
 
+    /// 仅为仍当前的首次连接安装客户端。
+    ///
+    /// 先核对认证会话，再在状态锁下核对许可的代际、尝试编号、阶段、取消状态与 in-flight
+    /// 记录，最后取得客户端槽位锁。成功时设置安装标志、写入带所有者键的客户端并进入
+    /// `Connected`。会话变化、过期操作或槽位已占用会连同原客户端返回错误；槽位冲突还会
+    /// 结束当前首次连接并回到空闲。
     pub async fn install_if_current(
         &self,
         permit: &ConnectionPermit,
@@ -526,6 +631,10 @@ impl ConnectionCoordinator {
         Ok(())
     }
 
+    /// 仅为仍当前的自然重连安装替代客户端。
+    ///
+    /// 认证会话、代际、尝试编号与 `Reconnecting` 阶段均匹配且代际令牌未取消时才安装；
+    /// 成功后进入 `Connected`。失败会连同未安装的客户端返回错误，不会覆盖已有槽位。
     pub async fn install_reconnected_if_current(
         &self,
         attempt: ConnectionAttemptKey,
@@ -560,6 +669,10 @@ impl ConnectionCoordinator {
         Ok(())
     }
 
+    /// 在代际仍当前时发布登录会话及恢复的监控群组快照。
+    ///
+    /// 方法依次持有会话写锁、监控集合写锁和状态锁完成复核与赋值。代际已变化时返回错误，
+    /// 两个共享对象均不修改；它不改变连接阶段或代际。
     pub async fn publish_login_if_current(
         &self,
         generation: u64,
@@ -579,6 +692,11 @@ impl ConnectionCoordinator {
         Ok(())
     }
 
+    /// 在登录准备工作执行期间保持“当前代际且尚无会话”的门禁。
+    ///
+    /// 取得会话读锁和状态锁后先验证条件，再在持锁期间等待 `prepare`。条件不满足时不执行
+    /// future 并返回错误；future 自身的错误原样返回。持锁可阻止相关写入，但不代表外部准备
+    /// 操作与其他系统副作用是原子的。
     pub async fn prepare_login_if_current<T, F>(
         &self,
         generation: u64,
@@ -600,6 +718,9 @@ impl ConnectionCoordinator {
         prepare.await
     }
 
+    /// 若代际仍当前，将已有认证会话重新标记到该代际。
+    ///
+    /// 没有会话或代际已变化时不做修改，也不返回错误；常用于显式断开后保留登录态供后续连接。
     pub async fn retag_session_if_current(
         &self,
         generation: u64,
@@ -616,20 +737,38 @@ impl ConnectionCoordinator {
 }
 
 #[derive(Clone)]
+/// 注入 Tauri 命令并由后台任务克隆共享的应用状态。
+///
+/// 各 `Arc` 克隆指向同一底层资源；锁的作用域仅限对应字段。`shutdown` 则贯穿整个应用
+/// 生命周期，用于在退出时通知连接和消息任务停止。
 pub struct AppState {
+    /// 保护运行期配置快照；连接任务读取克隆后使用。
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
+    /// 持久化群组、监控选择与消息的 SQLite 存储。
     pub db: Arc<SqliteStore>,
+    /// 保护当前已安装聊天客户端及其尝试所有者。
     pub chat_client: Arc<ClientSlot>,
+    /// 保护从登录成功到登出之间的可选认证会话。
     pub auth_session: Arc<tokio::sync::RwLock<Option<AuthSession>>>,
+    /// 保护当前内存中的受监控群组 ID 快照。
     pub monitoring_groups: Arc<tokio::sync::RwLock<HashSet<i64>>>,
+    /// 串行化需要共同更新数据库与监控群组快照的群组操作。
     pub group_ops: Arc<tokio::sync::Mutex<()>>,
+    /// 协调连接代际、尝试所有权、阶段迁移及状态发布。
     pub connection_coordinator: Arc<ConnectionCoordinator>,
+    /// 复用认证与群组接口所需的 HTTP 客户端集合。
     pub http: Arc<AppHttpClients>,
+    /// 保护供命令和前端状态通知读取的连接布尔快照。
     pub connected: Arc<tokio::sync::RwLock<bool>>,
+    /// 应用级取消令牌；从 setup 创建到退出请求触发取消。
     pub shutdown: CancellationToken,
+    /// setup 注入的 Tauri 句柄，用于事件发布；测试状态可不提供。
     pub app_handle: Option<AppHandle>,
 }
 
+/// 从 SQLite 读取已标记监控的群组，并恢复为内存 ID 集合。
+///
+/// 数据库查询失败时原样返回 `sqlx::Error`，不会产生部分集合。
 pub async fn load_monitoring_groups(db: &SqliteStore) -> Result<HashSet<i64>, sqlx::Error> {
     Ok(db
         .groups
@@ -641,6 +780,9 @@ pub async fn load_monitoring_groups(db: &SqliteStore) -> Result<HashSet<i64>, sq
 }
 
 impl AppState {
+    /// 返回 setup 保存的 Tauri 应用句柄。
+    ///
+    /// 未注入句柄时会 panic；生产状态总是在 Tauri setup 中设置该字段。
     pub fn app_handle(&self) -> &AppHandle {
         self.app_handle.as_ref().expect("app_handle not set")
     }
@@ -657,6 +799,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_advances_generation_and_wakes_blocked_operation() {
+        // 验证显式取消先推进代际并唤醒阻塞任务，而不会无限等待网络操作自行返回。
         let coordinator = Arc::new(ConnectionCoordinator::new());
         let operation = coordinator.begin_connect(0).await.unwrap();
         let worker_coordinator = coordinator.clone();
@@ -684,6 +827,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_finish_cannot_clear_new_attempt_in_same_generation() {
+        // 验证同代旧尝试的迟到收尾不能清除较新的当前尝试或取消其令牌。
         let coordinator = ConnectionCoordinator::new();
         let old = coordinator.begin_connect(0).await.unwrap();
         coordinator
@@ -705,6 +849,7 @@ mod tests {
 
     #[tokio::test]
     async fn disconnect_before_install_atomically_rejects_stale_client() {
+        // 模拟断开先于客户端安装，确认旧许可被门禁拒绝且后续同代重试仍可获得新令牌。
         let coordinator = ConnectionCoordinator::new();
         let permit = coordinator.begin_connect(0).await.unwrap();
         let session = AuthSession {
@@ -756,6 +901,7 @@ mod tests {
 
     #[tokio::test]
     async fn installed_connection_publishes_connected_before_racing_disconnect() {
+        // 制造连接与断开发布竞争，验证发布锁保持可观察顺序并最终落到空闲阶段。
         let coordinator = Arc::new(ConnectionCoordinator::new());
         let permit = coordinator.begin_connect(0).await.unwrap();
         let generation = permit.generation();
@@ -815,6 +961,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_generation_status_waits_then_cannot_overwrite_new_connected_status() {
+        // 验证旧代断开通知即使排队等待，也不能覆盖新代已经发布的连接状态。
         let coordinator = Arc::new(ConnectionCoordinator::new());
         let old = coordinator.begin_connect(0).await.unwrap();
         coordinator
@@ -876,6 +1023,7 @@ mod tests {
 
     #[tokio::test]
     async fn natural_loss_preserves_generation_token_and_allows_reconnect_install() {
+        // 模拟自然掉线，确认不推进代际或取消令牌，并允许原所有者安装重连客户端。
         let coordinator = ConnectionCoordinator::new();
         let permit = coordinator.begin_connect(0).await.unwrap();
         let cancellation = permit.cancellation_token();
@@ -924,6 +1072,7 @@ mod tests {
 
     #[tokio::test]
     async fn connecting_publication_is_generation_and_attempt_safe_during_reconnect() {
+        // 验证重连中的状态发布同时受代际和尝试编号约束，过期代际无法发布。
         let coordinator = ConnectionCoordinator::new();
         let permit = coordinator.begin_connect(0).await.unwrap();
         let session = AuthSession {
@@ -967,6 +1116,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_cancel_during_backoff_rejects_stale_reconnect_install() {
+        // 模拟重连退避期间显式取消，确认代际推进后旧重连结果不能重新安装客户端。
         let coordinator = ConnectionCoordinator::new();
         let permit = coordinator.begin_connect(0).await.unwrap();
         let cancellation = permit.cancellation_token();
@@ -1015,6 +1165,7 @@ mod tests {
 
     #[tokio::test]
     async fn restores_monitored_group_ids_from_sqlite() {
+        // 以混合监控标记写入数据库，验证启动恢复只重建启用监控的群组 ID 集合。
         let store = im_store::SqliteStore::new(":memory:").await.unwrap();
         for (group_id, monitored) in [(10, 1), (20, 0), (30, 1)] {
             store
