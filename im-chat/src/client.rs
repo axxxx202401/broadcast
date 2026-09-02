@@ -22,19 +22,24 @@ const SERVER_ERROR_MESSAGE_ID: u16 = 9999;
 
 /// 消息回调返回的异步结果。
 ///
-/// 回调返回错误时，后台读任务会停止处理后续帧，并按连接丢失流程关闭写端、调用断开回调。
+/// 回调返回错误时，后台读任务会停止处理后续帧，并按受控退出流程关闭写端、等待断开回调。
 pub type MessageFuture = Pin<Box<dyn Future<Output = AppResult<()>> + Send>>;
 /// 收到完整服务端帧后调用的消息回调。
 ///
 /// 参数依次为消息 ID 和解码后的正文。回调在后台读任务中按帧顺序等待完成；
-/// 回调期间不会分派下一帧。
+/// 回调期间不会分派下一帧。若回调 panic，Tokio 任务会异常终止，读循环尾部的
+/// 写端清理和断开通知不会执行。
 pub type MessageHandler = Box<dyn Fn(u16, Vec<u8>) -> MessageFuture + Send + Sync>;
-/// 断开回调返回的异步任务。
+/// 断开通知处理器返回的异步工作。
+///
+/// 后台读任务受控退出和 [`ChatClient::disconnect`] 主动通知时都会等待该 future 完成。
 pub type DisconnectFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 /// 连接被关闭后调用的回调。
 ///
-/// 后台读任务退出或 [`ChatClient::disconnect`] 主动完成资源关闭时会等待该回调；
-/// [`ChatClient::force_abort`] 和 `Drop` 是同步兜底，不会调用或等待该回调。
+/// 后台读任务因正常 EOF、读取或协议错误、消息处理器返回错误而受控退出时，会先清理
+/// 共享写端，再调用并等待该回调；[`ChatClient::disconnect`] 主动通知时也会等待它。
+/// 若消息处理器 panic 导致读任务异常终止，读循环尾部清理及该回调均不会执行。
+/// [`ChatClient::force_abort`] 和 `Drop` 是同步兜底，同样不会调用或等待该回调。
 pub type DisconnectHandler = Box<dyn Fn() -> DisconnectFuture + Send + Sync>;
 
 /// 可独立持有的聊天连接发送端。
@@ -57,6 +62,8 @@ impl ChatSender {
     ///
     /// 帧构造失败、客户端已断开，或 TCP 写入/刷新失败时返回错误。
     /// 本方法没有内置取消或超时；需要这些能力时使用 [`Self::send_cancellable`]。
+    /// TCP I/O 错误时无法从返回值判断线路已写入多少数据或服务端是否收到，
+    /// 具体风险与处理要求见 [`Self::send_cancellable`]。
     pub async fn send(
         &self,
         message_id: u16,
@@ -74,8 +81,10 @@ impl ChatSender {
     /// # 错误
     ///
     /// 帧构造失败、取消令牌触发、等待或写入超过 `timeout`、客户端已断开，
-    /// 或 TCP 写入/刷新失败时返回错误。取消或超时只会停止继续等待，不会回滚
-    /// 已经写入套接字的部分字节。
+    /// 或 TCP 写入/刷新失败时返回错误。取消、超时或 I/O 错误发生时，线路上可能
+    /// 已写入 0 字节、部分帧或完整帧；返回错误不能证明服务端是否收到该帧。
+    /// 已写入的部分帧不会回滚，继续复用该流可能造成协议错位，上层应按连接失败策略处理，
+    /// 而不能把错误视为可在同一连接上安全重试的依据。
     pub async fn send_cancellable(
         &self,
         message_id: u16,
@@ -362,7 +371,8 @@ impl ChatClient {
     /// # 错误
     ///
     /// 登录帧构造失败、客户端未连接或已经断开，以及 TCP 写入/刷新失败时返回错误。
-    /// 本方法没有内置取消或超时。
+    /// 本方法没有内置取消或超时；I/O 错误同样可能发生在写入部分帧或完整帧之后，
+    /// 不能据返回错误判断服务端是否收到，处理要求见 [`ChatSender::send_cancellable`]。
     pub async fn login(
         &self,
         token: &str,
@@ -383,7 +393,8 @@ impl ChatClient {
     /// # 错误
     ///
     /// 客户端未连接或已断开、帧构造失败，或 TCP 写入/刷新失败时返回错误。
-    /// 本方法没有内置取消或超时。
+    /// 本方法没有内置取消或超时；底层 I/O 错误的写入进度与连接复用风险见
+    /// [`ChatSender::send`] 和 [`ChatSender::send_cancellable`]。
     pub async fn send(
         &self,
         message_id: u16,
@@ -435,6 +446,8 @@ impl Drop for ChatClient {
 ///
 /// TCP 读取不对应帧边界，因此任务把每次新增字节追加到 `leftover`。完整帧被逐个消费，
 /// 尾部半包继续保留到下一次读取，避免把一次 `read` 误当成一帧或丢失跨读取的正文。
+/// 正常 EOF、读取/协议错误或消息处理器返回错误会离开循环，随后清理写端并等待断开回调；
+/// 消息处理器 panic 会让任务异常终止，因而绕过这段尾部处理。
 struct ReadTask {
     reader: OwnedReadHalf,
     stream: Arc<tokio::sync::Mutex<Option<OwnedWriteHalf>>>,
@@ -446,6 +459,10 @@ struct ReadTask {
 }
 
 impl ReadTask {
+    /// 运行读取、增量解帧和受控退出后的连接清理。
+    ///
+    /// 循环通过 `break` 结束时会移除并关闭共享写端，再等待断开回调。由消息处理器 panic
+    /// 导致的任务异常不经过循环后的语句，因此不会执行这两步。
     async fn run(mut self) {
         loop {
             // 每次只追加本轮实际读取的字节，既保留半包，也允许一次读取包含多个帧。
