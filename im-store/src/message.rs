@@ -1,7 +1,7 @@
 use sqlx::{SqlitePool, Row};
 
 /// A record representing a group message to be persisted.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MessageRecord {
     pub msg_id: i64,
     pub group_id: i64,
@@ -13,7 +13,7 @@ pub struct MessageRecord {
 }
 
 /// A row returned from the messages table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MessageRow {
     pub msg_id: i64,
     pub group_id: i64,

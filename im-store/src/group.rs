@@ -1,7 +1,7 @@
 use sqlx::{SqlitePool, Row};
 
 /// A row from the groups table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GroupRow {
     pub group_id: i64,
     pub name: String,

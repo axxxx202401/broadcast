@@ -1,0 +1,19 @@
+{
+  "uuid": "generated",
+  "name": "IM Monitor",
+  "description": "IM group message monitoring client",
+  "remote": {
+    "urls": []
+  },
+  "local": {
+    "paths": {
+      "dataDir": "~/.im-monitor"
+    }
+  },
+  "permissions": [
+    {
+      "identifier": "core:default",
+      "description": "Default core access"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "productName": "IM Monitor",
+  "version": "0.1.0",
+  "identifier": "co.68chat.im-monitor",
+  "build": {
+    "frontendDist": "../src-tauri/assets",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "IM Monitor",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": []
+  }
+}

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IM Monitor</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Login Panel -->
+        <div id="login-panel" class="panel">
+            <h2>登录</h2>
+            <div class="form-group">
+                <label>手机号</label>
+                <input type="tel" id="phone" placeholder="请输入手机号" maxlength="11">
+            </div>
+            <div class="form-group">
+                <label>验证码</label>
+                <div class="code-row">
+                    <input type="text" id="code" placeholder="请输入验证码" maxlength="6">
+                    <button id="send-code-btn">发送验证码</button>
+                </div>
+            </div>
+            <div class="form-group">
+                <button id="login-btn" class="primary">登录</button>
+            </div>
+        </div>
+
+        <!-- Main Panel -->
+        <div id="main-panel" class="panel" style="display:none;">
+            <header class="header">
+                <h1>IM Monitor</h1>
+                <div class="status" id="status">未登录</div>
+            </header>
+
+            <div class="layout">
+                <aside class="sidebar">
+                    <input type="text" id="search-groups" placeholder="搜索群...">
+                    <div id="group-list" class="group-list"></div>
+                    <button id="connect-btn">连接聊天</button>
+                </aside>
+
+                <main class="main">
+                    <div id="chat-header">
+                        <h3 id="selected-group-name">选择一个群</h3>
+                    </div>
+                    <div id="message-list" class="message-list"></div>
+                    <div class="message-input">
+                        <input type="text" placeholder="消息内容（只读监控模式）" disabled>
+                    </div>
+                </main>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
