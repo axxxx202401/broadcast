@@ -3,15 +3,26 @@ use std::future::Future;
 use crate::state::AppState;
 use tauri::State;
 
+/// Tauri 边界使用的群组数据。
+///
+/// 可能超出 JavaScript 安全整数范围的标识符均转换为十进制字符串。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GroupDto {
+    /// 十进制字符串形式的群组 ID。
     pub group_id: String,
+    /// 群组名称。
     pub name: String,
+    /// 群组头像地址。
     pub pic: String,
+    /// 可选的群主用户 ID，以十进制字符串表示。
     pub host_id: Option<String>,
+    /// 服务端快照中的成员数量。
     pub member_count: i64,
+    /// 群组创建时间；远程列表未提供该值时使用 `0` 占位。
     pub created_at: i64,
+    /// 本地监控开关，`1` 表示监控，`0` 表示不监控。
     pub monitored: i32,
+    /// 本地群组记录的更新时间；远程同步时统一取本次拉取完成后的当前毫秒时间戳。
     pub updated_at: i64,
 }
 
@@ -34,6 +45,10 @@ fn group_dtos(groups: Vec<im_store::group::GroupRow>) -> Vec<GroupDto> {
     groups.into_iter().map(GroupDto::from).collect()
 }
 
+/// 从本地数据库读取全部群组。
+///
+/// 该命令不发起远程请求，也不修改数据库或内存监控集合；成功返回按 Tauri 边界格式转换
+/// 的群组列表，数据库查询错误转换为字符串返回。
 #[tauri::command]
 pub async fn fetch_group_list(state: State<'_, AppState>) -> Result<Vec<GroupDto>, String> {
     let groups = state
@@ -45,6 +60,12 @@ pub async fn fetch_group_list(state: State<'_, AppState>) -> Result<Vec<GroupDto
     Ok(group_dtos(groups))
 }
 
+/// 从服务端刷新群组快照，并更新本地数据库及内存监控集合。
+///
+/// 命令要求当前已登录并使用会话 token 拉取远程群组。远程请求期间不持有
+/// `group_ops`；拉取成功后才取得该锁，串行执行数据库快照同步、数据库回读及内存监控
+/// 快照替换。任一步失败都返回字符串错误；远程拉取可能产生网络副作用。这里不承诺网络
+/// 请求与本地写入构成原子事务。
 #[tauri::command]
 pub async fn refresh_group_list(state: State<'_, AppState>) -> Result<Vec<GroupDto>, String> {
     let token = state
@@ -64,6 +85,13 @@ pub async fn refresh_group_list(state: State<'_, AppState>) -> Result<Vec<GroupD
     Ok(group_dtos(groups))
 }
 
+/// 使用 token 拉取远程群组，并转换为待同步的本地行。
+///
+/// 请求使用当前设备配置构造客户端信息。远程列表未提供创建时间，因此 `created_at`
+/// 使用 `0` 占位；`updated_at` 取远程请求成功后生成的当前 UTC 毫秒时间戳，同批记录
+/// 使用同一值；`monitored` 先置 `0`，数据库同步层负责保留可用的本地选择。
+///
+/// 此函数自身不获取 `group_ops`，也不写数据库或内存监控集合。
 pub(crate) async fn fetch_remote_groups(
     state: &AppState,
     token: &str,
@@ -103,6 +131,10 @@ pub(crate) async fn fetch_remote_groups(
         .collect())
 }
 
+/// 把远程群组快照写入数据库，并从数据库重建可用群组和监控集合。
+///
+/// 调用方负责需要的串行化。数据库同步完成后依次查询全部可用群组和受监控群组；错误
+/// 直接返回，不更新调用方持有的内存快照。
 pub(crate) async fn apply_remote_groups(
     db: &im_store::SqliteStore,
     groups: &[im_store::group::GroupRow],
@@ -133,6 +165,10 @@ pub(crate) async fn apply_remote_groups(
     Ok((available_groups, monitored))
 }
 
+/// 在群组操作锁内同步远程快照，并刷新内存监控集合。
+///
+/// 数据库同步与回读完成后才替换内存集合，因此这些本地更新按 `group_ops` 串行；失败时
+/// 不执行内存替换。该函数接收已拉取的数据，不覆盖远程请求阶段。
 pub(crate) async fn sync_remote_groups_and_refresh_monitoring(
     group_ops: &tokio::sync::Mutex<()>,
     db: &im_store::SqliteStore,
@@ -145,6 +181,7 @@ pub(crate) async fn sync_remote_groups_and_refresh_monitoring(
     Ok(groups)
 }
 
+/// 先在锁外等待远程群组结果，再串行应用数据库和内存更新。
 async fn fetch_and_apply_remote_groups<F>(
     group_ops: &tokio::sync::Mutex<()>,
     db: &im_store::SqliteStore,
@@ -159,6 +196,11 @@ where
         .await
 }
 
+/// 切换指定群组的本地监控状态。
+///
+/// `group_id` 必须是可解析为 i64 的十进制字符串，`monitored` 指定目标状态。该命令只
+/// 修改本地数据库和内存监控集合，不调用远程接口。数据库错误、ID 无效或群组不存在时
+/// 返回字符串错误；数据库更新失败或未找到群组时不会修改内存集合。
 #[tauri::command]
 pub async fn toggle_monitor(
     state: State<'_, AppState>,
@@ -176,6 +218,10 @@ pub async fn toggle_monitor(
     .await
 }
 
+/// 在群组操作锁内依次更新数据库与内存监控集合。
+///
+/// 只有数据库确认目标群组存在且更新成功后才修改内存；锁保证它与刷新、重登录恢复等
+/// 群组操作按取得锁的顺序串行执行。
 pub(crate) async fn toggle_monitor_serialized(
     group_ops: &tokio::sync::Mutex<()>,
     db: &im_store::SqliteStore,
@@ -213,6 +259,7 @@ mod tests {
         toggle_monitor_serialized, GroupDto,
     };
 
+    /// 验证群组及群主的大整数 ID 在 Tauri 边界序列化为十进制字符串。
     #[test]
     fn group_dto_serializes_identifier_fields_as_decimal_strings() {
         let dto = GroupDto::from(GroupRow {
@@ -231,6 +278,7 @@ mod tests {
         assert_eq!(json["host_id"], (i64::MAX - 1).to_string());
     }
 
+    /// 阻塞模拟的远程拉取，验证等待网络结果期间不会占用群组操作锁。
     #[tokio::test]
     async fn remote_fetch_does_not_hold_group_operation_lock() {
         let store = Arc::new(im_store::SqliteStore::new(":memory:").await.unwrap());
@@ -255,6 +303,7 @@ mod tests {
         sync.await.unwrap().unwrap();
     }
 
+    /// 切换不存在的群组时，验证返回错误且内存监控集合保持不变。
     #[tokio::test]
     async fn toggle_rejects_missing_group_without_changing_memory() {
         let store = im_store::SqliteStore::new(":memory:").await.unwrap();
@@ -269,6 +318,7 @@ mod tests {
         assert!(monitoring_groups.read().await.is_empty());
     }
 
+    /// 连续应用远程快照，验证离开快照的群组暂不可用，重新出现后恢复其持久化监控选择。
     #[tokio::test]
     async fn snapshot_refresh_rebuilds_available_monitored_groups_and_restores_reappearing_group() {
         let store = im_store::SqliteStore::new(":memory:").await.unwrap();
@@ -314,6 +364,7 @@ mod tests {
         );
     }
 
+    /// 控制两个并发切换的入锁顺序，验证数据库与内存最终反映后到达的关闭操作。
     #[tokio::test]
     async fn concurrent_toggles_apply_in_mutex_arrival_order() {
         let store = Arc::new(im_store::SqliteStore::new(":memory:").await.unwrap());

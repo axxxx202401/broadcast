@@ -1,3 +1,9 @@
+//! Tauri 认证命令及登录会话切换流程。
+//!
+//! 本模块负责把验证码、校验令牌、登录和登出等 HTTP 能力暴露给前端，并在登录成功后
+//! 同步群组、发布本地认证会话，再启动后台 TCP 自动连接。认证切换使用 generation
+//! 拒绝过期流程，但远程请求、数据库写入和内存发布并不是一个跨资源的原子事务。
+
 use std::{collections::HashSet, future::Future, sync::Arc};
 
 use tauri::State;
@@ -5,13 +11,19 @@ use tauri::State;
 use crate::commands::chat::{cancel_auth_and_disconnect, publish_disconnected_status_if_current};
 use crate::state::{AppState, AuthSession};
 
+/// 完成登录发布所需的本地状态引用。
 struct LoginStateRefs<'a> {
+    /// 串行化群组数据库和监控集合的配套更新。
     group_ops: &'a tokio::sync::Mutex<()>,
+    /// 校验 generation 并协调认证会话切换。
     connection_coordinator: &'a crate::state::ConnectionCoordinator,
+    /// 当前已发布、可供连接流程读取的认证会话。
     auth_session: &'a tokio::sync::RwLock<Option<AuthSession>>,
+    /// 当前内存中的受监控群组快照。
     monitoring_groups: &'a tokio::sync::RwLock<HashSet<i64>>,
 }
 
+/// Tauri 认证命令返回给前端的结构化错误。
 #[derive(Debug, serde::Serialize)]
 #[serde(
     tag = "kind",
@@ -19,19 +31,28 @@ struct LoginStateRefs<'a> {
     rename_all_fields = "camelCase"
 )]
 pub enum AuthCommandError {
+    /// 服务端返回的业务错误，保留协议提供的字段供前端展示或分支处理。
     Business {
+        /// 服务端业务码；本层不解释其官方业务含义。
         code: i32,
+        /// 服务端业务错误消息。
         msg: String,
+        /// 可选的业务错误附加数据。
         #[serde(skip_serializing_if = "Option::is_none")]
         data: Option<serde_json::Value>,
+        /// 可选的服务端展示方式标记。
         #[serde(skip_serializing_if = "Option::is_none")]
         display: Option<i32>,
+        /// 可选的服务端展示标题。
         #[serde(skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        /// 可选的消息模板参数。
         #[serde(skip_serializing_if = "Option::is_none")]
         params: Option<Vec<String>>,
     },
+    /// 传输、解析、本地校验或状态切换等非业务错误。
     Other {
+        /// 可供前端记录或展示的错误文本。
         message: String,
     },
 }
@@ -68,6 +89,7 @@ impl From<&str> for AuthCommandError {
     }
 }
 
+/// 登录命令返回给前端的结果。
 #[derive(Debug, serde::Serialize)]
 #[serde(
     tag = "status",
@@ -75,25 +97,37 @@ impl From<&str> for AuthCommandError {
     rename_all_fields = "camelCase"
 )]
 pub enum LoginResultDto {
+    /// 认证、群组同步及会话发布均完成。
     Success {
+        /// 十进制字符串形式的用户 ID，避免跨 Tauri 边界时丢失整数精度。
         uid: String,
+        /// 本次远程快照同步后得到的本地群组列表。
         groups: Vec<crate::commands::groups::GroupDto>,
     },
+    /// 服务端要求继续完成校验，尚未发布本地认证会话。
     Challenge {
+        /// 原样保留的服务端业务码。
         code: i32,
+        /// 后续校验请求使用的令牌。
         validate_token: String,
+        /// 服务端返回的提示消息。
         message: String,
+        /// 服务端可选的待完成校验项。
         #[serde(skip_serializing_if = "Option::is_none")]
         pending: Option<Vec<im_http::openchat_user::ValidateModelVo>>,
     },
 }
 
+/// 将远程登录响应归一化为可发布会话或待继续校验两种内部结果。
 #[derive(Debug, PartialEq)]
 enum RemoteLogin {
+    /// 远程认证成功；响应缺少 uid 时允许后续通过用户详情补取。
     Success { uid: Option<i64>, token: String },
+    /// 远程认证要求完成额外校验。
     Challenge(LoginChallenge),
 }
 
+/// 从业务错误中提取的登录校验挑战。
 #[derive(Debug, PartialEq)]
 struct LoginChallenge {
     code: i32,
@@ -102,14 +136,23 @@ struct LoginChallenge {
     pending: Option<Vec<im_http::openchat_user::ValidateModelVo>>,
 }
 
+/// 兼容解析登录挑战附加数据的内部结构。
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LoginChallengeData {
     validate_token: Option<String>,
+    /// 优先读取协议字段 `validateModelVOS`，并兼容旧别名 `pending`。
     #[serde(default, rename = "validateModelVOS", alias = "pending")]
     pending: Option<Vec<im_http::openchat_user::ValidateModelVo>>,
 }
 
+/// 解释远程登录结果。
+///
+/// 仅业务码 `3114179` 在本客户端中进入挑战分支；这里不扩写该业务码的官方含义。
+/// 成功响应优先读取嵌套 `authorization` 中由 `access_token`、`accessToken` 或
+/// `token` 映射的值，缺失时再读取顶层同名兼容字段；缺失或空白 token 均视为错误。
+/// 挑战数据同时兼容 `validateModelVOS` 与 `pending`，且要求 `validateToken` 非空；
+/// 其他错误保持为 [`AuthCommandError`]。
 fn classify_remote_login(
     result: Result<im_http::openchat_user::LoginData, im_http::openchat_user::OpenChatUserError>,
 ) -> Result<RemoteLogin, AuthCommandError> {
@@ -146,6 +189,10 @@ fn classify_remote_login(
     }
 }
 
+/// 请求向手机号发送认证验证码。
+///
+/// `request` 携带 HTTP 接口所需的账号、区号及场景等参数；成功返回空值，失败返回
+/// [`AuthCommandError`]。该命令会触发远程短信发送，不修改本地认证会话。
 #[tauri::command]
 pub async fn send_sms_code(
     state: State<'_, AppState>,
@@ -159,6 +206,10 @@ pub async fn send_sms_code(
         .map_err(AuthCommandError::from)
 }
 
+/// 请求向邮箱发送认证验证码。
+///
+/// `request` 携带 HTTP 接口所需的邮箱及场景等参数；成功返回空值，失败返回
+/// [`AuthCommandError`]。该命令会触发远程邮件发送，不修改本地认证会话。
 #[tauri::command]
 pub async fn send_email_code(
     state: State<'_, AppState>,
@@ -172,6 +223,10 @@ pub async fn send_email_code(
         .map_err(AuthCommandError::from)
 }
 
+/// 根据已收集的校验信息向服务端签发校验令牌。
+///
+/// `request` 原样传给远程签发接口；返回服务端的签发结果，业务错误保留为
+/// [`AuthCommandError::Business`]。该命令会创建或推进远程校验流程，不发布本地会话。
 #[tauri::command]
 pub async fn issue_validation_token(
     state: State<'_, AppState>,
@@ -185,6 +240,11 @@ pub async fn issue_validation_token(
         .map_err(AuthCommandError::from)
 }
 
+/// 提交一组待验证项并返回服务端验证结果。
+///
+/// 命令会先按照 [`hash_verify_passwords`] 的兼容规则改写请求中的密码类验证值，再发起
+/// 远程验证，该请求可能推进服务端校验流程。验证码等非密码验证值保持不变；错误以
+/// [`AuthCommandError`] 返回。
 #[tauri::command]
 pub async fn verify_validations(
     state: State<'_, AppState>,
@@ -199,6 +259,10 @@ pub async fn verify_validations(
         .map_err(AuthCommandError::from)
 }
 
+/// 按验证类型应用与既有客户端一致的密码摘要格式。
+///
+/// `TradePassword` 使用不加盐的双 MD5；`LoginPassword` 和 `EmailPassword` 使用
+/// [`login_password_md5`]；其余类型保持原值。这里是协议兼容处理，不代表安全密码存储。
 fn hash_verify_passwords(request: &mut im_http::openchat_user::VerifyReq) {
     use im_http::openchat_user::ValidateType;
 
@@ -213,6 +277,8 @@ fn hash_verify_passwords(request: &mut im_http::openchat_user::VerifyReq) {
     }
 }
 
+/// 计算登录/邮箱密码兼容摘要：先 MD5，再对“首轮十六进制摘要 +
+/// `!@#b%^&*9`”进行第二次 MD5。
 fn login_password_md5(value: &str) -> String {
     use md5::{Digest, Md5};
 
@@ -220,6 +286,7 @@ fn login_password_md5(value: &str) -> String {
     format!("{:x}", Md5::digest(format!("{first}!@#b%^&*9").as_bytes()))
 }
 
+/// 计算交易密码兼容摘要：先 MD5，再对首轮十六进制摘要进行第二次 MD5。
 fn double_md5(value: &str) -> String {
     use md5::{Digest, Md5};
 
@@ -227,6 +294,10 @@ fn double_md5(value: &str) -> String {
     format!("{:x}", Md5::digest(first.as_bytes()))
 }
 
+/// 查询指定校验令牌尚待完成的验证项。
+///
+/// `request` 标识远程校验流程；返回服务端待验证项列表。该命令仅查询远程状态，不修改
+/// 本地认证会话或连接状态，业务错误通过 [`AuthCommandError`] 保留。
 #[tauri::command]
 pub async fn list_pending_validations(
     state: State<'_, AppState>,
@@ -240,6 +311,18 @@ pub async fn list_pending_validations(
         .map_err(AuthCommandError::from)
 }
 
+/// 登录并在本地发布可连接的认证会话。
+///
+/// `request` 先执行本地校验；随后 [`begin_auth_transition`] 取消旧连接并清理旧会话，
+/// 再调用远程登录。遇到挑战时返回 [`LoginResultDto::Challenge`]；成功响应缺少 uid
+/// 时通过用户详情接口补取。之后在锁外拉取远程群组，在 `group_ops` 下同步数据库并恢复
+/// 监控快照，最后按 generation 检查后发布会话及群组内存状态。群组同步失败不会留下
+/// 半成品会话；过期 generation 不能覆盖较新的登录状态。成功发布后后台启动 TCP
+/// 自动连接与重试，因此 HTTP 登录成功不表示 TCP 已经连接。
+///
+/// 远程登录、用户详情和群组查询都可能产生网络副作用；错误可能来自请求校验、HTTP、
+/// 群组同步、旧连接清理或并发状态切换。远程登录可能创建服务端认证状态，用户详情和
+/// 群组请求只读取远程数据。
 #[tauri::command]
 pub async fn login(
     state: State<'_, AppState>,
@@ -256,8 +339,7 @@ pub async fn login(
     )
     .await?;
 
-    // Publish nothing until remote authentication, group synchronization, and
-    // old-connection cleanup have all succeeded.
+    // 远程认证、群组同步和旧连接清理完成前，不发布新的认证会话。
     let remote_login = classify_remote_login(state.http.openchat_user.login(&request).await)?;
     let RemoteLogin::Success { uid, token } = remote_login else {
         let RemoteLogin::Challenge(challenge) = remote_login else {
@@ -283,8 +365,7 @@ pub async fn login(
     };
     let remote_groups = crate::commands::groups::fetch_remote_groups(&state, &token).await?;
 
-    // 2. Apply the fetched groups locally and restore persisted monitor
-    // selections before publishing the new authenticated session.
+    // 在发布新认证会话前写入远程群组快照，并恢复数据库中保留的监控选择。
     let groups = finish_login_after_sync(
         LoginStateRefs {
             group_ops: &state.group_ops,
@@ -299,10 +380,10 @@ pub async fn login(
     )
     .await?;
 
-    // 3. Keep HTTP login successful while TCP connects and retries in the background.
+    // HTTP 登录保持成功返回；TCP 连接及重试在后台继续。
     crate::commands::chat::start_automatic_connection(&state, generation);
 
-    // 4. Convert i64 identifiers only at the Tauri boundary.
+    // 仅在 Tauri 边界把 i64 标识符转换成十进制字符串。
     Ok(LoginResultDto::Success {
         uid: uid.to_string(),
         groups: groups
@@ -312,6 +393,11 @@ pub async fn login(
     })
 }
 
+/// 在群组操作锁内准备群组状态，并在 generation 仍有效时发布登录状态。
+///
+/// `prepare` 失败时不会发布认证会话和内存监控快照；generation 检查还会阻止过期登录
+/// 执行准备步骤或覆盖新状态。此函数串行化本地群组相关更新，但不承诺远程请求与本地
+/// 数据库之间具备事务原子性。
 async fn finish_login_after_sync<T, F>(
     state: LoginStateRefs<'_>,
     generation: u64,
@@ -345,6 +431,11 @@ where
     Ok(result)
 }
 
+/// 登出当前会话。
+///
+/// 该命令推进 generation、取消进行中的连接、断开现有 TCP 客户端，并清空认证会话、
+/// 监控群组和连接状态，随后在 generation 仍有效时发布断开事件。断开失败会作为字符串
+/// 错误返回；清理发生在本地，不调用远程登出接口。
 #[tauri::command]
 pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     let generation = clear_session_state(
@@ -365,6 +456,7 @@ pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// 清空会话、监控和连接状态，供登出流程与测试复用。
 pub(crate) async fn clear_session_state(
     connection_coordinator: &crate::state::ConnectionCoordinator,
     chat_client: &crate::state::ClientSlot,
@@ -383,6 +475,11 @@ pub(crate) async fn clear_session_state(
     .await
 }
 
+/// 开始一次认证状态切换，并返回本次切换的 generation。
+///
+/// 先取消认证相关连接并清除认证会话，再清空内存监控集合、发布断开状态，最后传播实际
+/// 断开结果。generation 用于让晚到的旧登录或旧连接结果失效；函数不承诺这些步骤对
+/// 外部观察者表现为单一原子操作。
 async fn begin_auth_transition(
     connection_coordinator: &crate::state::ConnectionCoordinator,
     chat_client: &crate::state::ClientSlot,
@@ -424,6 +521,7 @@ mod tests {
         hash_verify_passwords, AuthCommandError, LoginResultDto, LoginStateRefs, RemoteLogin,
     };
 
+    /// 验证各 ValidateType 采用兼容摘要分支，验证码等非密码值不被改写。
     #[test]
     fn verify_password_values_follow_java_pwd_util_contract() {
         use im_http::openchat_user::{PendingValidateDto, ValidateType, VerifyReq};
@@ -480,6 +578,7 @@ mod tests {
         assert_eq!(request.pending_validate_dtos[3].validate_value, "123456");
     }
 
+    /// 验证成功登录结果把最大 i64 uid 序列化为十进制字符串，避免前端精度损失。
     #[test]
     fn successful_login_serializes_uid_as_decimal_string() {
         let dto = LoginResultDto::Success {
@@ -492,6 +591,7 @@ mod tests {
         assert_eq!(value["uid"], i64::MAX.to_string());
     }
 
+    /// 验证成功响应必须含非空 token，同时允许 uid 缺失并留给用户详情回退流程。
     #[test]
     fn remote_login_success_requires_token_and_allows_uid_fallback() {
         let login = im_http::openchat_user::LoginData {
@@ -530,6 +630,7 @@ mod tests {
         ));
     }
 
+    /// 验证 Tauri 边界完整保留业务码、消息及可选展示数据。
     #[test]
     fn tauri_business_error_keeps_code_message_and_optional_data() {
         let error = AuthCommandError::from(im_http::openchat_user::OpenChatUserError::Business(
@@ -550,6 +651,7 @@ mod tests {
         assert_eq!(value["data"]["remaining"], 2);
     }
 
+    /// 验证业务码 3114179 被解析为可序列化挑战，并保留待验证项。
     #[test]
     fn business_3114179_becomes_serializable_challenge_with_pending_items() {
         let remote =
@@ -589,6 +691,7 @@ mod tests {
         assert_eq!(value["pending"][0]["validateType"], 17);
     }
 
+    /// 模拟连接尚在结束时登出，验证旧会话先失效且取消中的连接不能重新获得认证。
     #[tokio::test]
     async fn logout_transition_clears_auth_before_cancelled_connect_can_finish() {
         let coordinator = Arc::new(ConnectionCoordinator::new());
@@ -634,6 +737,7 @@ mod tests {
         assert_eq!(transition.await.unwrap().unwrap(), 1);
     }
 
+    /// 阻塞群组准备阶段，验证新会话发布前并发连接始终被拒绝。
     #[tokio::test]
     async fn new_login_keeps_connect_rejected_until_new_session_is_published() {
         let auth_session = Arc::new(tokio::sync::RwLock::new(Some(AuthSession {
@@ -705,6 +809,7 @@ mod tests {
         );
     }
 
+    /// 模拟群组同步失败，验证不会遗留认证会话或监控快照等半成品登录状态。
     #[tokio::test]
     async fn failed_group_sync_does_not_leave_partial_login_state() {
         let auth_session = Arc::new(tokio::sync::RwLock::new(Some(AuthSession {
@@ -747,6 +852,7 @@ mod tests {
         assert!(monitoring_groups.read().await.is_empty());
     }
 
+    /// 验证重新登录发布会话时会从数据库恢复受监控群组快照。
     #[tokio::test]
     async fn successful_relogin_restores_monitored_groups_from_database() {
         let store = im_store::SqliteStore::new(":memory:").await.unwrap();
@@ -813,6 +919,7 @@ mod tests {
         assert!(!*connected.read().await);
     }
 
+    /// 让旧登录晚于新登录到达，验证 generation 阻止其写库并覆盖新群组及会话快照。
     #[tokio::test]
     async fn stale_login_arriving_after_new_login_cannot_overwrite_group_snapshot() {
         let store = Arc::new(im_store::SqliteStore::new(":memory:").await.unwrap());
@@ -913,6 +1020,7 @@ mod tests {
         );
     }
 
+    /// 控制重登录恢复与切换监控的到达顺序，验证二者共享群组操作锁且最终状态一致。
     #[tokio::test]
     async fn relogin_restore_and_toggle_share_group_operation_order() {
         let store = Arc::new(im_store::SqliteStore::new(":memory:").await.unwrap());
@@ -995,6 +1103,7 @@ mod tests {
         assert_eq!(store.groups.list_all().await.unwrap()[0].monitored, 0);
     }
 
+    /// 模拟阻塞中的连接任务，验证登出辅助函数及时取消并清空会话、监控和连接状态。
     #[tokio::test]
     async fn logout_helper_clears_session_monitoring_and_connection_state() {
         let connection_coordinator = Arc::new(ConnectionCoordinator::new());
