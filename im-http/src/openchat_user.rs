@@ -232,7 +232,7 @@ integer_enum! {
         AssistVerify = 24,
         /// iToken 验证码校验。
         ITokenVerifyCode = 25,
-        /// iToken 生物特征验证码校验。
+        /// iToken 生物验证。
         ITokenBiometricVerifyCode = 26,
     }
 }
@@ -330,7 +330,8 @@ pub struct IssuedResp {
 /// `validate_value` 非空，上层认证命令会对三种密码校验值先做对应摘要。
 pub struct PendingValidateDto {
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// 账号使用手机号时可随材料提交的国家或地区代码；为 `None` 时省略。
+    /// 随本项校验材料提交的国家区号：手机流程携带实际区号，当前邮件校验流程显式
+    /// 携带 `0`；为 `None` 时省略。
     pub country_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// 与本项校验关联的可选账号；为 `None` 时省略。
@@ -425,7 +426,8 @@ pub struct LoginReq {
     /// 邮件验证码和邮件密码登录使用的地址；这两种方式要求非空。
     pub email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// 手机登录随号码提交的国家或地区代码；手机方式要求存在该值。
+    /// 随登录账号提交的国家区号：手机登录携带实际区号且本地要求存在，当前邮件登录
+    /// 流程显式携带 `0`。
     pub country_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// 可随登录请求提交的校验流程令牌；客户端不要求所有登录方式都提供。
