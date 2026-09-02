@@ -83,7 +83,10 @@ export interface SendEmailCodeRequest {
 export interface IssuedRequest {
   /** 校验场景；`5` 与 Rust `ValidateScene::Login` 的 serde 整数编码一致。 */
   validateScene: 5
-  /** 调用方指定的校验类型集合。 */
+  /**
+   * 调用方指定的校验类型集合；当前前端类型要求提供数组。
+   * Rust 后端以 `Option` 接收，wire 字段省略时按 `None` 处理，因此协议层并非必填。
+   */
   validateTypes: ValidateType[]
 }
 
@@ -95,7 +98,11 @@ export interface IssuedResponse {
   validateTypes: ValidateType[]
 }
 
-/** 服务端返回的一项待校验账号上下文；可选字段的组合由服务端流程决定。 */
+/**
+ * 服务端返回的一项待校验账号上下文；可选字段的组合由服务端流程决定。
+ * Rust 的三个 `Option` 字段未跳过序列化，无值时 wire 上为 `null`；当前 TypeScript
+ * 声明还允许省略这些字段，覆盖范围比后端实际输出更宽。
+ */
 export interface PendingValidation {
   /** 服务端随校验项返回的可选国家或地区代码。 */
   countryCode?: number | null
@@ -127,7 +134,10 @@ export interface VerifyRequest {
 export interface BusinessProcessing {
   /** 服务端业务码。 */
   businessCode: number
-  /** 服务端随业务码返回的可选说明。 */
+  /**
+   * 服务端随业务码返回的可选说明。Rust `Option<String>` 无值时会在 wire 上序列化为
+   * `null`；当前 `businessMsg?: string` 未覆盖 `null`，这是待后续单独修复的既有类型差异。
+   */
   businessMsg?: string
 }
 

@@ -30,7 +30,8 @@ export function normalizeConnectionStatus(value: unknown): ConnectionStatus {
 /**
  * 将未知拒绝值整理为可展示文本。
  * `Error` 和非空字符串直接取消息；结构化业务错误按“标题 · 业务码 · 消息 · 参数 · data JSON”
- * 跳过缺失项后拼接，`other` 错误取 `message`，无法识别时返回统一后端日志提示。
+ * 跳过缺失项后拼接，`other` 错误取 `message`。无法识别的值返回统一后端日志提示，但
+ * `kind: 'business'` 对象缺少所有可拼接字段时会直接得到空字符串，不会进入该提示。
  */
 export function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message

@@ -86,7 +86,8 @@ export const api = {
   disconnectChat: () => invoke<void>('disconnect_chat'),
   /**
    * 无参数调用 `get_connection_status`，只读取后端协调器并返回三种连接状态之一。
-   * 该命令无网络、数据库或事件副作用；接口仍可能按 Tauri `Result` 约定拒绝。
+   * 当前后端命令恒返回规范状态且无网络、数据库或事件副作用；本包装不捕获或转换
+   * `invoke` 的 Tauri transport 失败。
    */
   getConnectionStatus: () => invoke<'connected' | 'connecting' | 'disconnected'>('get_connection_status'),
   /**
