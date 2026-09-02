@@ -6,9 +6,11 @@
 //! `Content-Type` 固定为 `application/json; charset=utf-8`，但请求 body 实际是二进制
 //! 加密帧，并非 JSON。
 //!
-//! 响应帧经校验、解密与 Protobuf 解码后，以 `common_result.err_code == 200` 表示业务
-//! 成功。Java 兼容的 `GroupBase` Protobuf schema 覆盖 wire field 1–17；本模块只映射
-//! [`GroupInfo`](crate::im_biz::GroupInfo) 明确列出的生成字段，不根据字段名推测额外业务事实。
+//! 响应帧经校验后按帧标志执行可选变换：存在 `zipped` 标志时先解压，存在
+//! `encrypted` 标志时再解密，随后解码 Protobuf。`common_result` 存在时要求
+//! `err_code == 200`；缺失时当前实现继续处理响应中的群数据。Java 兼容的 `GroupBase`
+//! Protobuf schema 覆盖 wire field 1–17；本模块只映射
+//! [`GroupInfo`](crate::im_biz::GroupInfo) 明确列出的字段，不根据字段名推测额外业务事实。
 
 use super::{
     client::{build_im_biz_request_body, parse_im_biz_response},
@@ -34,9 +36,9 @@ pub struct ImBizClient {
     header_manager: HeaderManager,
 }
 
-/// 从 `GroupBase` 响应映射出的群列表条目。
+/// 从 `GroupBase` 响应映射出的手写业务视图。
 ///
-/// 该类型只暴露当前调用方需要的生成字段；不会为 Java `GroupBase` wire field 1–17
+/// 该类型只保留当前调用方需要的映射结果；不会为 Java `GroupBase` wire field 1–17
 /// 中未映射的字段补充或推断业务语义。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GroupInfo {
@@ -70,10 +72,11 @@ impl From<&im_proto::GroupBase> for GroupInfo {
 
 /// 解码群列表 Protobuf、检查业务码并映射公开模型。
 ///
-/// 输入必须是已从 im-biz 响应帧解密得到的 `GroupContactListResp` 字节。函数先执行
-/// Protobuf decode；若存在 `common_result`，仅 `err_code == 200` 视为成功；最后把
-/// `groups` 中每个 `GroupBase` 映射为 [`GroupInfo`]，其中 `host_id == 0` 映射为
-/// `None`。Protobuf 无法解码或业务码非 200 时返回对应错误。
+/// 输入必须是 im-biz 响应帧完成按标志可选解压、解密后的 `GroupContactListResp`
+/// 字节。函数先执行 Protobuf decode；若存在 `common_result`，要求
+/// `err_code == 200`，否则返回业务错误；若缺失则继续处理 `groups`。最后把每个
+/// `GroupBase` 映射为 [`GroupInfo`]，其中 `host_id == 0` 映射为 `None`。
+/// Protobuf 无法解码，或存在非 200 业务码时返回对应错误。
 fn decode_group_list_response(data: &[u8]) -> Result<Vec<GroupInfo>, AppError> {
     let response = GroupContactListResp::decode(data)
         .map_err(|error| AppError::ProtoParse(error.to_string()))?;
@@ -96,7 +99,7 @@ impl ImBizClient {
     /// `base_url` 是 `/group/groupContactList` 的服务根地址；`body_aes_key` 用于构造和
     /// 解析 `0xC1` 二进制协议帧，`header_manager` 用于生成每次请求的 `X-One`。
     ///
-    /// 此函数只初始化本地状态，不发起网络请求。AES 密钥长度或格式无效时返回错误。
+    /// 此函数只初始化本地状态，不发起网络请求。AES 密钥不是恰好 16 字节时返回错误。
     pub fn new(
         http: reqwest::Client,
         base_url: String,
@@ -118,14 +121,15 @@ impl ImBizClient {
     /// 请求携带动态生成的 `X-One`；虽然 `Content-Type` 是
     /// `application/json; charset=utf-8`，body 并不是 JSON，而是上述加密帧。
     ///
-    /// 成功响应会依次经过 HTTP 大小限制、帧解析与解密、Protobuf decode、业务码检查
-    /// 和模型映射。`common_result.err_code == 200` 才表示显式业务成功；Java 兼容的
-    /// `GroupBase` wire schema 覆盖 field 1–17，当前只映射 [`GroupInfo`] 中的字段，
-    /// 且 `host_id == 0` 映射为 `None`。
+    /// 成功 HTTP 响应会依次经过大小限制、帧解析、按标志可选变换、Protobuf decode、
+    /// 业务码检查和模型映射。可选变换在 `zipped` 时先解压，在 `encrypted` 时再解密。
+    /// `common_result` 存在时要求 `err_code == 200`；缺失时当前实现继续处理群数据。
+    /// Java 兼容的 `GroupBase` wire schema 覆盖 field 1–17，当前只映射 [`GroupInfo`]
+    /// 中的字段，且 `host_id == 0` 映射为 `None`。
     ///
     /// 此方法会发起网络请求；debug 构建还会记录请求元数据、脱敏响应和解码失败日志。
-    /// 构帧、`X-One` 生成、网络传输、响应过大、非成功 HTTP 状态、帧解密、Protobuf
-    /// 解码或非 200 业务码均会返回错误。
+    /// 构帧、`X-One` 生成、网络传输、响应过大、非成功 HTTP 状态、帧解析或可选变换、
+    /// Protobuf 解码，或 `common_result` 中的非 200 业务码均会返回错误。
     pub async fn fetch_group_list(
         &self,
         client_info: &im_proto::ClientInfo,
@@ -247,7 +251,7 @@ mod tests {
 
     #[test]
     fn group_list_rejects_protobuf_business_error() {
-        // Protobuf 可正常解码不等于业务成功：非 200 业务码必须保留服务端码和消息。
+        // common_result 存在时，非 200 业务码必须保留服务端码和消息。
         let response = GroupContactListResp {
             common_result: Some(CommonResult {
                 err_code: 4012,
@@ -270,7 +274,7 @@ mod tests {
 
     #[test]
     fn group_list_accepts_java_success_code_200() {
-        // Java 协议约定使用 200 作为 common_result 的成功业务码。
+        // common_result 存在时，Java 协议约定 200 通过业务码检查。
         let response = GroupContactListResp {
             common_result: Some(CommonResult {
                 err_code: 200,
@@ -292,20 +296,12 @@ mod tests {
 
     #[test]
     fn group_list_decodes_current_java_group_base_fields() {
-        // 手工构造 Java GroupBase wire，覆盖跨越 field 1–17 的当前兼容字段。
+        // 手工 wire 覆盖 GroupBase field 1–8、14–17，并验证 varint、长度类型及多字节 tag
+        // 能由当前 Java 兼容类型解码；不以 fixture 推断未出现字段的业务语义。
         let java_group = [
-            0x08, 0x01, // 字段 groupId = 1
-            0x10, 0x02, // 字段 hostId = 2
-            0x1a, 0x01, b'g', // 字段 name = "g"
-            0x22, 0x00, // 字段 pic = ""
-            0x28, 0x00, // 字段 bfJoinCheck = false
-            0x30, 0x01, // 字段 createTime = 1
-            0x38, 0x03, // 字段 memberCount = 3
-            0x40, 0x01, // 字段 bfJoinFriend = true
-            0x72, 0x01, b'r', // 字段 remark = "r"
-            0x78, 0x64, // 字段 maxMemberCount = 100
-            0x80, 0x01, 0x01, // 字段 bfJoinNotice = true
-            0x8a, 0x01, 0x01, b'n', // 字段 notice = "n"
+            0x08, 0x01, 0x10, 0x02, 0x1a, 0x01, b'g', 0x22, 0x00, 0x28, 0x00, 0x30, 0x01, 0x38,
+            0x03, 0x40, 0x01, 0x72, 0x01, b'r', 0x78, 0x64, 0x80, 0x01, 0x01, 0x8a, 0x01, 0x01,
+            b'n',
         ];
         let mut response = vec![0x1a, java_group.len() as u8];
         response.extend_from_slice(&java_group);
