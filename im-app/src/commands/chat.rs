@@ -51,7 +51,9 @@ const MAX_QUEUED_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
 /// 暴露给前端的群消息。
 ///
 /// 64 位标识以十进制字符串表示，避免 JavaScript 数值精度损失；二进制正文统一使用
-/// 标准 Base64。实时消息的 `stored_at` 为 `None`，历史查询结果则包含数据库写入时间。
+/// 标准 Base64。2202 实时消息由 `persist_and_emit` 成功写入 SQLite 后才发送
+/// `new_message`；事件 DTO 的 `stored_at` 为 `None`，是因为事件没有回读或携带
+/// INSERT 时生成的写入时间，不表示消息尚未落库。历史查询 DTO 会携带已存的写入时间。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MessageDto {
     /// 消息 ID 的十进制字符串。
@@ -68,7 +70,8 @@ pub struct MessageDto {
     pub send_time: i64,
     /// 消息正文的 MD5 摘要。
     pub content_md5: String,
-    /// 数据库写入时间；实时推送尚无该值。
+    /// 数据库写入时间；实时事件未回读 INSERT 生成的值，故为 `None`，但消息已成功落库。
+    /// 历史查询会返回已存的写入时间。
     pub stored_at: Option<i64>,
 }
 

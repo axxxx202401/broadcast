@@ -34,7 +34,10 @@ export interface MessageDto {
   send_time: number
   /** 消息正文的 MD5 摘要。 */
   content_md5: string
-  /** 数据库写入时间；实时推送尚未落库时为 `null`。 */
+  /**
+   * 数据库写入时间。2202 实时消息成功写入 SQLite 后才发送事件；事件没有回读或携带
+   * INSERT 时生成的值，故为 `null`，不表示消息尚未落库。历史查询会返回已存的写入时间。
+   */
   stored_at: number | null
 }
 
