@@ -1,8 +1,9 @@
 //! Tauri 认证命令及登录会话切换流程。
 //!
 //! 本模块负责把验证码、校验令牌、登录和登出等 HTTP 能力暴露给前端，并在登录成功后
-//! 同步群组、发布本地认证会话，再启动后台 TCP 自动连接。认证切换使用 generation
-//! 拒绝过期流程，但远程请求、数据库写入和内存发布并不是一个跨资源的原子事务。
+//! 同步群组、发布本地认证会话，再启动后台 TCP 自动连接。登录发布路径使用 generation
+//! 拒绝过期流程，但远程请求、数据库写入和内存发布并不是一个跨资源的原子事务；独立
+//! 群组刷新也不受认证 generation 保护。
 
 use std::{collections::HashSet, future::Future, sync::Arc};
 
@@ -13,7 +14,7 @@ use crate::state::{AppState, AuthSession};
 
 /// 完成登录发布所需的本地状态引用。
 struct LoginStateRefs<'a> {
-    /// 串行化群组数据库和监控集合的配套更新。
+    /// 串行化群组数据库和监控集合的配套更新，不提供认证代际隔离。
     group_ops: &'a tokio::sync::Mutex<()>,
     /// 校验 generation 并协调认证会话切换。
     connection_coordinator: &'a crate::state::ConnectionCoordinator,
@@ -192,7 +193,8 @@ fn classify_remote_login(
 /// 请求向手机号发送认证验证码。
 ///
 /// `request` 携带 HTTP 接口所需的账号、区号及场景等参数；成功返回空值，失败返回
-/// [`AuthCommandError`]。该命令会触发远程短信发送，不修改本地认证会话。
+/// [`AuthCommandError`]。该命令会触发远程短信发送，不修改本地认证会话；请求发出后的
+/// 网络或响应解析错误不证明短信未发送。
 #[tauri::command]
 pub async fn send_sms_code(
     state: State<'_, AppState>,
@@ -209,7 +211,8 @@ pub async fn send_sms_code(
 /// 请求向邮箱发送认证验证码。
 ///
 /// `request` 携带 HTTP 接口所需的邮箱及场景等参数；成功返回空值，失败返回
-/// [`AuthCommandError`]。该命令会触发远程邮件发送，不修改本地认证会话。
+/// [`AuthCommandError`]。该命令会触发远程邮件发送，不修改本地认证会话；请求发出后的
+/// 网络或响应解析错误不证明邮件未发送。
 #[tauri::command]
 pub async fn send_email_code(
     state: State<'_, AppState>,
@@ -226,7 +229,8 @@ pub async fn send_email_code(
 /// 根据已收集的校验信息向服务端签发校验令牌。
 ///
 /// `request` 原样传给远程签发接口；返回服务端的签发结果，业务错误保留为
-/// [`AuthCommandError::Business`]。该命令会创建或推进远程校验流程，不发布本地会话。
+/// [`AuthCommandError::Business`]。该命令会创建或推进远程校验流程，不发布本地会话；
+/// 请求发出后的网络或响应解析错误不证明服务端未签发令牌。
 #[tauri::command]
 pub async fn issue_validation_token(
     state: State<'_, AppState>,
@@ -244,7 +248,7 @@ pub async fn issue_validation_token(
 ///
 /// 命令会先按照 [`hash_verify_passwords`] 的兼容规则改写请求中的密码类验证值，再发起
 /// 远程验证，该请求可能推进服务端校验流程。验证码等非密码验证值保持不变；错误以
-/// [`AuthCommandError`] 返回。
+/// [`AuthCommandError`] 返回，但请求发出后的错误不证明服务端校验状态未改变。
 #[tauri::command]
 pub async fn verify_validations(
     state: State<'_, AppState>,
@@ -320,9 +324,10 @@ pub async fn list_pending_validations(
 /// 半成品会话；过期 generation 不能覆盖较新的登录状态。成功发布后后台启动 TCP
 /// 自动连接与重试，因此 HTTP 登录成功不表示 TCP 已经连接。
 ///
-/// 远程登录、用户详情和群组查询都可能产生网络副作用；错误可能来自请求校验、HTTP、
-/// 群组同步、旧连接清理或并发状态切换。远程登录可能创建服务端认证状态，用户详情和
-/// 群组请求只读取远程数据。
+/// 远程登录、用户详情和群组查询都会发起网络请求；错误可能来自请求校验、HTTP、群组
+/// 同步、旧连接清理或并发状态切换。远程登录可能创建服务端认证状态，而用户详情和群组
+/// 查询在本客户端中作为读取接口使用；远程登录请求发出后，即使最终返回错误，也不能
+/// 据此断定服务端没有创建认证状态。
 #[tauri::command]
 pub async fn login(
     state: State<'_, AppState>,
@@ -521,7 +526,6 @@ mod tests {
         hash_verify_passwords, AuthCommandError, LoginResultDto, LoginStateRefs, RemoteLogin,
     };
 
-    /// 验证各 ValidateType 采用兼容摘要分支，验证码等非密码值不被改写。
     #[test]
     fn verify_password_values_follow_java_pwd_util_contract() {
         use im_http::openchat_user::{PendingValidateDto, ValidateType, VerifyReq};
@@ -578,7 +582,6 @@ mod tests {
         assert_eq!(request.pending_validate_dtos[3].validate_value, "123456");
     }
 
-    /// 验证成功登录结果把最大 i64 uid 序列化为十进制字符串，避免前端精度损失。
     #[test]
     fn successful_login_serializes_uid_as_decimal_string() {
         let dto = LoginResultDto::Success {
@@ -591,7 +594,6 @@ mod tests {
         assert_eq!(value["uid"], i64::MAX.to_string());
     }
 
-    /// 验证成功响应必须含非空 token，同时允许 uid 缺失并留给用户详情回退流程。
     #[test]
     fn remote_login_success_requires_token_and_allows_uid_fallback() {
         let login = im_http::openchat_user::LoginData {
@@ -630,7 +632,6 @@ mod tests {
         ));
     }
 
-    /// 验证 Tauri 边界完整保留业务码、消息及可选展示数据。
     #[test]
     fn tauri_business_error_keeps_code_message_and_optional_data() {
         let error = AuthCommandError::from(im_http::openchat_user::OpenChatUserError::Business(
@@ -651,7 +652,6 @@ mod tests {
         assert_eq!(value["data"]["remaining"], 2);
     }
 
-    /// 验证业务码 3114179 被解析为可序列化挑战，并保留待验证项。
     #[test]
     fn business_3114179_becomes_serializable_challenge_with_pending_items() {
         let remote =
@@ -809,7 +809,6 @@ mod tests {
         );
     }
 
-    /// 模拟群组同步失败，验证不会遗留认证会话或监控快照等半成品登录状态。
     #[tokio::test]
     async fn failed_group_sync_does_not_leave_partial_login_state() {
         let auth_session = Arc::new(tokio::sync::RwLock::new(Some(AuthSession {
@@ -852,7 +851,6 @@ mod tests {
         assert!(monitoring_groups.read().await.is_empty());
     }
 
-    /// 验证重新登录发布会话时会从数据库恢复受监控群组快照。
     #[tokio::test]
     async fn successful_relogin_restores_monitored_groups_from_database() {
         let store = im_store::SqliteStore::new(":memory:").await.unwrap();
