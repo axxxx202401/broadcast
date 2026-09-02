@@ -4,6 +4,7 @@ import { nextTick, ref, watch } from 'vue'
 import type { GroupDto, MessageDto } from '../types/im'
 import { decodeMessageContent, formatMessageTime } from '../utils/message'
 
+// 父组件提供当前群组、对应消息及加载状态，面板只负责四态展示和消息格式化。
 const props = defineProps<{
   group: GroupDto | null
   messages: MessageDto[]
@@ -12,6 +13,7 @@ const props = defineProps<{
 
 const viewport = ref<HTMLElement | null>(null)
 
+// 仅在消息数量变化后等待 DOM 更新并滚到底部；内容替换但数量不变时不会触发。
 watch(
   () => props.messages.length,
   async () => {
@@ -23,6 +25,7 @@ watch(
 
 <template>
   <section class="message-panel" aria-label="消息监控">
+    <!-- 标题区随群组选择更新，并持续展示当前载入数量。 -->
     <header class="message-header">
       <div v-if="group">
         <p class="eyebrow">LIVE MESSAGE STREAM</p>
@@ -38,6 +41,7 @@ watch(
       </div>
     </header>
 
+    <!-- 内容区按优先级呈现加载中、未选择群组、已选但为空、消息列表四种状态。 -->
     <div ref="viewport" class="message-viewport" aria-live="polite">
       <div v-if="loading" class="panel-empty">
         <span class="loader-grid" aria-hidden="true"><i></i><i></i><i></i><i></i></span>

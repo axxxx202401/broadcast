@@ -18,6 +18,7 @@ const group: GroupDto = {
 }
 
 describe('GroupSidebar', () => {
+  // 可访问性交互契约：列表保留原生语义，选择与开关必须是两个非嵌套按钮并各自发出事件。
   it('uses list semantics with sibling selection and monitoring buttons', async () => {
     const wrapper = mount(GroupSidebar, {
       props: {

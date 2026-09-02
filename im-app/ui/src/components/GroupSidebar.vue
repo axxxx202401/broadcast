@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { GroupDto } from '../types/im'
 
+// 父组件提供筛选后的群组、统计与当前操作状态；侧栏不自行维护业务数据。
 defineProps<{
   groups: GroupDto[]
   total: number
@@ -10,6 +11,7 @@ defineProps<{
   pending: string | null
 }>()
 
+// 搜索采用受控值更新，其余事件把选择、监控切换和刷新意图交还父组件。
 defineEmits<{
   'update:search': [value: string]
   select: [groupId: string]
@@ -20,6 +22,7 @@ defineEmits<{
 
 <template>
   <aside class="group-sidebar" aria-label="群组监控列表">
+    <!-- 顶部区域汇总群组状态，并提供搜索和全量刷新；pending 期间禁止重复刷新。 -->
     <div class="sidebar-metrics">
       <div><span>群组总数</span><strong>{{ total }}</strong></div>
       <div><span>监控中</span><strong class="metric-live">{{ monitoredCount }}</strong></div>
@@ -41,6 +44,7 @@ defineEmits<{
       </button>
     </div>
 
+    <!-- 群组列表保持原生列表语义；查看与监控开关使用同级按钮，避免嵌套交互控件。 -->
     <div class="list-label"><span>ALL CHANNELS</span><span>{{ groups.length }}</span></div>
     <ul class="group-list" aria-label="群组">
       <li
@@ -62,6 +66,7 @@ defineEmits<{
             <small>#{{ group.group_id }} · {{ group.member_count }} 成员</small>
           </span>
         </button>
+        <!-- click.stop 阻止开关事件继续冒泡，使监控切换与群组选择保持独立。 -->
         <button
           class="monitor-switch"
           :class="{ active: group.monitored !== 0 }"

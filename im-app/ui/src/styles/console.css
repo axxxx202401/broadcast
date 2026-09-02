@@ -1,3 +1,4 @@
+/* 登录页：双栏容器、产品导览与协议步骤。 */
 .login-shell {
   display: grid;
   grid-template-columns: minmax(300px, 0.8fr) minmax(520px, 1.2fr);
@@ -72,6 +73,7 @@
   font-size: 10px;
 }
 
+/* 登录表单：认证控制台、验证步骤、挑战选项及业务反馈。 */
 .login-console {
   overflow-y: auto;
   padding: 42px 48px;
@@ -292,6 +294,7 @@
   margin-top: 18px;
 }
 
+/* 控制台框架：顶栏、连接状态、全局反馈与主工作区。 */
 .operations-shell {
   display: flex;
   flex-direction: column;
@@ -440,6 +443,7 @@
   flex: 1;
 }
 
+/* 群组侧栏：统计、搜索、列表选择与监控开关。 */
 .group-sidebar {
   display: flex;
   min-height: 0;
@@ -661,6 +665,7 @@
   font-size: 12px;
 }
 
+/* 消息区域：流标题、四态视口、消息列表与页脚。 */
 .message-panel {
   display: flex;
   min-width: 0;
@@ -812,6 +817,7 @@
   letter-spacing: 0.04em;
 }
 
+/* 动画：页面进入、连接状态、刷新与加载提示。 */
 @keyframes console-enter {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
@@ -829,6 +835,7 @@
   to { opacity: 0.18; }
 }
 
+/* 响应式布局：收窄登录页、顶栏、工作区与消息列。 */
 @media (max-width: 900px) {
   .login-shell {
     grid-template-columns: 1fr;
@@ -898,6 +905,7 @@
   }
 }
 
+/* 无障碍动态偏好：请求减少动态效果时压缩动画并停用平滑滚动。 */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

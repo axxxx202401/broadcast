@@ -4,10 +4,13 @@ import { onUnmounted } from 'vue'
 import type { useAuth } from '../composables/useAuth'
 import type { ValidateType } from '../types/im'
 
+// 认证组合式对象由父组件注入，面板只负责呈现状态并转发用户操作。
 const props = defineProps<{ auth: ReturnType<typeof useAuth> }>()
 
+// 离开登录页时销毁可能仍存活的 GT4 实例，避免其回调和 DOM 残留。
 onUnmounted(props.auth.destroyGt4)
 
+// 服务端验证类型决定字段文案；密码类验证还决定输入框的遮蔽与自动填充语义。
 const isPasswordValidation = (type?: ValidateType) =>
   type === 18 || type === 20 || type === 21
 
@@ -27,6 +30,7 @@ const validateTypeLabels: Partial<Record<ValidateType, string>> = {
 </script>
 
 <template>
+  <!-- 登录页分为产品说明和认证操作台。 -->
   <main class="login-shell">
     <section class="login-intro" aria-labelledby="product-title">
       <p class="eyebrow">OPERATIONS TERMINAL / 01</p>
@@ -49,6 +53,7 @@ const validateTypeLabels: Partial<Record<ValidateType, string>> = {
         <span class="secure-mark">LOCAL IPC</span>
       </header>
 
+      <!-- 没有二次挑战时收集主登录方式、账号及首次验证值。 -->
       <template v-if="!auth.challengePending.value.length">
         <label>
           <span>登录方式</span>
@@ -81,6 +86,7 @@ const validateTypeLabels: Partial<Record<ValidateType, string>> = {
           </label>
         </div>
 
+        <!-- 验证码登录先完成 GT4；成功后的验证码发送由认证流程继续驱动。 -->
         <section v-if="auth.isCodeMode.value" class="protocol-step auth-step" aria-labelledby="captcha-step">
           <h3 id="captcha-step"><span>01</span> GT4 与验证码</h3>
           <p
@@ -104,6 +110,7 @@ const validateTypeLabels: Partial<Record<ValidateType, string>> = {
           <p v-if="auth.gt4Error.value" class="warning-note">{{ auth.gt4Error.value }}</p>
         </section>
 
+        <!-- 主验证同时承载验证码模式和密码模式，并保留可选的 secondMac。 -->
         <section class="protocol-step auth-step" aria-labelledby="primary-verify-step">
           <h3 id="primary-verify-step"><span>02</span> 主验证</h3>
           <label>
@@ -126,6 +133,7 @@ const validateTypeLabels: Partial<Record<ValidateType, string>> = {
         </section>
       </template>
 
+      <!-- 服务端返回 pending 项后切换到挑战流程：选择验证类型，按需发送 GT4 验证码，再提交验证值重试登录。 -->
       <section
         v-else
         class="protocol-step auth-step challenge-step"
@@ -222,6 +230,7 @@ const validateTypeLabels: Partial<Record<ValidateType, string>> = {
         </button>
       </section>
 
+      <!-- 业务处理中信息与登录成败反馈分开呈现，避免把服务端通知误当作错误。 -->
       <section
         v-if="auth.businessProcessing.value.length"
         class="business-processing"
@@ -242,6 +251,7 @@ const validateTypeLabels: Partial<Record<ValidateType, string>> = {
       <p v-if="auth.error.value" class="feedback error" role="alert">{{ auth.error.value }}</p>
       <p v-if="auth.notice.value" class="feedback notice" role="status">{{ auth.notice.value }}</p>
 
+      <!-- 仅主登录分支显示最终提交按钮；挑战分支使用上方独立动作。 -->
       <button
         v-if="!auth.challengePending.value.length"
         class="button primary login-submit"

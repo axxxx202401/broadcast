@@ -1,3 +1,4 @@
+/* 设计令牌：全局色彩、字体与圆角基准。 */
 :root {
   color-scheme: dark;
   font-family: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", sans-serif;
@@ -20,6 +21,7 @@
   --radius: 3px;
 }
 
+/* 基础重置与应用画布。 */
 * {
   box-sizing: border-box;
 }
@@ -44,6 +46,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* 表单控件：继承排版并统一输入、焦点和标签规则。 */
 button,
 input,
 select {
@@ -98,6 +101,7 @@ label > span {
   text-transform: uppercase;
 }
 
+/* 按钮体系：共享基础形态及主要、次要、幽灵、危险等变体。 */
 .button {
   display: inline-flex;
   align-items: center;
@@ -159,6 +163,7 @@ label > span {
   font-size: 11px;
 }
 
+/* 通用工具类：区块眉题和仅供辅助技术读取的文本。 */
 .eyebrow {
   margin: 0 0 8px;
   color: var(--amber);
