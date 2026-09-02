@@ -21,5 +21,6 @@ pub use pb::{
     PushGroupMessage,
     LoginSessionMessage,
     GroupContactListResp,
+    GroupContactListReq,
     ErrrMessage,
 };

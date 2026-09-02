@@ -14,3 +14,4 @@ tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 prost = { workspace = true }
+flate2 = { workspace = true }
