@@ -44,7 +44,7 @@ defineEmits<{
       </button>
     </div>
 
-    <!-- 群组列表保持原生列表语义；查看与监控开关使用同级按钮，避免嵌套交互控件。 -->
+    <!-- 群组列表保持原生列表语义；选择按钮与监控开关是同级交互控件，结构上避免 nested button。 -->
     <div class="list-label"><span>ALL CHANNELS</span><span>{{ groups.length }}</span></div>
     <ul class="group-list" aria-label="群组">
       <li
@@ -66,7 +66,7 @@ defineEmits<{
             <small>#{{ group.group_id }} · {{ group.member_count }} 成员</small>
           </span>
         </button>
-        <!-- click.stop 阻止开关事件继续冒泡，使监控切换与群组选择保持独立。 -->
+        <!-- 同级按钮使两种操作相互独立；click.stop 仅阻止开关点击继续冒泡。 -->
         <button
           class="monitor-switch"
           :class="{ active: group.monitored !== 0 }"

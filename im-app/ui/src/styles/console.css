@@ -905,7 +905,7 @@
   }
 }
 
-/* 无障碍动态偏好：请求减少动态效果时压缩动画并停用平滑滚动。 */
+/* 无障碍动态偏好：压缩 CSS 动画；scroll-behavior 不保证覆盖脚本显式发起的平滑滚动。 */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

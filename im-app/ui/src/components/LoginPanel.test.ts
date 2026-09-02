@@ -50,7 +50,7 @@ function authStub(withChallenge = false) {
 }
 
 describe('LoginPanel', () => {
-  // 锁定四种主登录方式在验证码与密码分支间切换时的关键交互契约。
+  // 确认四种登录选项存在，并抽查手机验证码切换到手机密码后的字段与提示。
   it('offers four login methods without manual GT4 fields', async () => {
     const auth = authStub()
     const wrapper = mount(LoginPanel, { props: { auth: auth as never } })
@@ -91,7 +91,7 @@ describe('LoginPanel', () => {
     expect(auth.submitChallenge).toHaveBeenCalledTimes(1)
   })
 
-  // GT4 恢复场景既要允许重试，也要保留可被辅助技术感知的状态反馈。
+  // 仅模拟 ready、loading、error 等响应式状态，验证发送按钮可用及 IDLE 提示；不覆盖 GT4 实例销毁或重建。
   it('keeps retry available after a prior GT4 instance was destroyed', async () => {
     const auth = authStub()
     auth.account.value = '13800138000'
@@ -120,7 +120,7 @@ describe('LoginPanel', () => {
     expect(auth.sendChallengeCode).toHaveBeenCalledTimes(1)
   })
 
-  // 生命周期契约：组件卸载必须释放认证流程持有的 GT4 实例。
+  // 生命周期契约：组件卸载时应调用 destroyGt4 清理入口。
   it('destroys the GT4 instance when the login panel unmounts', () => {
     const auth = authStub()
     const wrapper = mount(LoginPanel, { props: { auth: auth as never } })

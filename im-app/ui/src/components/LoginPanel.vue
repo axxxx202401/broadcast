@@ -7,7 +7,7 @@ import type { ValidateType } from '../types/im'
 // 认证组合式对象由父组件注入，面板只负责呈现状态并转发用户操作。
 const props = defineProps<{ auth: ReturnType<typeof useAuth> }>()
 
-// 离开登录页时销毁可能仍存活的 GT4 实例，避免其回调和 DOM 残留。
+// 离开登录页时调用 destroyGt4 清理入口；具体实例与 DOM 清理由认证流程负责。
 onUnmounted(props.auth.destroyGt4)
 
 // 服务端验证类型决定字段文案；密码类验证还决定输入框的遮蔽与自动填充语义。

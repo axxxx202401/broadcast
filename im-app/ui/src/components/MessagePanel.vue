@@ -13,7 +13,7 @@ const props = defineProps<{
 
 const viewport = ref<HTMLElement | null>(null)
 
-// 仅在消息数量变化后等待 DOM 更新并滚到底部；内容替换但数量不变时不会触发。
+// 仅在消息数量变化后等待 DOM 更新并显式平滑滚底；数量不变时不触发，CSS 的 reduced-motion 也不保证覆盖该脚本行为。
 watch(
   () => props.messages.length,
   async () => {
