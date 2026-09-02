@@ -260,6 +260,7 @@ fn malformed_gzip_is_reported_as_protocol_error() {
 
 #[tokio::test]
 async fn invalid_frame_disconnects_shared_stream_and_prevents_send() {
+    // 无效密文应让读任务按协议错误退出，同时撤销所有发送路径共享的写端并发出断开通知。
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let mut config = AppConfig::default();
@@ -298,6 +299,7 @@ async fn invalid_frame_disconnects_shared_stream_and_prevents_send() {
 
 #[tokio::test]
 async fn active_disconnect_stops_reader_before_returning() {
+    // 主动断开必须等待读任务停止；服务端稍后写入的帧不能在 disconnect 返回后被分派。
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let mut config = AppConfig::default();
@@ -335,6 +337,7 @@ async fn active_disconnect_stops_reader_before_returning() {
 
 #[tokio::test]
 async fn duplicate_connect_returns_already_connected_error() {
+    // 活跃读任务代表连接仍被占用，重复 connect 不能静默覆盖现有读写端。
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let mut config = AppConfig::default();
@@ -359,6 +362,7 @@ async fn duplicate_connect_returns_already_connected_error() {
 
 #[tokio::test]
 async fn reconnect_waits_until_old_disconnect_notification_finishes() {
+    // 旧读任务包含断开回调的等待阶段；回调完成前仍应拒绝重连，完成后才可回收并连接。
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let mut config = AppConfig::default();
@@ -420,6 +424,7 @@ async fn reconnect_waits_until_old_disconnect_notification_finishes() {
 
 #[test]
 fn login_frame_encrypts_protobuf_before_setting_encrypted_flag() {
+    // 从线格式反向解开 X-One、gzip 与 AES，验证 1100 登录正文而非只检查帧头标志。
     let config = AppConfig::default();
 
     let frame = build_login_frame(&config, "login-token", 42).unwrap();
@@ -451,6 +456,7 @@ fn login_frame_encrypts_protobuf_before_setting_encrypted_flag() {
 
 #[tokio::test]
 async fn dropping_connected_client_closes_socket_and_aborts_reader() {
+    // Drop 走同步兜底路径；不等待异步 disconnect，也必须释放写端并让对端观察到 EOF。
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let mut config = AppConfig::default();
@@ -524,6 +530,7 @@ async fn heartbeat_waits_one_full_period_before_first_send_and_is_cancellable() 
 
 #[tokio::test]
 async fn cancellable_sender_never_holds_client_slot_while_waiting_for_writer() {
+    // 人为占住共享写锁，确认发送等待可被取消，且独立 ChatSender 不会锁住客户端槽位。
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let mut config = AppConfig::default();
