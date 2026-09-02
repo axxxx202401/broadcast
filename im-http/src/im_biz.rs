@@ -1,3 +1,15 @@
+//! im-biz 群列表协议客户端。
+//!
+//! 本模块调用 Java 兼容端点 `POST /group/groupContactList`：请求的 Protobuf
+//! `GroupContactListReq` 在 wire field 1 直接携带 `ClientInfo`，经 AES 加密后封装为
+//! 首字节为 `0xC1` 的长度帧，并通过 `X-One` 请求头发送。为兼容既有服务，请求头
+//! `Content-Type` 固定为 `application/json; charset=utf-8`，但请求 body 实际是二进制
+//! 加密帧，并非 JSON。
+//!
+//! 响应帧经校验、解密与 Protobuf 解码后，以 `common_result.err_code == 200` 表示业务
+//! 成功。Java 兼容的 `GroupBase` Protobuf schema 覆盖 wire field 1–17；本模块只映射
+//! [`GroupInfo`](crate::im_biz::GroupInfo) 明确列出的生成字段，不根据字段名推测额外业务事实。
+
 use super::{
     client::{build_im_biz_request_body, parse_im_biz_response},
     http_clients::{read_response_body_limited, MAX_HTTP_RESPONSE_SIZE},
@@ -11,6 +23,10 @@ use prost::Message;
 #[cfg(debug_assertions)]
 use std::time::Instant;
 
+/// 调用 im-biz 群列表端点的客户端。
+///
+/// 客户端持有 HTTP 连接池、请求/响应帧使用的 AES 密钥，以及生成 `X-One` 的头管理器。
+/// 构造本身不发起网络请求；实际请求由 [`Self::fetch_group_list`] 发出。
 pub struct ImBizClient {
     base_url: String,
     http: reqwest::Client,
@@ -18,12 +34,21 @@ pub struct ImBizClient {
     header_manager: HeaderManager,
 }
 
+/// 从 `GroupBase` 响应映射出的群列表条目。
+///
+/// 该类型只暴露当前调用方需要的生成字段；不会为 Java `GroupBase` wire field 1–17
+/// 中未映射的字段补充或推断业务语义。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GroupInfo {
+    /// Protobuf `GroupBase.group_id` 的原始值。
     pub group_id: i64,
+    /// Protobuf `GroupBase.name` 的原始值。
     pub name: String,
+    /// Protobuf `GroupBase.pic` 的原始值。
     pub pic: String,
+    /// Protobuf `GroupBase.host_id` 的可选表示；wire 值为 `0` 时映射为 `None`。
     pub host_id: Option<i64>,
+    /// Protobuf `GroupBase.member_count` 的原始值。
     pub member_count: i64,
 }
 
@@ -43,6 +68,12 @@ impl From<&im_proto::GroupBase> for GroupInfo {
     }
 }
 
+/// 解码群列表 Protobuf、检查业务码并映射公开模型。
+///
+/// 输入必须是已从 im-biz 响应帧解密得到的 `GroupContactListResp` 字节。函数先执行
+/// Protobuf decode；若存在 `common_result`，仅 `err_code == 200` 视为成功；最后把
+/// `groups` 中每个 `GroupBase` 映射为 [`GroupInfo`]，其中 `host_id == 0` 映射为
+/// `None`。Protobuf 无法解码或业务码非 200 时返回对应错误。
 fn decode_group_list_response(data: &[u8]) -> Result<Vec<GroupInfo>, AppError> {
     let response = GroupContactListResp::decode(data)
         .map_err(|error| AppError::ProtoParse(error.to_string()))?;
@@ -60,6 +91,12 @@ fn decode_group_list_response(data: &[u8]) -> Result<Vec<GroupInfo>, AppError> {
 }
 
 impl ImBizClient {
+    /// 创建 im-biz 客户端。
+    ///
+    /// `base_url` 是 `/group/groupContactList` 的服务根地址；`body_aes_key` 用于构造和
+    /// 解析 `0xC1` 二进制协议帧，`header_manager` 用于生成每次请求的 `X-One`。
+    ///
+    /// 此函数只初始化本地状态，不发起网络请求。AES 密钥长度或格式无效时返回错误。
     pub fn new(
         http: reqwest::Client,
         base_url: String,
@@ -74,7 +111,21 @@ impl ImBizClient {
         })
     }
 
-    /// 获取群列表
+    /// 从 `POST /group/groupContactList` 获取群列表。
+    ///
+    /// 为保持 Java 协议兼容，请求 Protobuf `GroupContactListReq` 的 wire field 1 直接
+    /// 写入 `ClientInfo`，随后使用 AES 加密并封装为首字节 `0xC1` 的二进制长度帧。
+    /// 请求携带动态生成的 `X-One`；虽然 `Content-Type` 是
+    /// `application/json; charset=utf-8`，body 并不是 JSON，而是上述加密帧。
+    ///
+    /// 成功响应会依次经过 HTTP 大小限制、帧解析与解密、Protobuf decode、业务码检查
+    /// 和模型映射。`common_result.err_code == 200` 才表示显式业务成功；Java 兼容的
+    /// `GroupBase` wire schema 覆盖 field 1–17，当前只映射 [`GroupInfo`] 中的字段，
+    /// 且 `host_id == 0` 映射为 `None`。
+    ///
+    /// 此方法会发起网络请求；debug 构建还会记录请求元数据、脱敏响应和解码失败日志。
+    /// 构帧、`X-One` 生成、网络传输、响应过大、非成功 HTTP 状态、帧解密、Protobuf
+    /// 解码或非 200 业务码均会返回错误。
     pub async fn fetch_group_list(
         &self,
         client_info: &im_proto::ClientInfo,
@@ -196,6 +247,7 @@ mod tests {
 
     #[test]
     fn group_list_rejects_protobuf_business_error() {
+        // Protobuf 可正常解码不等于业务成功：非 200 业务码必须保留服务端码和消息。
         let response = GroupContactListResp {
             common_result: Some(CommonResult {
                 err_code: 4012,
@@ -218,6 +270,7 @@ mod tests {
 
     #[test]
     fn group_list_accepts_java_success_code_200() {
+        // Java 协议约定使用 200 作为 common_result 的成功业务码。
         let response = GroupContactListResp {
             common_result: Some(CommonResult {
                 err_code: 200,
@@ -239,19 +292,20 @@ mod tests {
 
     #[test]
     fn group_list_decodes_current_java_group_base_fields() {
+        // 手工构造 Java GroupBase wire，覆盖跨越 field 1–17 的当前兼容字段。
         let java_group = [
-            0x08, 0x01, // groupId = 1
-            0x10, 0x02, // hostId = 2
-            0x1a, 0x01, b'g', // name = "g"
-            0x22, 0x00, // pic = ""
-            0x28, 0x00, // bfJoinCheck = false
-            0x30, 0x01, // createTime = 1
-            0x38, 0x03, // memberCount = 3
-            0x40, 0x01, // bfJoinFriend = true
-            0x72, 0x01, b'r', // remark = "r"
-            0x78, 0x64, // maxMemberCount = 100
-            0x80, 0x01, 0x01, // bfJoinNotice = true
-            0x8a, 0x01, 0x01, b'n', // notice = "n"
+            0x08, 0x01, // 字段 groupId = 1
+            0x10, 0x02, // 字段 hostId = 2
+            0x1a, 0x01, b'g', // 字段 name = "g"
+            0x22, 0x00, // 字段 pic = ""
+            0x28, 0x00, // 字段 bfJoinCheck = false
+            0x30, 0x01, // 字段 createTime = 1
+            0x38, 0x03, // 字段 memberCount = 3
+            0x40, 0x01, // 字段 bfJoinFriend = true
+            0x72, 0x01, b'r', // 字段 remark = "r"
+            0x78, 0x64, // 字段 maxMemberCount = 100
+            0x80, 0x01, 0x01, // 字段 bfJoinNotice = true
+            0x8a, 0x01, 0x01, b'n', // 字段 notice = "n"
         ];
         let mut response = vec![0x1a, java_group.len() as u8];
         response.extend_from_slice(&java_group);
@@ -275,6 +329,7 @@ mod tests {
 
     #[test]
     fn group_contact_request_field_one_is_direct_client_info() {
+        // 验证 field 1 直接编码 ClientInfo，与 Java wire 契约一致，不额外套消息层。
         let client_info = ClientInfo {
             token: "session-token".to_string(),
             app_ver: 680,
@@ -309,6 +364,7 @@ mod tests {
 
     #[test]
     fn invalid_body_key_returns_constructor_error() {
+        // 无效 AES 密钥应在无网络副作用的构造阶段立即返回错误。
         let header_manager =
             HeaderManager::new("secret".to_string(), "1234567890abcdef".to_string());
 
@@ -326,6 +382,7 @@ mod tests {
 
     #[tokio::test]
     async fn im_biz_request_uses_java_json_content_type() {
+        // 兼容 Java 的 JSON Content-Type 声明；请求 body 仍由客户端发送二进制加密帧。
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
