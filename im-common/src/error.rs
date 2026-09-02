@@ -30,7 +30,12 @@ pub enum AppError {
     Http(String),
     /// 服务端返回业务拒绝；保留业务错误码及说明。
     #[error("Business error {code}: {message}")]
-    Business { code: i32, message: String },
+    Business {
+        /// 服务端返回的业务错误码。
+        code: i32,
+        /// 服务端返回的业务错误说明。
+        message: String,
+    },
     /// 数据库存取或事务操作失败。
     #[error("Database error: {0}")]
     Db(String),
