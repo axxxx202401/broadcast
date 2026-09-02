@@ -14,3 +14,5 @@ serde = { workspace = true, features = ["derive"] }
 chrono = { workspace = true, features = ["serde"] }
 thiserror.workspace = true
 log.workspace = true
+block-padding = "0.3.3"
+ecb = "0.1.2"
