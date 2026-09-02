@@ -1,3 +1,18 @@
+//! 聊天连接与消息查询命令。
+//!
+//! 本模块把 Tauri 命令、认证会话、TCP 聊天客户端、连接状态机和 SQLite
+//! 消息存储串联起来。连接流程按“取得认证会话 → 申请带 generation/attempt
+//! 标识的连接许可 → TCP connect → login → 等待 1201 登录成功推送 → 安装客户端
+//! → 发布 connected → 启动心跳”推进；任一阶段失败都会按当前门禁清理资源并发布
+//! 可确认的终态。断线重连同样受 generation、attempt 和认证会话约束，旧连接不能
+//! 覆盖新会话。
+//!
+//! 入站回调只负责把帧送入有界队列。工作协程串行解码并处理 1201、2202 和 2205：
+//! 2202 中仅受监控群的消息写入数据库并尝试发送 `new_message` 事件，但所有成功
+//! 处理或无需持久化的消息都会按群汇总后发送 2102 回执。持久化失败的消息不回执；
+//! 事件发送失败只记录日志，仍视为已持久化并回执。取消采用 fail-closed 语义，
+//! 关闭接收端并丢弃剩余帧，避免陈旧连接继续写库或通知界面。
+
 use std::{
     fmt::Display,
     future::Future,
@@ -16,23 +31,42 @@ use tauri::{Emitter, State};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// TCP 建连最长等待 15 秒。
 const CHAT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// 登录请求及 1201 登录成功推送各自最长等待 15 秒。
 const CHAT_LOGIN_TIMEOUT: Duration = Duration::from_secs(15);
+/// 主动断开及连接失败清理最长等待 1 秒。
 const CHAT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(1);
+/// 心跳或 2102 回执单次发送最长等待 15 秒。
 const CHAT_SEND_TIMEOUT: Duration = Duration::from_secs(15);
+/// 心跳间隔为 30 秒，短于服务端 60 秒超时窗口。
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+/// 入站帧队列最多容纳 8 项，满载时回调等待以形成背压。
 const MESSAGE_QUEUE_CAPACITY: usize = 8;
+/// 单个已解码入站帧最大为 8 MiB，超限帧令回调返回错误。
 const MAX_QUEUED_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
 
+/// 暴露给前端的群消息。
+///
+/// 64 位标识以十进制字符串表示，避免 JavaScript 数值精度损失；二进制正文统一使用
+/// 标准 Base64。实时消息的 `stored_at` 为 `None`，历史查询结果则包含数据库写入时间。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MessageDto {
+    /// 消息 ID 的十进制字符串。
     pub msg_id: String,
+    /// 群 ID 的十进制字符串。
     pub group_id: String,
+    /// 发送者用户 ID 的十进制字符串。
     pub send_uid: String,
+    /// 协议定义的消息类型。
     pub msg_type: i32,
+    /// 标准 Base64 编码的原始消息正文。
     pub content_b64: String,
+    /// 服务端记录的发送时间。
     pub send_time: i64,
+    /// 消息正文的 MD5 摘要。
     pub content_md5: String,
+    /// 数据库写入时间；实时推送尚无该值。
     pub stored_at: Option<i64>,
 }
 
@@ -75,6 +109,7 @@ fn message_dto_from_row(row: im_store::message::MessageRow) -> MessageDto {
     }
 }
 
+/// 一次连接及其后台任务所需的共享应用资源快照。
 #[derive(Clone)]
 struct ConnectionContext {
     config: Arc<tokio::sync::RwLock<im_common::config::AppConfig>>,
@@ -104,6 +139,12 @@ impl ConnectionContext {
     }
 }
 
+/// 保证未正常收尾的连接尝试最终撤销的 RAII 守卫。
+///
+/// 守卫只有在成功安装或显式失败处理后才会解除。若命令 future 被取消或提前退出，
+/// `Drop` 会派生异步清理任务；清理仍经 generation/attempt 门禁，只撤销当前尝试，
+/// 并尝试断开其拥有的客户端、重标认证会话及发布 disconnected。异步清理不保证在
+/// `drop` 返回前完成，断开超时也只记录警告。
 struct ConnectionAttemptGuard {
     armed: bool,
     generation: u64,
@@ -215,11 +256,16 @@ impl Drop for ConnectionAttemptGuard {
     }
 }
 
+/// 从网络回调转交给串行工作协程的已解码帧。
 struct IncomingFrame {
     message_id: u16,
     content: Vec<u8>,
 }
 
+/// 校验帧大小后送入有界队列。
+///
+/// 队列已满时等待容量而不丢帧；等待期间若连接取消，或 receiver 已关闭，则返回
+/// TCP 帧错误。正文超出 8 MiB 时不会进入队列。
 async fn enqueue_incoming_frame(
     sender: &mpsc::Sender<IncomingFrame>,
     frame: IncomingFrame,
@@ -249,9 +295,13 @@ async fn enqueue_incoming_frame(
 }
 
 #[async_trait::async_trait]
+/// 将协议分派与应用副作用隔离，便于精确验证处理顺序。
 trait MessageEffects: Send + Sync {
+    /// 查询该群在处理当前消息时是否仍处于监控集合。
     async fn is_monitored(&self, group_id: i64) -> bool;
+    /// 先写入 SQLite，再尝试发送 `new_message`；仅写库失败时返回 `false`。
     async fn persist_and_emit(&self, message: im_proto::GroupMessage) -> bool;
+    /// 按群发送包含完整消息 ID 列表的 2102 接收回执。
     async fn acknowledge_group_messages(
         &self,
         group_id: i64,
@@ -259,6 +309,7 @@ trait MessageEffects: Send + Sync {
     ) -> Result<(), im_common::error::AppError>;
 }
 
+/// 使用真实应用状态执行监控查询、持久化、事件和回执副作用。
 struct ConnectionMessageEffects {
     context: ConnectionContext,
     sender: Arc<tokio::sync::OnceCell<im_chat::ChatSender>>,
@@ -313,6 +364,7 @@ impl MessageEffects for ConnectionMessageEffects {
     }
 }
 
+/// 已完成 connect、login 并收到 1201，但尚待状态机安装的连接资源。
 struct EstablishedConnection {
     client: im_chat::ChatClient,
     installed: Arc<AtomicBool>,
@@ -322,11 +374,23 @@ struct EstablishedConnection {
 }
 
 #[tauri::command]
+/// 建立聊天连接并在成功后启动心跳。
+///
+/// `state` 提供当前认证会话、连接协调器、客户端槽位、数据库和事件句柄。命令依次
+/// 完成连接阶段并等待 1201；成功返回 `Ok(())`。未登录、重复连接、阶段超时、取消、
+/// 协议确认失败或安装门禁失效时返回字符串错误。过程中会更新 `connected` 并发送
+/// `connection_status`；失败路径尝试取消工作协程、断开本次拥有的客户端和发布
+/// `disconnected`，但网络断开受超时约束，事件发送失败仅记日志。
 pub async fn connect_chat(state: State<'_, AppState>) -> Result<(), String> {
     connect_chat_inner(&state).await
 }
 
 #[tauri::command]
+/// 返回协调器当前连接状态。
+///
+/// `state` 只用于读取连接阶段；`Connected` 返回 `"connected"`，
+/// `Connecting`/`Reconnecting` 返回 `"connecting"`，其余返回 `"disconnected"`。
+/// 本命令无网络、数据库或广播副作用；当前实现保留 `Result` 以适配 Tauri 命令接口。
 pub async fn get_connection_status(state: State<'_, AppState>) -> Result<String, String> {
     let status = match state.connection_coordinator.phase().await {
         crate::state::ConnectionPhase::Connected => "connected",
@@ -338,6 +402,12 @@ pub async fn get_connection_status(state: State<'_, AppState>) -> Result<String,
     Ok(status.to_string())
 }
 
+/// 执行连接命令的完整受门禁编排。
+///
+/// 先验证认证会话并申请许可，再发布 connecting，链接本代取消信号与应用 shutdown，
+/// 建连、登录并等待 1201。成功安装客户端后复核断线标志和所有权，发布 connected
+/// 并启动心跳；过期、安装失败或中途断线则取消连接任务并清理本次资源。守卫覆盖命令
+/// future 被外部丢弃的路径，避免状态永久停留在 connecting。
 async fn connect_chat_inner(state: &AppState) -> Result<(), String> {
     let auth_session = authenticated_session_for_connect(&state.auth_session).await?;
     let permit = begin_connection_attempt(
@@ -485,6 +555,10 @@ async fn connect_chat_inner(state: &AppState) -> Result<(), String> {
     }
 }
 
+/// 为指定认证代启动后台自动连接。
+///
+/// 仅在同一 generation 的认证会话仍存在且应用未 shutdown 时重试；成功、
+/// `AlreadyConnected` 或 `Connecting` 立即结束，其他错误按指数退避继续。
 pub(crate) fn start_automatic_connection(state: &AppState, generation: u64) {
     let state = state.clone();
     let auth_session = state.auth_session.clone();
@@ -505,6 +579,11 @@ pub(crate) fn start_automatic_connection(state: &AppState, generation: u64) {
     });
 }
 
+/// 执行可替换连接动作与休眠器的自动连接重试循环。
+///
+/// 每轮调用前复核认证 generation 和 shutdown；普通错误后按指数退避，休眠阶段也
+/// 响应 shutdown。`AlreadyConnected` 与 `Connecting` 表示已有流程接管，因此终止
+/// 当前循环而不是制造第二个连接尝试。
 async fn retry_automatic_connection<Connect, ConnectFuture, Sleep, SleepFuture>(
     generation: u64,
     auth_session: Arc<tokio::sync::RwLock<Option<crate::state::AuthSession>>>,
@@ -549,6 +628,7 @@ async fn retry_automatic_connection<Connect, ConnectFuture, Sleep, SleepFuture>(
     }
 }
 
+/// 读取连接所需的认证会话；不存在时返回 `Not logged in`。
 pub(crate) async fn authenticated_session_for_connect(
     auth_session: &tokio::sync::RwLock<Option<crate::state::AuthSession>>,
 ) -> Result<crate::state::AuthSession, String> {
@@ -559,6 +639,7 @@ pub(crate) async fn authenticated_session_for_connect(
         .ok_or_else(|| "Not logged in".to_string())
 }
 
+/// 将当前连接代的取消信号与应用 shutdown 合并为一个单向令牌。
 fn linked_cancellation(
     generation_cancellation: CancellationToken,
     shutdown: CancellationToken,
@@ -575,6 +656,13 @@ fn linked_cancellation(
     linked
 }
 
+/// 建立一个尚未安装到全局槽位的聊天连接。
+///
+/// 先创建容量为 8 的 mpsc 队列和串行消息 worker，再安装入站 handler 与断线回调。
+/// 网络阶段依次执行 connect、取得回执 sender、login，并等待 worker 解码有效 1201。
+/// 每阶段受取消和超时控制。断线回调先标记 loss 并取消本连接；仅客户端已经安装时
+/// 才进入重连处理。失败时取消 worker、尝试断开本地客户端，并最多等待 1 秒回收
+/// worker；这里不承诺清理原子完成或底层连接立即关闭。
 async fn establish_connection(
     context: ConnectionContext,
     auth_session: crate::state::AuthSession,
@@ -713,6 +801,7 @@ async fn establish_connection(
     })
 }
 
+/// 驱动当前连接的串行消息处理循环。
 async fn run_message_worker(
     receiver: mpsc::Receiver<IncomingFrame>,
     effects: Arc<dyn MessageEffects>,
@@ -722,6 +811,14 @@ async fn run_message_worker(
     run_message_worker_with_effects(receiver, effects, cancellation, login_sender).await;
 }
 
+/// 按入队顺序处理聊天推送及其副作用。
+///
+/// 1201 必须能解码为 `PushLoginSuccessMessage` 才完成登录 oneshot；解码失败会取消
+/// 连接并停止 worker。2202 解码失败只丢弃该帧并继续；成功后逐条读取最新监控状态，
+/// 受监控消息按“数据库 insert → 尝试 emit”处理，写库失败的不进入回执，未监控消息
+/// 不落库但仍回执。之后按群 ID 有序发送覆盖全部可处理消息的 2102；任一回执失败会
+/// 取消连接并停止后续处理。2205 当前仅记录预留日志。取消分支优先，退出时关闭
+/// receiver 并丢弃排队帧，防止陈旧连接产生写库或事件副作用。
 async fn run_message_worker_with_effects(
     mut receiver: mpsc::Receiver<IncomingFrame>,
     effects: Arc<dyn MessageEffects>,
@@ -809,6 +906,7 @@ async fn run_message_worker_with_effects(
     receiver.close();
 }
 
+/// 启动 30 秒周期心跳，并在发送失败时进入受门禁的断线处理。
 fn start_heartbeat(
     context: ConnectionContext,
     auth_session: crate::state::AuthSession,
@@ -851,6 +949,10 @@ fn start_heartbeat(
     });
 }
 
+/// 将当前连接切换为 reconnecting、释放其客户端并在释放后启动重连。
+///
+/// generation/attempt 不再匹配时直接忽略；返回仅表示清理和重连任务已安排，不表示
+/// 客户端已经立即断开或重连已经完成。
 fn handle_connection_loss(
     context: ConnectionContext,
     auth_session: crate::state::AuthSession,
@@ -899,6 +1001,7 @@ fn handle_connection_loss(
     })
 }
 
+/// 仅在槽位客户端属于指定 generation/attempt 时将其取出。
 async fn take_installed_client_if_owned(
     client_slot: &crate::state::ClientSlot,
     owner: crate::state::ConnectionAttemptKey,
@@ -910,6 +1013,10 @@ async fn take_installed_client_if_owned(
     is_owned.then(|| slot.take().expect("owned client checked above").client)
 }
 
+/// 按指数退避重建连接，并仅在原 generation/attempt 仍有效时安装。
+///
+/// 安装后再次检查连接是否已丢失，再按当前所有权取得 sender、发布 connected 并
+/// 恢复心跳；陈旧结果会被取消并尝试断开，不能覆盖较新的会话或连接。
 async fn run_reconnect_loop(
     context: ConnectionContext,
     auth_session: crate::state::AuthSession,
@@ -1007,6 +1114,7 @@ async fn run_reconnect_loop(
     }
 }
 
+/// 仅从指定 generation/attempt 所拥有的客户端取得发送句柄。
 async fn chat_sender_if_owned(
     client_slot: &crate::state::ClientSlot,
     owner: crate::state::ConnectionAttemptKey,
@@ -1017,6 +1125,9 @@ async fn chat_sender_if_owned(
         .and_then(|installed| installed.client.sender())
 }
 
+/// 在客户端槽位为空时申请连接许可。
+///
+/// 已安装客户端返回 `AlreadyConnected`；协调器已有连接流程返回 `Connecting`。
 pub(crate) async fn begin_connection_attempt(
     coordinator: &crate::state::ConnectionCoordinator,
     client_slot: &crate::state::ClientSlot,
@@ -1037,6 +1148,7 @@ pub(crate) async fn begin_connection_attempt(
         })
 }
 
+/// 尝试优雅断开局部客户端，1 秒超时后强制中止其资源。
 async fn disconnect_local_client(client: &mut im_chat::ChatClient) {
     if tokio::time::timeout(CHAT_DISCONNECT_TIMEOUT, client.disconnect())
         .await
@@ -1046,6 +1158,10 @@ async fn disconnect_local_client(client: &mut im_chat::ChatClient) {
     }
 }
 
+/// 在显式取消与超时之间竞速执行操作。
+///
+/// `tokio::select!` 对取消分支使用偏置，因此已取消时返回取消错误；超时或底层错误
+/// 转成带操作名的字符串。本函数只停止等待并丢弃 future，不保证外部资源立即释放。
 async fn run_cancellable_with_timeout<T, E, F>(
     operation_name: &str,
     timeout: Duration,
@@ -1067,6 +1183,9 @@ where
     }
 }
 
+/// 先更新兼容布尔状态，再尽力广播对应字符串状态。
+///
+/// 广播失败只记录警告，已写入的状态不会回滚。
 async fn mark_connection_status_and_broadcast<F, E>(
     connected: &tokio::sync::RwLock<bool>,
     value: bool,
@@ -1082,6 +1201,7 @@ async fn mark_connection_status_and_broadcast<F, E>(
     }
 }
 
+/// 将兼容布尔状态设为断开并尝试广播；广播失败不回滚状态。
 pub(crate) async fn mark_disconnected_and_broadcast<F, E>(
     connected: &tokio::sync::RwLock<bool>,
     broadcast: F,
@@ -1092,6 +1212,7 @@ pub(crate) async fn mark_disconnected_and_broadcast<F, E>(
     mark_connection_status_and_broadcast(connected, false, "disconnected", broadcast).await;
 }
 
+/// 将兼容布尔状态设为已连接并尝试广播；广播失败不回滚状态。
 pub(crate) async fn mark_connected_and_broadcast<F, E>(
     connected: &tokio::sync::RwLock<bool>,
     broadcast: F,
@@ -1102,6 +1223,7 @@ pub(crate) async fn mark_connected_and_broadcast<F, E>(
     mark_connection_status_and_broadcast(connected, true, "connected", broadcast).await;
 }
 
+/// 将兼容布尔状态设为未连接并尝试广播 connecting。
 pub(crate) async fn mark_connecting_and_broadcast<F, E>(
     connected: &tokio::sync::RwLock<bool>,
     broadcast: F,
@@ -1146,6 +1268,7 @@ async fn publish_connecting_status_if_current(
         .await
 }
 
+/// 仅在 generation 仍为当前值时发布 disconnected。
 pub(crate) async fn publish_disconnected_status_if_current(
     coordinator: &crate::state::ConnectionCoordinator,
     generation: u64,
@@ -1212,6 +1335,7 @@ async fn publish_connected_status_if_current(
 }
 
 #[cfg(test)]
+/// 测试入口：推进连接代并在默认时限内断开旧客户端。
 pub(crate) async fn cancel_connection_and_disconnect(
     coordinator: &crate::state::ConnectionCoordinator,
     client_slot: &crate::state::ClientSlot,
@@ -1220,6 +1344,9 @@ pub(crate) async fn cancel_connection_and_disconnect(
         .await
 }
 
+/// 推进 generation、清除认证并尝试断开原连接。
+///
+/// 返回的新 generation 即使断开超时也已经生效；断开结果保存在返回值中。
 pub(crate) async fn cancel_auth_and_disconnect(
     coordinator: &crate::state::ConnectionCoordinator,
     client_slot: &crate::state::ClientSlot,
@@ -1241,8 +1368,11 @@ pub(crate) async fn cancel_auth_and_disconnect(
     })
 }
 
+/// 取消连接或认证后的代际推进与网络断开结果。
 pub(crate) struct ConnectionResetOutcome {
+    /// 推进后的当前 generation。
     pub generation: u64,
+    /// 是否实际取得并断开客户端，或断开过程中产生的错误。
     pub disconnect_result: Result<bool, String>,
 }
 
@@ -1263,6 +1393,7 @@ async fn cancel_connection_and_disconnect_with_timeout(
 }
 
 #[cfg(test)]
+/// 测试入口：主动断开并把保留的认证会话重标到新 generation。
 pub(crate) async fn disconnect_current_session(
     coordinator: &crate::state::ConnectionCoordinator,
     client_slot: &crate::state::ClientSlot,
@@ -1293,6 +1424,10 @@ async fn disconnect_current_session_with_timeout(
     Ok(reset.generation)
 }
 
+/// 取消当前连接、重标会话并发布 disconnected，最后返回网络断开结果。
+///
+/// 因状态发布早于检查 `disconnect_result`，即使断开超时，调用方也会先观察到
+/// disconnected；这不承诺底层网络资源已经立即完成关闭。
 async fn disconnect_current_session_and_publish_with_timeout<F, E>(
     coordinator: &crate::state::ConnectionCoordinator,
     client_slot: &crate::state::ClientSlot,
@@ -1321,6 +1456,10 @@ where
     Ok(())
 }
 
+/// 在总时限内取得槽位并断开指定所有者的客户端。
+///
+/// 槽位等待也计入超时；客户端在调用 `disconnect` 前已从槽位移除，因此超时返回
+/// 错误时不会重新放回，但也不承诺底层异步断开已完成。
 async fn disconnect_owned_chat_client_with_timeout(
     client_slot: &crate::state::ClientSlot,
     owner: crate::state::ConnectionAttemptKey,
@@ -1346,6 +1485,13 @@ async fn disconnect_owned_chat_client_with_timeout(
 }
 
 #[tauri::command]
+/// 取消当前连接代并发布断开状态。
+///
+/// `state` 提供协调器、客户端槽位、认证会话和事件句柄。命令推进 generation，
+/// 重标仍有效的认证会话，尝试在 1 秒内断开所拥有的客户端，并发送
+/// `connection_status = "disconnected"`。成功返回 `Ok(())`；协调失败或断开超时
+/// 返回字符串错误。状态发布发生在返回断开错误之前，广播失败仅记录日志；超时不
+/// 表示底层资源已同步完成优雅断开。
 pub async fn disconnect_chat(state: State<'_, AppState>) -> Result<(), String> {
     disconnect_current_session_and_publish_with_timeout(
         state.connection_coordinator.as_ref(),
@@ -1359,6 +1505,12 @@ pub async fn disconnect_chat(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+/// 分页查询指定群的已存储消息。
+///
+/// `state` 用于访问 SQLite；`group_id` 必须是可解析的 64 位十进制整数，`limit`
+/// 范围为 1..=200，`offset` 最大为 1_000_000 且二者须可转换为 SQLite 整数。
+/// 成功返回按存储层顺序映射的 [`MessageDto`]；参数非法或数据库查询失败时返回
+/// 字符串错误。本命令不改变连接或数据库内容，也不发送前端事件。
 pub async fn get_messages(
     state: State<'_, AppState>,
     group_id: String,
@@ -1425,6 +1577,7 @@ mod tests {
         InstalledClient::new(crate::state::ConnectionAttemptKey::new(0, 1), client)
     }
 
+    // 分页边界：拒绝零值、超限与整数溢出，同时接受最大合法 limit/offset。
     #[test]
     fn message_page_rejects_zero_excessive_and_overflowing_values() {
         assert!(validate_message_page(0, 0).is_err());
@@ -1439,6 +1592,7 @@ mod tests {
         );
     }
 
+    // 自动连接：瞬时失败后保留同代认证会话并重试，第二次成功即停止。
     #[tokio::test]
     async fn automatic_connection_retries_initial_failure_without_clearing_login() {
         let auth_session = Arc::new(tokio::sync::RwLock::new(Some(AuthSession {
@@ -1472,6 +1626,7 @@ mod tests {
         assert_eq!(auth_session.read().await.as_ref().unwrap().generation, 7);
     }
 
+    // 初次连接失败：协调器回到 Idle，并只发布权威的 disconnected 终态。
     #[tokio::test]
     async fn initial_connection_failure_publishes_authoritative_disconnected_terminal_state() {
         let coordinator = ConnectionCoordinator::new();
@@ -1500,6 +1655,7 @@ mod tests {
         );
     }
 
+    // 队列上限：已解码正文超过 8 MiB 时在入队前明确拒绝。
     #[tokio::test]
     async fn bounded_message_queue_rejects_oversize() {
         let (sender, _receiver) = tokio::sync::mpsc::channel(MESSAGE_QUEUE_CAPACITY);
@@ -1517,6 +1673,7 @@ mod tests {
         assert!(oversized.to_string().contains("exceeds queue limit"));
     }
 
+    // 2102 兼容性：回执字段及 wire 编码必须与 Java 服务端契约一致。
     #[test]
     fn group_delivery_receipt_matches_java_proto_contract() {
         let receipt = im_proto::ReceiveGroupMessage {
@@ -1527,11 +1684,13 @@ mod tests {
         assert_eq!(receipt.encode_to_vec(), vec![10, 2, 70, 71, 16, 7]);
     }
 
+    // 心跳配置：30 秒周期必须短于服务端 60 秒失活窗口。
     #[test]
     fn heartbeat_interval_is_below_java_server_timeout() {
         assert!(HEARTBEAT_INTERVAL < std::time::Duration::from_secs(60));
     }
 
+    // 背压语义：队列满时发送者等待，释放容量后两帧仍保持顺序且不丢失。
     #[tokio::test]
     async fn bounded_message_queue_waits_for_capacity_without_message_loss() {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
@@ -1568,6 +1727,7 @@ mod tests {
         assert_eq!(receiver.recv().await.unwrap().message_id, 3204);
     }
 
+    // RAII 清理：连接命令被中止时守卫取消 worker、推进代际并恢复空闲状态。
     #[tokio::test]
     async fn dropping_connect_attempt_guard_clears_connecting_and_cancels_workers() {
         let coordinator = Arc::new(ConnectionCoordinator::new());
@@ -1625,6 +1785,7 @@ mod tests {
         assert_eq!(auth_session.read().await.as_ref().unwrap().generation, 1);
     }
 
+    // attempt 门禁：旧守卫延迟析构不能取消同一 generation 内的新尝试。
     #[tokio::test]
     async fn stale_attempt_guard_drop_cannot_cancel_new_attempt_in_same_generation() {
         let coordinator = Arc::new(ConnectionCoordinator::new());
@@ -1662,6 +1823,7 @@ mod tests {
             .await;
     }
 
+    // generation 门禁：旧清理等待期间安装的新代客户端不能被旧守卫取走。
     #[tokio::test]
     async fn old_guard_waiting_for_finish_cannot_take_new_generation_client() {
         let coordinator = Arc::new(ConnectionCoordinator::new());
@@ -1786,6 +1948,7 @@ mod tests {
         }
     }
 
+    // 监控快照：远端刷新移除群后，worker 不再持久化该群消息但仍发送回执。
     #[tokio::test]
     async fn snapshot_refresh_removes_unavailable_group_before_worker_checks_monitoring() {
         let store = im_store::SqliteStore::new(":memory:").await.unwrap();
@@ -1846,6 +2009,7 @@ mod tests {
         assert_eq!(*effects.acknowledged.lock().await, [(7, vec![70])]);
     }
 
+    // 协议主路径：有效 1201 完成登录；2202 仅持久化监控群，并为两群全量回执。
     #[tokio::test]
     async fn message_worker_accepts_valid_1201_and_only_processes_monitored_2202() {
         let effects = Arc::new(FakeMessageEffects {
@@ -1924,6 +2088,7 @@ mod tests {
         );
     }
 
+    // 1201 合法最小值：零 login_time 的默认消息仍是有效登录确认。
     #[tokio::test]
     async fn message_worker_accepts_zero_login_time_1201() {
         let effects = Arc::new(FakeMessageEffects::default());
@@ -1952,6 +2117,7 @@ mod tests {
         assert!(!observed_cancellation.is_cancelled());
     }
 
+    // 1201 失败关闭：畸形字节及错误消息类型均不触发 oneshot，并取消连接。
     #[tokio::test]
     async fn message_worker_rejects_malformed_or_login_session_payload_1201() {
         for payload in [
@@ -1991,6 +2157,7 @@ mod tests {
         }
     }
 
+    // Wire 类型防线：LoginSession 字段一无法误解码成 PushLoginSuccess。
     #[test]
     fn login_session_field_one_has_incompatible_wire_type_for_push_login_success() {
         let payload = im_proto::LoginSessionMessage {
@@ -2005,6 +2172,7 @@ mod tests {
         assert!(im_proto::PushLoginSuccessMessage::decode(payload.as_slice()).is_err());
     }
 
+    // fail-closed：取消先于收帧生效时，排队的 2202 不产生持久化副作用。
     #[tokio::test]
     async fn cancelled_message_worker_discards_queued_frames() {
         let effects = Arc::new(FakeMessageEffects {
@@ -2038,6 +2206,7 @@ mod tests {
         assert!(effects.persisted.lock().await.is_empty());
     }
 
+    // shutdown 联动：应用关闭令 generation 链接令牌及时取消后台任务。
     #[tokio::test]
     async fn app_shutdown_cancels_generation_linked_tasks() {
         let generation = tokio_util::sync::CancellationToken::new();
@@ -2051,6 +2220,7 @@ mod tests {
             .expect("shutdown must cancel connection tasks promptly");
     }
 
+    // 状态广播降级：listener 失败不阻止兼容布尔值切换为 disconnected。
     #[tokio::test]
     async fn disconnected_status_ignores_broadcast_failure() {
         let connected = tokio::sync::RwLock::new(true);
@@ -2066,6 +2236,7 @@ mod tests {
         assert_eq!(observed.lock().unwrap().as_deref(), Some("disconnected"));
     }
 
+    // 状态同步：connected 同时更新兼容布尔值并向观察者广播。
     #[tokio::test]
     async fn connected_status_sets_state_and_broadcasts() {
         let connected = tokio::sync::RwLock::new(false);
@@ -2081,6 +2252,7 @@ mod tests {
         assert_eq!(observed.lock().unwrap().as_deref(), Some("connected"));
     }
 
+    // 重复连接：已安装客户端与进行中尝试分别返回稳定的前端错误码。
     #[tokio::test]
     async fn duplicate_connect_is_rejected_before_starting_operation() {
         let coordinator = ConnectionCoordinator::new();
@@ -2106,6 +2278,7 @@ mod tests {
             .await;
     }
 
+    // 超时诊断：阻塞 connect 到期后返回包含操作名和时长的错误。
     #[tokio::test]
     async fn connection_timeout_returns_clear_error() {
         let cancellation = tokio_util::sync::CancellationToken::new();
@@ -2122,6 +2295,7 @@ mod tests {
         assert_eq!(error, "Chat connect timed out after 10ms");
     }
 
+    // 取消优先级：令牌已取消时不等待较长 login 超时。
     #[tokio::test]
     async fn connection_wait_prefers_explicit_cancellation() {
         let cancellation = tokio_util::sync::CancellationToken::new();
@@ -2139,6 +2313,7 @@ mod tests {
         assert_eq!(error, "Chat login cancelled");
     }
 
+    // 断开超时：客户端先移出槽位并推进 generation，随后报告超时且释放套接字。
     #[tokio::test]
     async fn disconnect_timeout_returns_error_and_force_aborts_resources() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2202,6 +2377,7 @@ mod tests {
         );
     }
 
+    // 超时范围：等待客户端槽位锁也计入 disconnect 的总时限。
     #[tokio::test]
     async fn disconnect_timeout_includes_waiting_for_client_slot() {
         let slot = Arc::new(tokio::sync::Mutex::new(Some(installed_client(
@@ -2230,6 +2406,7 @@ mod tests {
         );
     }
 
+    // 终态顺序：即使网络断开超时，也先发布 disconnected 再向调用方返回错误。
     #[tokio::test]
     async fn disconnect_timeout_publishes_disconnected_before_returning_error() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2289,6 +2466,7 @@ mod tests {
         server.abort();
     }
 
+    // 主动取消：被阻塞的连接尝试及时收到取消，且无客户端时返回未执行断开。
     #[tokio::test]
     async fn blocked_connection_is_cancelled_promptly() {
         let coordinator = Arc::new(ConnectionCoordinator::new());
@@ -2318,6 +2496,7 @@ mod tests {
         worker.await.unwrap();
     }
 
+    // 陈旧结果：generation 推进后，旧连接完成也不能安装进全局槽位。
     #[tokio::test]
     async fn stale_connection_result_cannot_install_after_generation_changes() {
         let coordinator = Arc::new(ConnectionCoordinator::new());
@@ -2360,6 +2539,7 @@ mod tests {
         assert!(slot.lock().await.is_none());
     }
 
+    // 会话延续：主动断开重标认证 generation，使后续手动重连仍可申请许可。
     #[tokio::test]
     async fn disconnect_retags_session_for_a_later_reconnect() {
         let coordinator = ConnectionCoordinator::new();
@@ -2381,6 +2561,7 @@ mod tests {
             .await;
     }
 
+    // 优雅断开：helper 取走所属客户端并等待 disconnect callback 完成。
     #[tokio::test]
     async fn disconnect_helper_takes_client_and_waits_for_shutdown() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2429,6 +2610,7 @@ mod tests {
         );
     }
 
+    // Base64 契约：实时和历史 DTO 对二进制正文编码一致，数据库保留原始 protobuf。
     #[test]
     fn realtime_and_stored_message_dtos_share_base64_content_contract() {
         let message = im_proto::GroupMessage {
@@ -2464,6 +2646,7 @@ mod tests {
             .is_none());
     }
 
+    // 大整数契约：全部 i64 标识序列化为十进制字符串，避免前端精度损失。
     #[test]
     fn message_dto_serializes_all_i64_identifiers_as_decimal_strings() {
         let message = im_proto::GroupMessage {
