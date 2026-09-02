@@ -40,7 +40,10 @@ pub struct ConnectionCoordinator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// 协调器记录的聊天连接阶段。
 pub enum ConnectionPhase {
-    /// 没有正在建立或维持的连接。
+    /// 协调器逻辑上不再认可任何进行中的连接尝试。
+    ///
+    /// 取消流程可先进入此阶段；旧异步任务、客户端或底层物理连接可能短暂仍存在，随后由任务
+    /// 自行观察取消或由调用方继续清理。
     Idle,
     /// 首次连接尝试正在执行。
     Connecting,
@@ -56,7 +59,7 @@ struct ConnectionState {
     generation: u64,
     /// 最近分配的尝试编号，在同一代际重试时仍单调递增。
     next_attempt_id: u64,
-    /// 当前阶段的所有者尝试；空闲时为空。
+    /// 当前或最近一次阶段所有者；部分进入 `Idle` 的路径会保留该编号供后续状态校验。
     current_attempt_id: Option<u64>,
     /// 当前连接阶段。
     phase: ConnectionPhase,
@@ -85,7 +88,7 @@ struct InFlightConnection {
     generation: u64,
     /// 操作开始时分配的尝试编号。
     attempt_id: u64,
-    /// 供取消流程直接终止该操作的令牌。
+    /// 供取消流程协作式通知该操作停止的令牌；任务须自行观察通知后退出。
     cancellation: CancellationToken,
     /// 连接任务结束时置为 `true`，供取消流程限时等待。
     finished: watch::Sender<bool>,
@@ -145,7 +148,8 @@ impl InstalledClient {
 
 /// 保护可选已安装聊天客户端的互斥槽位。
 ///
-/// 槽位从连接成功安装持续到断开流程取走客户端；锁只保护槽位内容，不保护客户端内部状态。
+/// 槽位从连接成功安装持续到调用方的断开流程取走客户端；锁只保护槽位内容，不表示底层物理
+/// 连接已同步关闭，也不保护客户端内部状态。
 pub type ClientSlot = tokio::sync::Mutex<Option<InstalledClient>>;
 
 impl ConnectionPermit {
@@ -222,7 +226,8 @@ impl ConnectionCoordinator {
     /// 报告指定首次连接任务已结束。
     ///
     /// 只有 in-flight 的代际和尝试编号都匹配时才发送完成通知；若该尝试仍拥有
-    /// `Connecting` 阶段，还会回到空闲并轮换已取消的令牌。过期调用不产生副作用。
+    /// `Connecting` 阶段，还会回到逻辑空闲、发出协作式取消通知并轮换令牌。过期调用不产生
+    /// 副作用；此阶段变化本身不证明底层物理连接已经关闭。
     pub async fn finish_connect(&self, generation: u64, attempt_id: u64) {
         let mut state = self.state.lock().await;
         if state.in_flight.as_ref().is_some_and(|operation| {
@@ -244,8 +249,9 @@ impl ConnectionCoordinator {
 
     /// 仅在指定尝试仍是当前首次连接时记录失败。
     ///
-    /// 匹配时通知等待者、清除 in-flight 与当前尝试、回到空闲并轮换取消令牌；过期失败结果
-    /// 被忽略。此方法不清除认证会话，也不修改客户端槽位。
+    /// 匹配时通知等待者、清除 in-flight 与当前尝试、回到逻辑空闲并发出协作式取消通知后
+    /// 轮换令牌；过期失败结果被忽略。此方法不清除认证会话、修改客户端槽位或同步关闭物理
+    /// 连接。
     pub async fn fail_connect_if_current(&self, generation: u64, attempt_id: u64) {
         let mut state = self.state.lock().await;
         let is_current = state.generation == generation
@@ -338,7 +344,8 @@ impl ConnectionCoordinator {
     }
 
     #[cfg(test)]
-    /// 测试辅助：若代际仍当前且阶段非空闲，则先切为空闲并轮换取消令牌，再串行发布断开。
+    /// 测试辅助：若代际仍当前且阶段非空闲，则先切为逻辑空闲、发出协作式取消通知并轮换
+    /// 令牌，再串行发布断开；它不等待底层物理连接关闭。
     pub async fn disconnect_and_publish_if_current<F, Fut>(
         &self,
         generation: u64,
@@ -397,17 +404,18 @@ impl ConnectionCoordinator {
     }
 
     #[cfg(test)]
-    /// 测试辅助：取消当前生命周期并返回递增后的代际。
+    /// 测试辅助：按协作式取消语义推进当前生命周期，并返回递增后的代际。
     pub async fn cancel_and_advance(&self) -> Result<u64, String> {
         Ok(self.cancel_and_advance_with_owner().await?.0)
     }
 
     /// 取消当前生命周期、递增代际，并返回此前的尝试所有者。
     ///
-    /// 方法在发布锁内先递增 `generation`、切为空闲、取消当前令牌并替换新令牌；若存在
-    /// in-flight 操作，还会取消其令牌并在释放锁后最多等待一秒完成通知，随后仅在记录仍匹配
-    /// 时清除它。代际溢出返回错误；等待超时不会作为错误返回。该流程分阶段持锁，不保证与
-    /// 外部任务副作用原子提交。
+    /// 方法在发布锁内先递增 `generation`、切为逻辑空闲、通过当前令牌发出协作式取消通知并
+    /// 替换新令牌；若存在 in-flight 操作，还会通知其停止并在释放锁后最多等待一秒完成信号，
+    /// 随后仅在记录仍匹配时清除它。等待超时不会作为错误返回，任务可能继续运行，直到自行
+    /// 观察取消或结束。代际溢出返回错误；该流程分阶段持锁，不保证与外部任务副作用原子提交，
+    /// 也不表示旧物理连接已在返回前关闭。
     pub async fn cancel_and_advance_with_owner(
         &self,
     ) -> Result<(u64, Option<ConnectionAttemptKey>), String> {
@@ -462,8 +470,9 @@ impl ConnectionCoordinator {
 
     /// 仅当预期代际和尝试编号仍为当前所有者时取消并递增代际。
     ///
-    /// 不匹配返回 `Ok(None)` 且不修改状态；匹配时执行与无条件取消相同的令牌轮换和最长一秒
-    /// 等待，并返回新代际。代际溢出是唯一由本方法直接返回的错误。
+    /// 不匹配返回 `Ok(None)` 且不修改状态；匹配时执行与无条件取消相同的协作式通知、令牌
+    /// 轮换和最长一秒等待，并返回新代际。等待超时后任务可能继续到自行观察取消或结束，不
+    /// 表示物理连接已经关闭；代际溢出是唯一由本方法直接返回的错误。
     pub async fn cancel_and_advance_if_current(
         &self,
         expected_generation: u64,
@@ -519,9 +528,10 @@ impl ConnectionCoordinator {
 
     /// 在取消并递增连接代际的同时清除认证会话。
     ///
-    /// 发布锁内依次取得会话写锁和状态锁，确认代际可递增后清空会话、取消连接并记录旧所有者；
-    /// 随后最多等待一秒让 in-flight 操作收尾。代际溢出时返回错误且不会清空会话；本方法不
-    /// 清理客户端槽位或监控群组。
+    /// 发布锁内依次取得会话写锁和状态锁，确认代际可递增后清空会话、发出协作式取消通知并
+    /// 记录旧所有者；随后最多等待一秒让 in-flight 操作报告结束。超时后任务可能继续到自行
+    /// 观察取消或结束。代际溢出时返回错误且不会清空会话；本方法不清理客户端槽位、监控群组，
+    /// 也不保证物理连接已关闭。
     pub async fn cancel_and_advance_clearing_auth(
         &self,
         auth_session: &tokio::sync::RwLock<Option<AuthSession>>,
@@ -581,7 +591,7 @@ impl ConnectionCoordinator {
     /// 先核对认证会话，再在状态锁下核对许可的代际、尝试编号、阶段、取消状态与 in-flight
     /// 记录，最后取得客户端槽位锁。成功时设置安装标志、写入带所有者键的客户端并进入
     /// `Connected`。会话变化、过期操作或槽位已占用会连同原客户端返回错误；槽位冲突还会
-    /// 结束当前首次连接并回到空闲。
+    /// 结束当前首次连接、切为逻辑空闲并发出协作式取消通知。
     pub async fn install_if_current(
         &self,
         permit: &ConnectionPermit,
@@ -799,7 +809,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_advances_generation_and_wakes_blocked_operation() {
-        // 验证显式取消先推进代际并唤醒阻塞任务，而不会无限等待网络操作自行返回。
+        // 验证显式取消先推进代际，并用协作式令牌唤醒等待中的 worker。
         let coordinator = Arc::new(ConnectionCoordinator::new());
         let operation = coordinator.begin_connect(0).await.unwrap();
         let worker_coordinator = coordinator.clone();

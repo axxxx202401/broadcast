@@ -24,6 +24,9 @@ async fn main() {
             let app_handle = app.app_handle();
             let config = im_common::config::AppConfig::default();
             // 数据库默认位于 ~/.im-monitor/im_monitor.db；无法取得 HOME 时退回当前目录。
+            // setup 先创建父目录，再按 SqliteStore 契约打开数据库：文件缺失时可创建，随后依次
+            // 建表、迁移旧版 groups 表并建立索引。文件系统步骤和这些 SQL 未组成整体事务；
+            // 初始化失败时，已创建的目录、数据库文件或部分 schema 可能保留。
             let db_path = std::env::var("HOME")
                 .map(|home| {
                     std::path::PathBuf::from(home)
