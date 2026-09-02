@@ -1,0 +1,16 @@
+[package]
+name = "im-common"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aes.workspace = true
+cipher.workspace = true
+pkcs7.workspace = true
+md-5.workspace = true
+hex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+chrono = { workspace = true, features = ["serde"] }
+thiserror.workspace = true
+log.workspace = true

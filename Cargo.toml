@@ -1,0 +1,58 @@
+[workspace]
+members = [
+    "im-common",
+    "im-proto",
+    "im-chat",
+    "im-store",
+    "im-http",
+    "im-app",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+futures = "0.3"
+
+# HTTP
+reqwest = { version = "0.12", default-features = false, features = ["json", "gzip", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 加密
+aes = "0.8"
+cipher = "0.4"
+pkcs7 = "0.4"
+md-5 = "0.10"
+hex = "0.4"
+
+# 压缩
+flate2 = "1"
+
+# Protobuf
+prost = "0.13"
+prost-build = "0.13"
+
+# SQLite
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio-rustls"] }
+
+# 工具
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+thiserror = "1"
+log = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Tauri
+tauri = { version = "2", features = [] }
+tauri-plugin-store = "2"
+
+[profile.release]
+opt-level = 2
+strip = true

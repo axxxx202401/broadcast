@@ -1,0 +1,11 @@
+[package]
+name = "im-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+prost = { workspace = true, features = ["derive"] }
+
+[build-dependencies]
+prost-build = { workspace = true, features = [] }
