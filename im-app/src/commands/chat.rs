@@ -901,8 +901,8 @@ async fn run_message_worker_with_effects(
             message_id => tracing::debug!("Ignoring unsupported chat message {message_id}"),
         }
     }
-    // Cancellation is fail-closed: dropping the receiver discards queued frames,
-    // so no SQLite writes or UI events can occur for a stale connection.
+    // 取消采用故障关闭（fail-closed）策略：丢弃接收端会清空排队帧，
+    // 从而阻止陈旧连接继续写入 SQLite 或发送界面事件。
     receiver.close();
 }
 
