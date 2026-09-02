@@ -10,8 +10,8 @@ function serializeCsp(directives: Record<string, string>): string {
     .join('; ')
 }
 
-describe('Vite development CSP', () => {
-  it('sends a CSP header equivalent to Tauri devCsp', () => {
+describe('Vite 开发环境 CSP', () => {
+  it('发送与 Tauri devCsp 等价的响应头', () => {
     const headers = (config as UserConfig).server?.headers as Record<string, string>
     const expected = serializeCsp(tauriConfig.app.security.devCsp)
 
@@ -19,7 +19,7 @@ describe('Vite development CSP', () => {
     expect(headers['Content-Security-Policy']).toBe(expected)
   })
 
-  it('allows GT4 resources while preserving restrictive document directives', () => {
+  it('允许 GT4 资源并保留限制文档能力的指令', () => {
     expect(DEV_CSP_HEADER).toContain('ws://127.0.0.1:1420')
     expect(DEV_CSP_HEADER).toContain("script-src 'self' https://static.geetest.com")
     expect(DEV_CSP_HEADER).toContain('https://gcaptcha4.geetest.com')

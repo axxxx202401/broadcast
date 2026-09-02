@@ -14,30 +14,30 @@ const message = (msgId: string, sendTime: number): MessageDto => ({
   stored_at: null,
 })
 
-describe('decodeMessageContent', () => {
-  it('decodes UTF-8 base64 payloads without corrupting Chinese text', () => {
+describe('消息正文解码', () => {
+  it('将 Base64 中的 UTF-8 中文字节无损解码为文本', () => {
     expect(decodeMessageContent(btoa(unescape(encodeURIComponent('告警：连接中断'))))).toBe(
       '告警：连接中断',
     )
   })
 
-  it('returns a visible binary fallback for invalid UTF-8', () => {
+  it('对非 UTF-8 字节返回可见的二进制回退提示', () => {
     expect(decodeMessageContent('/w==')).toBe('[二进制内容 · 1 B]')
   })
 })
 
-describe('mergeMessages', () => {
-  it('sorts an unsorted historical response by send time ascending', () => {
+describe('历史与实时消息合并', () => {
+  it('将乱序历史响应按发送时间升序排列', () => {
     expect(mergeMessages([], [message('2', 20), message('1', 10)]).map(({ msg_id }) => msg_id))
       .toEqual(['1', '2'])
   })
 
-  it('deduplicates precision-sensitive string ids', () => {
+  it('以字符串消息 ID 去重且不损失大整数精度', () => {
     const id = '9223372036854775807'
     expect(mergeMessages([message(id, 20)], [message(id, 20)])).toHaveLength(1)
   })
 
-  it('preserves arrival order when realtime messages share a timestamp', () => {
+  it('实时消息时间相同时保持到达顺序', () => {
     const current = [message('9007199254740993', 20), message('9007199254740992', 20)]
     const merged = mergeMessages(current, [message('9007199254740994', 20)])
     expect(merged.map(({ msg_id }) => msg_id)).toEqual([
@@ -47,7 +47,7 @@ describe('mergeMessages', () => {
     ])
   })
 
-  it('keeps only the most recent 1000 messages after sorting and deduplication', () => {
+  it('排序去重后只保留最新 1000 条消息', () => {
     const incoming = Array.from({ length: 1005 }, (_, index) =>
       message(String(index), index),
     ).reverse()
@@ -63,14 +63,14 @@ describe('mergeMessages', () => {
     expect(new Set(merged.map(({ msg_id }) => msg_id)).size).toBe(1000)
   })
 
-  it('does not trim a normal 50-message history response', () => {
+  it('不会截断正常的 50 条历史响应', () => {
     const history = Array.from({ length: 50 }, (_, index) => message(String(index), index))
     expect(mergeMessages([], history)).toHaveLength(50)
   })
 })
 
-describe('isCurrentMessageRequest', () => {
-  it('accepts only the latest request for the still-selected group', () => {
+describe('消息请求竞态门禁', () => {
+  it('仅接受当前所选群组的最新请求结果', () => {
     expect(isCurrentMessageRequest(3, 3, '7', '7')).toBe(true)
     expect(isCurrentMessageRequest(2, 3, '7', '7')).toBe(false)
     expect(isCurrentMessageRequest(3, 3, '7', '8')).toBe(false)

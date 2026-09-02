@@ -12,10 +12,10 @@ const gt4DTO = {
   genTime: 'time',
 }
 
-describe('authentication IPC', () => {
+describe('认证 IPC 契约', () => {
   beforeEach(() => mocks.invoke.mockReset())
 
-  it('wraps every backend auth command argument in request', async () => {
+  it('将每个认证命令的复杂参数统一包装在 request 字段中', async () => {
     mocks.invoke.mockResolvedValue(undefined)
     const requests = [
       ['send_sms_code', api.sendSmsCode({
@@ -60,7 +60,7 @@ describe('authentication IPC', () => {
     }
   })
 
-  it('preserves structured business error fields including data', async () => {
+  it('原样保留拒绝结果中的结构化业务错误及附加数据', async () => {
     const businessError = {
       kind: 'business',
       code: 3110002,
