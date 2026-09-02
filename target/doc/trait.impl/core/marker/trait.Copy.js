@@ -1,9 +1,0 @@
-(function() {
-    const implementors = Object.fromEntries([["const_oid",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.96.0/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"enum\" href=\"const_oid/enum.Error.html\" title=\"enum const_oid::Error\">Error</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.96.0/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"struct\" href=\"const_oid/struct.ObjectIdentifier.html\" title=\"struct const_oid::ObjectIdentifier\">ObjectIdentifier</a>",0],["impl&lt;'a&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/1.96.0/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"struct\" href=\"const_oid/db/struct.Database.html\" title=\"struct const_oid::db::Database\">Database</a>&lt;'a&gt;",0]]],["flagset",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.96.0/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"struct\" href=\"flagset/struct.InvalidBits.html\" title=\"struct flagset::InvalidBits\">InvalidBits</a>",0],["impl&lt;F: <a class=\"trait\" href=\"https://doc.rust-lang.org/1.96.0/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> + Flags&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/1.96.0/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"struct\" href=\"flagset/struct.FlagSet.html\" title=\"struct flagset::FlagSet\">FlagSet</a>&lt;F&gt;<div class=\"where\">where\n    F::Type: <a class=\"trait\" href=\"https://doc.rust-lang.org/1.96.0/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a>,</div>",0]]]]);
-    if (window.register_implementors) {
-        window.register_implementors(implementors);
-    } else {
-        window.pending_implementors = implementors;
-    }
-})()
-//{"start":59,"fragment_lengths":[825,868]}

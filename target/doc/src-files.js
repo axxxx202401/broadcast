@@ -1,2 +1,0 @@
-createSrcSidebar('[["const_oid",["",[["db",[],["gen.rs"]]],["arcs.rs","checked.rs","db.rs","encoder.rs","error.rs","lib.rs","parser.rs"]]],["flagset",["",[],["lib.rs"]]],["unicode_ident",["",[],["lib.rs","tables.rs"]]]]');
-//{"start":19,"fragment_lengths":[119,31,49]}

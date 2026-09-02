@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["STORED_PREFIX_MATCH"]};

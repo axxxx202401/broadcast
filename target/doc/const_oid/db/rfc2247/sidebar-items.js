@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["DOMAIN_NAME_FORM"]};

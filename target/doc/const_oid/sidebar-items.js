@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["Error"],"mod":["db"],"struct":["Arcs","ObjectIdentifier"],"trait":["AssociatedOid","DynAssociatedOid"],"type":["Arc","Result"]};

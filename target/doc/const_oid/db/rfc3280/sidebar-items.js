@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["EMAIL","EMAIL_ADDRESS","PSEUDONYM"]};
