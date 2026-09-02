@@ -12,7 +12,9 @@ pub mod heartbeat;
 /// 指数退避序列与可取消的连接、登录重试循环。
 pub mod reconnect;
 
+/// 聊天客户端及其可克隆发送句柄的根级重新导出。
 pub use client::{ChatClient, ChatSender};
+/// 常用帧编码、解码函数的根级重新导出。
 pub use frame::{decode_frame, encode_frame};
 
 #[cfg(test)]

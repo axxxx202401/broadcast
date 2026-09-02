@@ -7,5 +7,8 @@ rust-version.workspace = true
 [dependencies]
 prost = { workspace = true, features = ["derive"] }
 
+[lints.rust]
+missing_docs = "warn"
+
 [build-dependencies]
 prost-build = { workspace = true, features = [] }

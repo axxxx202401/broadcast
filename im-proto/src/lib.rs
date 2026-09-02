@@ -12,7 +12,9 @@ pub mod pb {
     include!(concat!(env!("OUT_DIR"), "/_.rs"));
 }
 
-// 根级重新导出将调用方与生成文件名及内部布局隔离。
+/// 调用方常用的 protobuf 消息与枚举。
+///
+/// 根级重新导出将调用方与生成文件名及内部布局隔离。
 pub use pb::{
     ClientInfo, CommonResult, CommonResultReq, ErrrMessage, GroupBase, GroupContactListReq,
     GroupContactListResp, GroupMemberBase, GroupMessage, KeyPairBase, LoginReq, LoginResp,

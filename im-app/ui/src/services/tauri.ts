@@ -15,6 +15,7 @@ import type {
   VerifyResponse,
 } from '../types/im'
 
+/** 前端使用的 Tauri IPC 服务集合；各方法保持后端命令名、参数包装和返回类型契约。 */
 export const api = {
   /**
    * 调用 `send_sms_code`，以 `{ request }` 包装参数。
