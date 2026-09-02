@@ -1,3 +1,6 @@
+//! 测试按帧协议、传输兼容、客户端生命周期、心跳、重连及跨 crate 协作分区。
+//! 各区优先说明协议边界和异步时序意图，不为逐条断言添加重复注释。
+
 use std::io::{Read, Write};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -22,12 +25,14 @@ use super::{
     reconnect::{reconnect_loop, ExponentialBackoff},
 };
 
+// --- 帧协议 ---
+
 #[test]
 fn test_encode_and_decode_frame() {
     let content = b"test protobuf data";
     let framed = encode_frame(1000, content, false, false).unwrap();
 
-    // Frame should start with [0xC0, 0x00] (encrypted=false, zipped=false)
+    // 未加密且未压缩时，帧头应以 [0xC0, 0x00] 开始。
     assert_eq!(&framed[0..2], &[0xC0, 0x00]);
 
     let (msg_id, body) = decode_frame(&framed).unwrap();
@@ -40,10 +45,10 @@ fn test_encode_frame_big_endian() {
     let content = b"hello";
     let framed = encode_frame(0x0102, content, false, false).unwrap();
 
-    // messageId 0x0102 should be big-endian: [0x01, 0x02]
+    // message_id 0x0102 使用大端序编码为 [0x01, 0x02]。
     assert_eq!(&framed[2..4], &[0x01, 0x02]);
 
-    // contentLength 5 should be big-endian: [0x00, 0x00, 0x00, 0x05]
+    // content_length 5 使用大端序编码为 [0x00, 0x00, 0x00, 0x05]。
     assert_eq!(&framed[4..8], &[0x00, 0x00, 0x00, 0x05]);
 }
 
@@ -53,7 +58,7 @@ fn test_decode_invalid_frame() {
     assert!(decode_frame(&invalid).is_err());
 }
 
-// --- Integration tests ---
+// --- 传输兼容 ---
 
 #[test]
 fn test_full_frame_workflow() {
@@ -92,6 +97,7 @@ fn encrypted_transport_frame_never_marks_plaintext_as_encrypted() {
 
 #[test]
 fn transport_encoding_matches_java_encrypt_then_gzip_order() {
+    // 直接拆开线上正文，确认发送顺序确为先 AES、后 gzip，而不只验证往返可逆。
     let config = AppConfig::default();
     let plaintext = b"repeated payload repeated payload repeated payload";
 
@@ -108,6 +114,7 @@ fn transport_encoding_matches_java_encrypt_then_gzip_order() {
 
 #[test]
 fn transport_decoding_accepts_java_gzip_wrapped_ciphertext() {
+    // 手工构造 Java 顺序的 gzip(AES(明文))，验证接收侧按相反顺序还原。
     let config = AppConfig::default();
     let plaintext = b"incoming protobuf payload incoming protobuf payload";
     let cipher = AesCipher::new(config.server.body_aes_key.as_bytes());
@@ -127,6 +134,7 @@ fn transport_decoding_accepts_java_gzip_wrapped_ciphertext() {
 
 #[test]
 fn truncated_transport_frame_is_incomplete() {
+    // 半包必须归类为 Incomplete，流式读取方才能保留缓冲并等待后续字节。
     let config = AppConfig::default();
     let mut frame = encode_frame(2202, b"complete payload", false, false).unwrap();
     frame.truncate(frame.len() - 3);
@@ -138,6 +146,7 @@ fn truncated_transport_frame_is_incomplete() {
 
 #[test]
 fn complete_bad_encrypted_frame_is_invalid() {
+    // 已完整到达但无法解密的帧属于 Invalid，不能被误判为仍需等待的半包。
     let config = AppConfig::default();
     let frame = encode_frame(2202, b"not-valid-aes", true, false).unwrap();
 
@@ -148,6 +157,7 @@ fn complete_bad_encrypted_frame_is_invalid() {
 
 #[test]
 fn encrypted_empty_connection_ack_is_not_decrypted() {
+    // 只验证 Java 对 <= 1 字节正文跳过传输变换的兼容规则，不推断消息 200 的语义。
     let config = AppConfig::default();
     let frame = encode_frame(200, &[], true, false).unwrap();
 
@@ -159,6 +169,7 @@ fn encrypted_empty_connection_ack_is_not_decrypted() {
 
 #[test]
 fn pre_session_error_frame_uses_java_default_key() {
+    // 消息 9999 使用会话 key 解密失败后，才以会话前固定 key 兼容重试。
     let config = AppConfig::default();
     let error = im_proto::ErrrMessage {
         error_msg_code: 4003,
@@ -214,6 +225,7 @@ fn encode_frame_rejects_body_over_limit() {
 
 #[test]
 fn transport_decode_rejects_gzip_output_over_limit() {
+    // 构造小体积但解压后超限的数据，覆盖解压过程中的 32 MiB 防膨胀边界。
     let config = AppConfig::default();
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     let chunk = [0u8; 8192];
@@ -243,6 +255,8 @@ fn malformed_gzip_is_reported_as_protocol_error() {
         FrameDecodeError::Invalid(im_common::error::AppError::TcpFrame(_))
     ));
 }
+
+// --- 客户端生命周期 ---
 
 #[tokio::test]
 async fn invalid_frame_disconnects_shared_stream_and_prevents_send() {
@@ -461,6 +475,8 @@ async fn dropping_connected_client_closes_socket_and_aborts_reader() {
     );
 }
 
+// --- 心跳 ---
+
 #[test]
 fn heartbeat_is_one_empty_application_payload() {
     let (message_id, payload) = heartbeat_message();
@@ -471,6 +487,7 @@ fn heartbeat_is_one_empty_application_payload() {
 
 #[tokio::test(start_paused = true)]
 async fn heartbeat_waits_one_full_period_before_first_send_and_is_cancellable() {
+    // 暂停 Tokio 时间，精确验证首次发送延迟完整周期，且取消后不再产生心跳。
     let cancellation = tokio_util::sync::CancellationToken::new();
     let sends = Arc::new(AtomicUsize::new(0));
     let observed = sends.clone();
@@ -556,6 +573,8 @@ async fn cancellable_sender_never_holds_client_slot_while_waiting_for_writer() {
     server.abort();
 }
 
+// --- 重连 ---
+
 #[test]
 fn reconnect_backoff_doubles_and_caps_at_thirty_seconds() {
     let delays = ExponentialBackoff::default().take(8).collect::<Vec<_>>();
@@ -568,6 +587,7 @@ fn reconnect_backoff_doubles_and_caps_at_thirty_seconds() {
 
 #[tokio::test]
 async fn reconnect_uses_injected_wait_and_connect_login_action_until_success() {
+    // 注入立即完成的等待函数，验证每次尝试前均消费退避值且错误不会终止重试。
     let cancellation = tokio_util::sync::CancellationToken::new();
     let delays = Arc::new(std::sync::Mutex::new(Vec::new()));
     let observed_delays = delays.clone();
@@ -602,6 +622,8 @@ async fn reconnect_uses_injected_wait_and_connect_login_action_until_success() {
         [1, 2, 4].map(std::time::Duration::from_secs)
     );
 }
+
+// --- 跨 crate 协作 ---
 
 #[test]
 fn test_version_key_generation() {
