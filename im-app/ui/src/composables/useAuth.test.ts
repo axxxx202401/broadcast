@@ -14,6 +14,7 @@ const gt4Fields: Gt4Fields = {
   genTime: 'time',
 }
 
+/** 挂载带可控 IPC 与 GT4 依赖的认证组合式函数。 */
 function setupAuth() {
   const backend = {
     sendSmsCode: vi.fn().mockResolvedValue(undefined),
@@ -74,7 +75,7 @@ function setupAuth() {
 describe('useAuth', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('opens GT4 only for code modes and sends the snapshotted account once', async () => {
+  it('仅验证码模式展示 GT4，并对冻结账号只发送一次验证码', async () => {
     const { auth, backend, gt4, succeedGt4, wrapper } = setupAuth()
     auth.loginMethod.value = 1
     auth.account.value = '13800138000'
@@ -100,7 +101,7 @@ describe('useAuth', () => {
     wrapper.unmount()
   })
 
-  it('reinitializes GT4 before sending another code after the previous success destroyed it', async () => {
+  it('上次成功销毁 GT4 后，再次发送验证码会重新初始化', async () => {
     const { auth, gt4, succeedGt4, wrapper } = setupAuth()
     auth.account.value = '13800138000'
     auth.sendCode()
@@ -119,7 +120,7 @@ describe('useAuth', () => {
     [3, 20, 'phone', '13800138000'],
     [4, 21, 'email', 'operator@example.com'],
   ] as const)(
-    'runs issued, verify, and login for method %s',
+    '登录方式 %s 按顺序执行 issued、verify 与 login',
     async (method, validateType, accountField, account) => {
       const { auth, backend, onLogin, wrapper } = setupAuth()
       auth.loginMethod.value = method as PrimaryLoginType
@@ -152,7 +153,7 @@ describe('useAuth', () => {
     },
   )
 
-  it('lists pending challenge items, verifies selection, and retries mapped login', async () => {
+  it('补查待验证项、验证选中项，并按映射后的登录方式重试', async () => {
     const { auth, backend, onLogin, wrapper } = setupAuth()
     const pending: PendingValidation[] = [{
       countryCode: 86,
@@ -202,7 +203,7 @@ describe('useAuth', () => {
     wrapper.unmount()
   })
 
-  it('opens GT4 and sends a code for an email-code login challenge', async () => {
+  it('邮箱验证码 challenge 通过 GT4 发送验证码', async () => {
     const { auth, backend, gt4, succeedGt4, wrapper } = setupAuth()
     const pending: PendingValidation = {
       account: 'op***@example.com',
@@ -255,7 +256,7 @@ describe('useAuth', () => {
     wrapper.unmount()
   })
 
-  it('uses the original phone and country code for a phone-code login challenge', async () => {
+  it('手机验证码 challenge 使用原手机号和国家区号', async () => {
     const { auth, backend, succeedGt4, wrapper } = setupAuth()
     const pending: PendingValidation = {
       countryCode: 86,
@@ -297,7 +298,7 @@ describe('useAuth', () => {
     wrapper.unmount()
   })
 
-  it('maps a phone-password challenge back to phone-password login', async () => {
+  it('手机密码 challenge 映射回手机密码登录', async () => {
     const { auth, backend, wrapper } = setupAuth()
     const pending: PendingValidation = {
       countryCode: 86,
@@ -330,7 +331,7 @@ describe('useAuth', () => {
     wrapper.unmount()
   })
 
-  it('queries pending validations when login reports missing scenario items', async () => {
+  it('登录报告场景验证项缺失时补查待验证项', async () => {
     const { auth, backend, wrapper } = setupAuth()
     const emailCode: PendingValidation = {
       account: 'op***@example.com',
@@ -384,7 +385,7 @@ describe('useAuth', () => {
     wrapper.unmount()
   })
 
-  it('keeps the original missing-item error when pending lookup is empty', async () => {
+  it('待验证项补查为空时保留原始缺失错误', async () => {
     const { auth, backend, wrapper } = setupAuth()
     backend.login.mockRejectedValueOnce({
       kind: 'business',
@@ -406,7 +407,7 @@ describe('useAuth', () => {
     wrapper.unmount()
   })
 
-  it('merges response and listed pending items, deduplicates, and preserves response items on list failure', async () => {
+  it('合并响应与补查项并去重，且补查失败时保留响应项', async () => {
     const first: PendingValidation = {
       countryCode: 86,
       account: '138****8000',
@@ -450,7 +451,7 @@ describe('useAuth', () => {
     failed.wrapper.unmount()
   })
 
-  it('stops after primary verify returns remaining validations and retains business notices', async () => {
+  it('主验证返回剩余项时停止登录并保留业务提示', async () => {
     const { auth, backend, gt4, wrapper } = setupAuth()
     const remaining: PendingValidation[] = [{
       account: 'op***@example.com',
@@ -475,7 +476,7 @@ describe('useAuth', () => {
     wrapper.unmount()
   })
 
-  it('does not retry login while challenge verify reports more pending work', async () => {
+  it('二次验证仍有待办项时不重试登录', async () => {
     const { auth, backend, wrapper } = setupAuth()
     const initial: PendingValidation = { validateType: 18, account: 'masked' }
     const remaining: PendingValidation[] = [{ validateType: 19, account: 'masked' }]
@@ -507,7 +508,7 @@ describe('useAuth', () => {
     wrapper.unmount()
   })
 
-  it('renders every structured IPC business-error field without dropping data', async () => {
+  it('完整呈现结构化 IPC 业务错误字段', async () => {
     const { auth, backend, wrapper } = setupAuth()
     backend.issueValidationToken.mockRejectedValueOnce({
       kind: 'business',

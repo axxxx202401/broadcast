@@ -55,6 +55,7 @@ const message = (id: string, groupId: string, sendTime: number): MessageDto => (
   stored_at: null,
 })
 
+/** 创建可控 Promise，以精确安排历史消息响应的先后顺序。 */
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (reason: unknown) => void
@@ -95,7 +96,7 @@ describe('useMonitor', () => {
     )
   })
 
-  it('refreshes the authoritative connection status after login', async () => {
+  it('登录后同步后端连接状态快照', async () => {
     mocks.getConnectionStatus.mockResolvedValueOnce('connected')
     const { monitor, wrapper } = mountMonitor()
     await flushPromises()
@@ -107,7 +108,7 @@ describe('useMonitor', () => {
     wrapper.unmount()
   })
 
-  it('recovers a connecting event from the backend status snapshot', async () => {
+  it('收到 connecting 事件后以后端快照推进状态', async () => {
     mocks.getConnectionStatus.mockResolvedValueOnce('connected')
     const { monitor, wrapper } = mountMonitor()
     await flushPromises()
@@ -119,7 +120,7 @@ describe('useMonitor', () => {
     wrapper.unmount()
   })
 
-  it('ignores stale history and merges current history with realtime messages', async () => {
+  it('忽略陈旧历史响应，并合并当前历史与实时消息', async () => {
     const first = deferred<MessageDto[]>()
     const second = deferred<MessageDto[]>()
     mocks.getMessages.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
@@ -141,7 +142,7 @@ describe('useMonitor', () => {
     wrapper.unmount()
   })
 
-  it('unsubscribes every Tauri event listener on component unmount', async () => {
+  it('组件卸载时取消全部 Tauri 事件监听', async () => {
     const { wrapper } = mountMonitor()
     await flushPromises()
 
@@ -151,7 +152,7 @@ describe('useMonitor', () => {
     expect(messageUnlisten).toHaveBeenCalledTimes(1)
   })
 
-  it('surfaces IPC failures and clears the loading state', async () => {
+  it('呈现 IPC 错误并清除消息加载状态', async () => {
     mocks.getMessages.mockRejectedValueOnce('database unavailable')
     const { monitor, wrapper } = mountMonitor()
 
@@ -162,7 +163,7 @@ describe('useMonitor', () => {
     wrapper.unmount()
   })
 
-  it('keeps connect disabled while backend reports automatic reconnecting', async () => {
+  it('后端报告自动重连时保持连接按钮禁用', async () => {
     const { monitor, wrapper } = mountMonitor()
     await flushPromises()
 
@@ -173,7 +174,7 @@ describe('useMonitor', () => {
     wrapper.unmount()
   })
 
-  it('does not overwrite backend connecting state when connect IPC rejects', async () => {
+  it('连接 IPC 拒绝时不覆盖后端 connecting 状态', async () => {
     mocks.connectChat.mockRejectedValueOnce(new Error('initial connect failed'))
     const { monitor, wrapper } = mountMonitor()
     await flushPromises()
@@ -186,7 +187,7 @@ describe('useMonitor', () => {
     wrapper.unmount()
   })
 
-  it('clears all local session state when logout IPC rejects and shows a warning', async () => {
+  it('退出 IPC 拒绝时仍清空本地会话并显示警告', async () => {
     mocks.logout.mockRejectedValueOnce(new Error('disconnect timed out'))
     const { monitor, wrapper } = mountMonitor()
     monitor.acceptLogin([group('7')], '42')

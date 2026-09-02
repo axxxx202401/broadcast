@@ -2,31 +2,49 @@ import { onUnmounted, ref } from 'vue'
 
 import type { Gt4Fields } from '../types/im'
 
+/** 默认的 GT4 captchaId；可由调用参数或构建环境变量覆盖。 */
 export const DEFAULT_GT4_CAPTCHA_ID = 'd7b9e5c52c8d9d8b214bc7a4c6db1f4f'
+/** GT4 脚本候选地址，严格按本地资源、官方 CDN 的顺序尝试。加载会向全局文档插入脚本。 */
 export const GT4_SCRIPT_URLS = [
   '/vendor/gt4.js',
   'https://static.geetest.com/v4/gt4.js',
 ] as const
 
+/** GT4 SDK 返回的原始验证字段；字段名遵循 SDK 的 snake_case 约定。 */
 export interface Gt4RawValidation {
+  /** 本次验证批次号。 */
   lot_number: string
+  /** SDK 生成的验证输出。 */
   captcha_output: string
+  /** SDK 生成的通过令牌。 */
   pass_token: string
+  /** SDK 生成验证结果的时间字段。 */
   gen_time: string
 }
 
+/** 当前组合式函数依赖的 GT4 实例最小接口。 */
 export interface Gt4Instance {
+  /** 注册 SDK 就绪回调，并返回实例以支持链式注册。 */
   onReady(handler: () => void): Gt4Instance
+  /** 注册验证成功回调，并返回实例以支持链式注册。 */
   onSuccess(handler: () => void): Gt4Instance
+  /** 注册验证失败回调，并返回实例以支持链式注册。 */
   onFail(handler: (event?: unknown) => void): Gt4Instance
+  /** 注册 SDK 异常回调，并返回实例以支持链式注册。 */
   onError(handler: (event?: unknown) => void): Gt4Instance
+  /** 注册用户关闭验证码回调，并返回实例以支持链式注册。 */
   onClose(handler: () => void): Gt4Instance
+  /** 显示绑定模式验证码。 */
   showCaptcha(): void
+  /** 读取验证结果；结果尚不可用时返回 false。 */
   getValidate(): Gt4RawValidation | false
+  /** 重置当前验证流程，以便重试。 */
   reset(): void
+  /** 销毁实例及其 SDK 侧资源。 */
   destroy(): void
 }
 
+/** GT4 全局初始化函数签名；初始化结果通过 callback 而非返回 Promise 交付。 */
 export type Gt4Init = (
   options: {
     captchaId: string
@@ -39,12 +57,15 @@ export type Gt4Init = (
 
 declare global {
   interface Window {
+    /** GT4 脚本加载后写入 window 的全局初始化函数。 */
     initGeetest4?: Gt4Init
   }
 }
 
+// 全模块共享加载 Promise，避免多个组件重复插入同一个 GT4 脚本。
 let scriptPromise: Promise<Gt4Init> | null = null
 
+/** 插入单个脚本，并把脚本事件转换为 Promise；失败时移除对应节点。 */
 function appendGt4Script(src: string): Promise<Gt4Init> {
   return new Promise<Gt4Init>((resolve, reject) => {
     const script = document.createElement('script')
@@ -65,6 +86,13 @@ function appendGt4Script(src: string): Promise<Gt4Init> {
   })
 }
 
+/**
+ * 获取 GT4 全局初始化函数。
+ *
+ * 已存在全局函数时不会插入脚本；否则先加载本地资源，再回退到 CDN。两者均失败时
+ * Promise 会拒绝，并清除共享失败缓存，使后续调用可以重新尝试。成功脚本会保留，
+ * 且 SDK 对 `window.initGeetest4` 等全局状态的修改不会在此处撤销。
+ */
 export function loadGt4Script(): Promise<Gt4Init> {
   if (window.initGeetest4) return Promise.resolve(window.initGeetest4)
   if (scriptPromise) return scriptPromise
@@ -89,12 +117,26 @@ export function loadGt4Script(): Promise<Gt4Init> {
   return promise
 }
 
+/** `useGt4` 的可替换配置，主要用于覆盖 captchaId、初始化器及脚本加载器。 */
 export interface UseGt4Options {
+  /** 显式 captchaId，优先级高于环境变量和默认值。 */
   captchaId?: string
+  /** 直接注入初始化函数；提供后不会加载外部脚本。 */
   init?: Gt4Init
+  /** 自定义异步脚本加载器。 */
   loadScript?: () => Promise<Gt4Init>
 }
 
+/**
+ * 管理 GT4 实例从初始化、展示、一次消费到销毁的完整生命周期。
+ *
+ * `initialize` 的 Promise 只表示 SDK 是否触发 ready；初始化器自身仍采用回调交付实例。
+ * SDK 的 fail/close 主要更新可观察错误，error 会结束当前初始化；调用方传入的成功回调
+ * 以 fire-and-forget 方式执行，其 Promise 拒绝不会由本组合式函数捕获。卸载时会销毁实例，
+ * 但不会删除已加载脚本或恢复 SDK 写入的全局变量。
+ *
+ * @returns GT4 状态，以及 initialize/show/reset/destroy 四个生命周期操作。
+ */
 export function useGt4(options: UseGt4Options = {}) {
   const loading = ref(true)
   const ready = ref(false)
@@ -110,6 +152,10 @@ export function useGt4(options: UseGt4Options = {}) {
     | null = null
   let accountSnapshot = ''
 
+  /**
+   * 初始化或复用当前实例；generation 保证 destroy 后迟到的加载结果和 SDK 回调失效。
+   * @returns SDK ready 时为 true，失败、销毁或卸载时为 false。
+   */
   const initialize = () => {
     if (disposed) return Promise.resolve(false)
     if (ready.value && instance) return Promise.resolve(true)
@@ -147,6 +193,7 @@ export function useGt4(options: UseGt4Options = {}) {
                 return
               }
               instance = created
+              // 将 SDK 回调集中绑定到当前代，避免旧实例在重建后继续影响界面。
               created
                 .onReady(() => {
                   if (currentGeneration !== generation) return
@@ -164,6 +211,7 @@ export function useGt4(options: UseGt4Options = {}) {
                   successConsumed = true
                   const callback = pendingSuccess
                   pendingSuccess = null
+                  // SDK 的 snake_case 在边界处转换为应用层 camelCase；同一次 show 仅消费一次。
                   void callback(accountSnapshot, {
                     lotNumber: raw.lot_number,
                     captchaOutput: raw.captcha_output,
@@ -197,6 +245,10 @@ export function useGt4(options: UseGt4Options = {}) {
     return initialization
   }
 
+  /**
+   * 展示已就绪的验证码，并冻结账号供成功回调使用。
+   * @returns 成功触发展示为 true；未就绪、无实例或已卸载为 false。
+   */
   const show = (
     snapshot: string,
     onSuccess: (accountSnapshot: string, fields: Gt4Fields) => void | Promise<void>,
@@ -210,6 +262,7 @@ export function useGt4(options: UseGt4Options = {}) {
     return true
   }
 
+  /** 清除一次消费状态、账号快照和错误，并重置当前 SDK 实例以便重试。 */
   const reset = () => {
     pendingSuccess = null
     successConsumed = false
@@ -218,6 +271,7 @@ export function useGt4(options: UseGt4Options = {}) {
     instance?.reset()
   }
 
+  /** 销毁实例并结算悬空初始化；递增 generation 使当前代的迟到回调失效。 */
   const destroy = () => {
     settleInitialization?.(false)
     generation += 1
@@ -232,9 +286,21 @@ export function useGt4(options: UseGt4Options = {}) {
 
   void initialize()
   onUnmounted(() => {
+    // 组件卸载后永久禁止重新初始化，并释放当前 GT4 实例。
     disposed = true
     destroy()
   })
 
-  return { loading, ready, error, initialize, show, reset, destroy }
+  return {
+    /** 脚本或实例仍在初始化。 */
+    loading,
+    /** SDK 已触发 ready 且实例可展示。 */
+    ready,
+    /** 最近一次 GT4 生命周期错误。 */
+    error,
+    initialize,
+    show,
+    reset,
+    destroy,
+  }
 }

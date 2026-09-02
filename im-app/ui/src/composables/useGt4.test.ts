@@ -11,6 +11,7 @@ import {
   type Gt4Instance,
 } from './useGt4'
 
+/** 构造可手动触发 SDK 回调的实例，用于覆盖异步生命周期边界。 */
 function fakeGt4() {
   const handlers: Record<string, () => void> = {}
   const instance: Gt4Instance = {
@@ -50,11 +51,11 @@ function fakeGt4() {
 describe('useGt4', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('uses the Android 640+ captcha id configured by the server', () => {
+  it('使用服务端配置的 Android 640+ captchaId', () => {
     expect(DEFAULT_GT4_CAPTCHA_ID).toBe('d7b9e5c52c8d9d8b214bc7a4c6db1f4f')
   })
 
-  it('falls back to CDN and clears a fully failed load so the next call retries', async () => {
+  it('本地脚本失败后回退 CDN，并在全部失败后清缓存以允许重试', async () => {
     delete window.initGeetest4
     const before = document.querySelectorAll('script[src*="gt4.js"]').length
     const first = loadGt4Script()
@@ -84,7 +85,7 @@ describe('useGt4', () => {
     await expect(second).resolves.toBe(init)
   })
 
-  it('loads and initializes once, then refuses show before ready', async () => {
+  it('仅加载初始化一次，且 ready 前拒绝展示验证码', async () => {
     const fake = fakeGt4()
     const loadScript = vi.fn().mockResolvedValue(
       vi.fn((_options, callback) => callback(fake.instance)),
@@ -110,7 +111,7 @@ describe('useGt4', () => {
     wrapper.unmount()
   })
 
-  it('maps snake_case validation, snapshots account, and consumes success once', async () => {
+  it('转换 snake_case 验证字段、冻结账号，并只消费一次成功回调', async () => {
     const fake = fakeGt4()
     const success = vi.fn()
     let gt4!: ReturnType<typeof useGt4>
@@ -141,7 +142,7 @@ describe('useGt4', () => {
     expect(fake.instance.destroy).toHaveBeenCalledTimes(1)
   })
 
-  it('supports fail, error, close, reset, and destroy lifecycle', async () => {
+  it('覆盖 fail、error、close、reset 与 destroy 生命周期', async () => {
     const fake = fakeGt4()
     let gt4!: ReturnType<typeof useGt4>
     const wrapper = mount(defineComponent({
@@ -171,7 +172,7 @@ describe('useGt4', () => {
     expect(fake.instance.destroy).toHaveBeenCalledTimes(1)
   })
 
-  it('can initialize a fresh instance after destroying the previous one', async () => {
+  it('销毁旧实例后可以初始化全新实例', async () => {
     const first = fakeGt4()
     const second = fakeGt4()
     const init = vi.fn()
@@ -199,7 +200,7 @@ describe('useGt4', () => {
     expect(second.instance.destroy).toHaveBeenCalledTimes(1)
   })
 
-  it('settles an in-flight initialization when destroyed', async () => {
+  it('销毁时结算仍在进行的初始化', async () => {
     let gt4!: ReturnType<typeof useGt4>
     const wrapper = mount(defineComponent({
       setup() {

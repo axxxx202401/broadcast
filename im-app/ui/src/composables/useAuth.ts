@@ -13,6 +13,7 @@ import type {
 import { errorMessage } from '../utils/protocol'
 import { useGt4 } from './useGt4'
 
+/** 认证流程实际使用的后端能力子集。 */
 type AuthApi = Pick<
   typeof api,
   | 'sendSmsCode'
@@ -23,13 +24,19 @@ type AuthApi = Pick<
   | 'login'
 >
 
+/** GT4 组合式函数暴露的控制器类型。 */
 type Gt4Controller = ReturnType<typeof useGt4>
 
+/** 认证组合式函数的可注入依赖，便于替换 IPC 与 GT4 边界。 */
 interface AuthDependencies {
   api?: AuthApi
   gt4?: Gt4Controller
 }
 
+/**
+ * 主登录方式契约：1 手机验证码、2 邮箱验证码、3 手机密码、4 邮箱密码。
+ * 数值仅按当前前后端协议映射记录，不扩展推测其业务含义。
+ */
 const methodContract: Record<
   PrimaryLoginType,
   { account: 'phone' | 'email'; validateType: ValidateType; code: boolean }
@@ -40,6 +47,17 @@ const methodContract: Record<
   4: { account: 'email', validateType: 21, code: false },
 }
 
+/**
+ * 管理主认证、服务端追加验证和验证码发送状态。
+ *
+ * 主链路固定为 issued → verify → login；密码值按当前实现原样提交给后端，不在前端
+ * 进行 hash。远程调用失败可能已在服务端产生部分副作用，本地只能呈现错误，不能据此
+ * 判定远端操作一定未执行。可注入 API 与 GT4 控制器以隔离传输层和验证码 SDK。
+ *
+ * @param onLogin 登录成功后接收群组和用户标识的回调。
+ * @param dependencies 可选的后端 API 与 GT4 控制器。
+ * @returns 认证表单状态、派生状态、GT4 状态及四个提交操作。
+ */
 export function useAuth(
   onLogin: (groups: GroupDto[], uid: string) => void,
   dependencies: AuthDependencies = {},
@@ -61,6 +79,7 @@ export function useAuth(
   const notice = ref('')
   let lastLoginRequest: LoginRequest | null = null
 
+  // 登录方式统一驱动账号种类、验证类型和是否需要发送验证码，避免分支各自维护协议映射。
   const contract = computed(() => methodContract[loginMethod.value])
   const isCodeMode = computed(() => contract.value.code)
   const accountReady = computed(() =>
@@ -77,6 +96,7 @@ export function useAuth(
     || selectedChallenge.value?.validateType === 17,
   )
 
+  /** 串行化当前实例内的用户操作，并统一折叠本地可观察错误；不提供跨调用事务保证。 */
   async function run(step: string, operation: () => Promise<void>) {
     if (busy.value) return
     busy.value = step
@@ -91,6 +111,7 @@ export function useAuth(
     }
   }
 
+  /** 为主验证码登录触发 GT4，并使用展示时冻结的账号与国家区号发送验证码。 */
   const sendCode = async () => {
     if (busy.value) return
     error.value = ''
@@ -119,6 +140,7 @@ export function useAuth(
     const snapshotCountryCode = countryCode.value
     const snapshotAccountKind = contract.value.account
     let consumed = false
+    // GT4 成功可能晚于表单编辑；发送目标必须使用弹出验证码时的账号快照。
     const shown = gt4.show(snapshot, async (verifiedAccount, fields) => {
       if (consumed) return
       consumed = true
@@ -168,6 +190,7 @@ export function useAuth(
     item.accountType ?? '',
   ].join('|')
 
+  // 同一验证类型、国家区号、账号及账号类型组成稳定键；后出现的同键项目覆盖前项。
   const mergePending = (...groups: PendingValidation[][]) => {
     const merged = new Map<string, PendingValidation>()
     for (const item of groups.flat()) merged.set(pendingKey(item), item)
@@ -193,6 +216,7 @@ export function useAuth(
     return true
   }
 
+  /** 处理登录成功或 challenge 结果；补查失败不丢弃登录响应已经携带的验证项。 */
   async function handleLoginResult(result: LoginResult) {
     if (result.status === 'success') {
       challengePending.value = []
@@ -213,6 +237,10 @@ export function useAuth(
     }
   }
 
+  /**
+   * 执行登录，并仅对业务错误码 3114169 尝试补查待验证项。
+   * 该数字只作为现有协议分支条件；若补查为空或失败，重新抛出原始登录错误。
+   */
   async function loginWithMissingValidationRecovery(request: LoginRequest) {
     try {
       return await backend.login(request)
@@ -243,12 +271,14 @@ export function useAuth(
     }
   }
 
+  /** 执行主 issued → verify → login 链路；verify 若返回剩余项则暂停在 challenge 阶段。 */
   const submitLogin = () =>
     run('login', async () => {
       if (!accountReady.value) throw new Error('请填写有效登录账号')
       if (!validateValue.value.trim()) {
         throw new Error(isCodeMode.value ? '请输入验证码' : '请输入登录密码')
       }
+      // 当前协议直接传递 validateValue；密码模式也不在前端 hash。
       gt4.destroy()
       const issued = await backend.issueValidationToken({
         validateScene: 5,
@@ -276,6 +306,7 @@ export function useAuth(
       if (result) await handleLoginResult(result)
     })
 
+  /** 提交当前选中的二次验证，并在全部验证完成后按 ValidateType 映射重试登录。 */
   const submitChallenge = () =>
     run('challenge', async () => {
       const pending = selectedChallenge.value
@@ -301,6 +332,7 @@ export function useAuth(
         challengeValue.value = ''
         return
       }
+      // ValidateType 16–22 按既有协议映射登录类型；23 及以上保留原登录类型，不猜测含义。
       const mappedLoginType = pending.validateType === 16
         ? 2
         : pending.validateType === 17
@@ -329,6 +361,7 @@ export function useAuth(
       if (result) await handleLoginResult(result)
     })
 
+  /** 仅为 ValidateType 16/17 的二次验证发送邮件或短信验证码，并冻结目标账号。 */
   const sendChallengeCode = async () => {
     if (busy.value) return
     error.value = ''
@@ -366,6 +399,7 @@ export function useAuth(
 
     busy.value = 'challenge-captcha'
     let consumed = false
+    // 优先使用完整的主账号；掩码账号不能作为验证码发送目标。
     const shown = gt4.show(targetAccount, async (verifiedAccount, fields) => {
       if (consumed) return
       consumed = true
@@ -408,21 +442,29 @@ export function useAuth(
   })
 
   watch(loginMethod, (method) => {
+    // 切换到密码模式不再需要验证码实例，立即释放 SDK 资源。
     if (!methodContract[method].code) gt4.destroy()
   })
 
   return {
+    /** 当前主登录方式。 */
     loginMethod,
+    /** 当前登录账号。 */
     account,
+    /** 手机账号使用的国家区号。 */
     countryCode,
+    /** 主验证值；验证码或按实现原样传递的密码。 */
     validateValue,
+    /** 当前验证链路的服务端令牌。 */
     validateToken,
     secondMac,
+    /** 服务端尚未完成的验证项。 */
     challengePending,
     selectedChallengeType,
     selectedChallenge,
     challengeValue,
     businessProcessing,
+    /** 当前正在执行的用户动作标识。 */
     busy,
     error,
     notice,
@@ -432,6 +474,7 @@ export function useAuth(
     gt4Loading: gt4.loading,
     gt4Ready: gt4.ready,
     gt4Error: gt4.error,
+    /** 主动释放 GT4 资源。 */
     destroyGt4: gt4.destroy,
     sendCode,
     sendChallengeCode,
