@@ -52,11 +52,11 @@ const methodContract: Record<
  *
  * 主链路固定为 issued → verify → login；密码值按当前实现原样提交给后端，不在前端
  * 进行 hash。远程调用失败可能已在服务端产生部分副作用，本地只能呈现错误，不能据此
- * 判定远端操作一定未执行。可注入 API 与 GT4 控制器以隔离传输层和验证码 SDK。
+ * 确认远端操作是否执行。可注入 API 与 GT4 控制器以隔离传输层和验证码 SDK。
  *
  * @param onLogin 登录成功后接收群组和用户标识的回调。
  * @param dependencies 可选的后端 API 与 GT4 控制器。
- * @returns 认证表单状态、派生状态、GT4 状态及四个提交操作。
+ * @returns 认证表单状态、派生状态、GT4 状态及四个主要用户动作。
  */
 export function useAuth(
   onLogin: (groups: GroupDto[], uid: string) => void,
@@ -306,7 +306,7 @@ export function useAuth(
       if (result) await handleLoginResult(result)
     })
 
-  /** 提交当前选中的二次验证，并在全部验证完成后按 ValidateType 映射重试登录。 */
+  /** 提交当前二次验证；verify 未返回剩余项时按 ValidateType 映射重试登录。 */
   const submitChallenge = () =>
     run('challenge', async () => {
       const pending = selectedChallenge.value
@@ -442,29 +442,25 @@ export function useAuth(
   })
 
   watch(loginMethod, (method) => {
-    // 切换到密码模式不再需要验证码实例，立即释放 SDK 资源。
+    // 切换到密码模式不再需要验证码实例，此处调用 destroy 释放 SDK 资源。
     if (!methodContract[method].code) gt4.destroy()
   })
 
   return {
-    /** 当前主登录方式。 */
+    /** 表单 ref 可由视图双向绑定；切换登录方式不会自动清空账号或验证值。 */
     loginMethod,
-    /** 当前登录账号。 */
     account,
-    /** 手机账号使用的国家区号。 */
     countryCode,
-    /** 主验证值；验证码或按实现原样传递的密码。 */
     validateValue,
-    /** 当前验证链路的服务端令牌。 */
     validateToken,
     secondMac,
-    /** 服务端尚未完成的验证项。 */
+    /** challenge 状态由 verify/login 响应重建；成功登录后清空待验证项和选择。 */
     challengePending,
     selectedChallengeType,
     selectedChallenge,
     challengeValue,
     businessProcessing,
-    /** 当前正在执行的用户动作标识。 */
+    /** busy 非空时主要 actions 会拒绝重入；error/notice 由新动作开始时重置。 */
     busy,
     error,
     notice,
@@ -474,8 +470,9 @@ export function useAuth(
     gt4Loading: gt4.loading,
     gt4Ready: gt4.ready,
     gt4Error: gt4.error,
-    /** 主动释放 GT4 资源。 */
+    /** GT4 状态保持响应式；destroyGt4 仅释放验证码资源，不清理认证表单。 */
     destroyGt4: gt4.destroy,
+    /** 发送与提交 actions 各自检查账号、验证方式及 busy 等前置条件。 */
     sendCode,
     sendChallengeCode,
     submitLogin,

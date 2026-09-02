@@ -10,12 +10,13 @@ import { errorMessage, normalizeConnectionStatus } from '../utils/protocol'
  * 管理监控页会话、群组、消息历史和聊天连接状态。
  *
  * `pending` 只阻止本组合式函数经 `run` 发起的动作重叠，不构成后端事务或全局并发保证；
- * 消息历史另用请求编号防止陈旧响应覆盖当前群组。连接状态以事件和后端快照共同推进。
+ * 消息历史另用请求编号防止陈旧响应覆盖当前群组。连接状态以事件和后端快照共同推进；
+ * 部分异步失败路径不具备与成功路径相同的会话门禁，详见对应流程注释。
  *
  * @returns 页面状态、筛选与计数派生值，以及登录接收、群组、连接和退出操作。
  */
 export function useMonitor() {
-  // 会话、群组与消息均为页面本地状态；退出时无论远程结果如何都会清空。
+  // 会话、群组与消息均为页面本地状态；已取得执行权的退出流程会在 finally 中清空。
   const loggedIn = ref(false)
   const uid = ref<string | null>(null)
   const groups = ref<GroupDto[]>([])
@@ -66,7 +67,8 @@ export function useMonitor() {
 
   /**
    * 从后端同步连接快照。
-   * connecting 状态下每 500ms 继续轮询；version 与 uid 共同使旧会话的结果失效。
+   * connecting 状态下每 500ms 继续轮询。成功分支以 mounted、uid 和 version 拒绝
+   * 不再匹配当前会话的结果；Promise 拒绝分支没有同样门禁，logout 或卸载后仍可能写 warning。
    */
   function syncConnectionStatus(expectedUid: string | null = uid.value) {
     const statusVersion = connectionStatusVersion
@@ -96,7 +98,7 @@ export function useMonitor() {
     })
   }
 
-  /** 接受登录结果，切换本地会话并使登录前的消息历史请求失效。 */
+  /** 接受登录结果，切换本地会话并递增请求号，使登录前的消息历史响应不再满足写入条件。 */
   function acceptLogin(nextGroups: GroupDto[], nextUid: string) {
     messageRequestId += 1
     groups.value = nextGroups
@@ -168,8 +170,9 @@ export function useMonitor() {
     })
 
   /**
-   * 请求远程退出并始终清理本地会话。
-   * 远程失败只写入 warning，因为聊天链路是否完全断开无法由前端确认。
+   * 尝试取得 `run` 的 pending 执行权后请求远程退出。
+   * 若已有动作占用 pending，本次调用直接返回，不请求后端也不清理本地状态；若已开始执行，
+   * 即使远程 logout 失败也会在 finally 清理本地会话，并以 warning 披露链路状态不确定。
    */
   const logout = () =>
     run('logout', async () => {
@@ -193,7 +196,11 @@ export function useMonitor() {
   let mounted = true
 
   onMounted(() => {
-    // connection_status 驱动连接状态；new_message 只合并当前选中群组的实时消息。
+    /*
+     * connection_status 驱动连接状态，new_message 只合并当前群组消息。allSettled 会等两个
+     * listen 注册都 settle 后才进入 then 并保存成功项的 unlisten；若一个成功而另一个长期
+     * pending，卸载时可能尚未取得成功项的 unlisten，存在延迟释放或订阅泄漏窗口。
+     */
     void Promise.allSettled([
       listen<string>('connection_status', ({ payload }) => {
         connectionStatusVersion += 1
@@ -207,7 +214,7 @@ export function useMonitor() {
         }
       }),
     ]).then((results) => {
-      // 监听注册可能在卸载后才完成；此时立即调用返回的 unlisten，避免遗留订阅。
+      // 两项均 settle 后若组件已经卸载，此处才调用成功注册项返回的 unlisten。
       for (const result of results) {
         if (result.status === 'rejected') {
           error.value = `事件监听失败：${errorMessage(result.reason)}`
@@ -221,7 +228,7 @@ export function useMonitor() {
   })
 
   onBeforeUnmount(() => {
-    // 同时停止状态轮询并释放所有成功注册的 Tauri 事件监听器。
+    // 停止状态轮询，并释放此时已保存到 unlisteners 的监听；尚卡在 allSettled 中的项不在其中。
     mounted = false
     if (connectionStatusTimer) clearTimeout(connectionStatusTimer)
     for (const unlisten of unlisteners) unlisten()
