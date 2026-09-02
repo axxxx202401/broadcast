@@ -16,6 +16,7 @@ fn main() {
 
     tauri::Builder::default()
         .setup(|app| {
+            let app_handle = app.app_handle();
             let config = im_common::config::AppConfig::default();
             let db = futures::executor::block_on(async {
                 im_store::SqliteStore::new("data/im_monitor.db").await
@@ -30,6 +31,8 @@ fn main() {
                 uid: Arc::new(tokio::sync::RwLock::new(None)),
                 monitoring_groups: Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new())),
                 http,
+                connected: Arc::new(tokio::sync::RwLock::new(false)),
+                app_handle: Some(app_handle.clone()),
             };
             app.manage(state);
             Ok(())
@@ -42,6 +45,7 @@ fn main() {
             commands::groups::toggle_monitor,
             commands::chat::connect_chat,
             commands::chat::disconnect_chat,
+            commands::chat::get_messages,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

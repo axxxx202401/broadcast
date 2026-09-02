@@ -7,6 +7,8 @@ use crate::frame::{decode_frame, encode_frame};
 use im_common::config::AppConfig;
 use im_proto::{ClientInfo, LoginSessionMessage};
 use prost::Message;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use tauri::Emitter;
 
 pub type MessageHandler = Box<dyn Fn(u16, &[u8]) + Send + Sync>;
 
@@ -15,6 +17,8 @@ pub struct ChatClient {
     config: AppConfig,
     stream: Option<Arc<tokio::sync::Mutex<TcpStream>>>,
     handler: Option<Arc<MessageHandler>>,
+    /// Optional Tauri app handle for emitting events.
+    pub app_handle: Option<tauri::AppHandle>,
 }
 
 impl std::fmt::Debug for ChatClient {
@@ -32,7 +36,13 @@ impl ChatClient {
             config,
             stream: None,
             handler: None,
+            app_handle: None,
         }
+    }
+
+    pub fn with_app_handle(mut self, handle: tauri::AppHandle) -> Self {
+        self.app_handle = Some(handle);
+        self
     }
 
     pub fn on_message<F>(&mut self, handler: F)
@@ -56,6 +66,7 @@ impl ChatClient {
         let reader = ReadTask {
             stream: stream.clone(),
             handler: self.handler.clone(),
+            app_handle: self.app_handle.clone(),
             leftover: Vec::new(),
         };
         tokio::spawn(reader.run());
@@ -120,6 +131,7 @@ impl ChatClient {
 struct ReadTask {
     stream: Arc<tokio::sync::Mutex<TcpStream>>,
     handler: Option<Arc<MessageHandler>>,
+    app_handle: Option<tauri::AppHandle>,
     /// Accumulates bytes across read iterations; holds the tail of an
     /// incomplete frame after each `handle_data` call.
     leftover: Vec<u8>,
@@ -161,6 +173,12 @@ impl ReadTask {
                     let consumed = 8 + content.len();
                     if let Some(handler) = &self.handler {
                         handler(_msg_id, &content);
+                    }
+                    if let Some(app_handle) = &self.app_handle {
+                        let content_b64 = STANDARD.encode(content);
+                        if let Err(e) = app_handle.emit("chat_event", &serde_json::json!({"type": "message", "msg_id": _msg_id, "content": content_b64})) {
+                            warn!("Failed to emit event: {}", e);
+                        }
                     }
                     self.leftover.drain(..consumed);
                 }

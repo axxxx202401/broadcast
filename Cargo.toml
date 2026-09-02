@@ -44,6 +44,7 @@ sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runti
 
 # 工具
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+base64 = "0.22"
 thiserror = "1"
 log = "0.4"
 tracing = "0.1"
