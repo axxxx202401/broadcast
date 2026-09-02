@@ -186,7 +186,7 @@ message ClientInfo {
     string version = 9;
 }
 
-// 接口通用结果，承载业务错误码、提示及服务端保留的展示元数据。
+// 接口通用结果，承载业务错误码、提示及服务端保留字段。
 message CommonResult {
     // 业务错误码。
     int32 err_code = 1;
@@ -194,7 +194,7 @@ message CommonResult {
     string err_msg = 2;
     // 服务端返回的结果标记，具体语义由接口约定。
     string flag = 3;
-    // 服务端展示控制值；当前协议未定义其数值语义。
+    // 服务端返回的整型字段；具体业务语义由服务端协议约定，当前客户端未验证。
     int32 display = 4;
     // 服务端返回的提示标题。
     string title = 5;
@@ -215,19 +215,20 @@ message UserBase {
     UserOnOrOffLine user_on_or_off_line = 6;
     string signature = 7;
     string depict = 8;
-    // `bf_*` 字段为既有协议布尔标记，具体业务语义由服务端约定。
+    // 以下 `bf_*` 字段是服务端布尔标记，当前客户端未验证其具体业务语义。
     bool bf_cancel = 9;
     bool bf_banned = 10;
     string identify = 11;
     string real_name = 12;
     string id_number = 13;
+    // 服务端时间字段；单位和边界尚未由当前客户端验证，以服务端协议为准。
     int64 create_time = 14;
     int32 user_type = 15;
 }
 
 // 当前用户与目标用户的好友关系。
 message FriendRelation {
-    // 是否为好友。
+    // 服务端关系布尔标记；具体业务语义尚未由当前客户端验证。
     bool bf_friend = 1;
     // 当前用户为对方设置的备注名。
     string remark_name = 2;
@@ -239,8 +240,9 @@ message FriendRelation {
 message UserOnOrOffLine {
     int64 uid = 1;
     bool online = 2;
+    // 服务端时间字段；单位和边界尚未由当前客户端验证，以服务端协议为准。
     int64 create_time = 3;
-    // 服务端控制的展示标记，具体语义由协议调用方解释。
+    // 服务端布尔标记；具体业务语义尚未由当前客户端验证。
     bool bf_show = 4;
 }
 
@@ -253,31 +255,24 @@ message GroupMemberBase {
     int64 score = 5;
     // 该成员的管理员权限集合。
     AdminRightBase right = 6;
-    // 既有协议布尔标记，具体语义由服务端约定。
+    // 服务端布尔标记；具体业务语义尚未由当前客户端验证。
     bool bf_my_black = 7;
     // 成员标签类型编码，具体数值由服务端约定。
     int32 label_type = 8;
 }
 
-// 群管理员权限集合；各 `bf_*` 字段保留既有协议命名。
+// 群管理员相关的服务端布尔标记集合；当前客户端未验证各字段的具体业务语义。
 message AdminRightBase {
-    // 是否可修改群资料。
     bool bf_update_data = 1;
-    // 是否可处理入群审核。
     bool bf_join_check = 2;
-    // 是否可发布群公告。
     bool bf_push_notice = 3;
-    // 是否可设置管理员。
     bool bf_set_admin = 4;
-    // 是否可重置群二维码。
     bool bf_reset_qrcode = 5;
-    // 是否可设置入群提示。
     bool bf_set_join_notice = 6;
-    // 是否可设置群直播相关能力。
     bool bf_set_live = 7;
 }
 
-// 群基础资料及服务端下发的群设置。
+// 群基础资料及服务端下发的群设置；`bf_*` 字段的具体业务语义尚未由当前客户端验证。
 message GroupBase {
     // 群唯一标识。
     int64 group_id = 1;
@@ -285,14 +280,14 @@ message GroupBase {
     int64 host_id = 2;
     string name = 3;
     string pic = 4;
-    // 入群是否需要审核。
     bool bf_join_check = 5;
+    // 服务端时间字段；单位和边界尚未由当前客户端验证，以服务端协议为准。
     int64 create_time = 6;
     int64 member_count = 7;
-    // 以下 `bf_*` 设置均为既有协议字段，未由当前客户端解释的含义保持由服务端约定。
     bool bf_join_friend = 8;
     bool bf_shutup = 9;
     bool bf_group_read_cancel = 10;
+    // 服务端时限字段；单位和边界尚未由当前客户端验证，以服务端协议为准。
     int32 group_msg_cancel_time = 11;
     bool bf_banned = 12;
     string group_alias_name = 13;
@@ -319,9 +314,10 @@ message GroupContactListResp {
 
 // 建立聊天长连接时发送的登录会话消息。
 message LoginSessionMessage {
-    // 客户端信息；`clinet_info` 是线上协议既有拼写，为兼容 wire 字段与生成 API 必须保留。
+    // 客户端信息；保留服务端既有拼写 `clinet_info` 以维持生成 API 和调用代码兼容。
+    // protobuf wire 兼容由字段号和类型决定。
     ClientInfo clinet_info = 1;
-    // 最近登录时间。
+    // 服务端时间字段；单位和边界尚未由当前客户端验证，以服务端协议为准。
     int64 latest_login_time = 2;
     // 安装标识；当前客户端使用设备标识填充。
     string install_code = 3;
@@ -339,13 +335,13 @@ message KeyPairBase {
 
 // 长连接登录成功后服务端推送的会话密钥信息。
 message PushLoginSuccessMessage {
-    // 登录时间。
+    // 服务端时间字段；单位和边界尚未由当前客户端验证，以服务端协议为准。
     int64 login_time = 1;
     // 用户端密钥材料。
     KeyPairBase user_key_pair = 2;
     // Web 端密钥材料。
     KeyPairBase web_key_pair = 3;
-    // Web 端是否在线。
+    // 服务端布尔标记；具体业务语义尚未由当前客户端验证。
     bool bf_web_online = 4;
 }
 
@@ -358,15 +354,17 @@ message GroupMessage {
     bytes content = 4;
     // 被 @ 的用户标识列表。
     repeated int64 at_uids = 6;
+    // 服务端时间字段；单位和边界尚未由当前客户端验证，以服务端协议为准。
     int64 send_time = 7;
     int64 msg_id = 8;
     GroupMemberBase send_member = 9;
     int32 version = 10;
     // 消息内容摘要。
     string content_md5 = 11;
-    // 附件存储键。
+    // 附件关联键；具体业务语义由服务端协议约定。
     string attachment_key = 12;
     string group_name = 13;
+    // 服务端时限字段；单位和边界尚未由当前客户端验证，以服务端协议为准。
     int32 snapchat_time = 14;
     repeated AtUser at_users = 15;
     // 上传通道。
@@ -379,7 +377,7 @@ message GroupMessage {
     repeated LinkObj links = 19;
     // 服务端保留的时间字段，当前客户端不解释其单位和语义。
     int64 sent_over_time = 20;
-    // 消息是否隐藏。
+    // 服务端布尔标记；具体业务语义尚未由当前客户端验证。
     bool is_hide = 21;
 }
 
@@ -418,6 +416,7 @@ message RecallMessage {
     int64 msg_id = 1;
     int64 send_uid = 2;
     int64 group_id = 3;
+    // 服务端时间字段；单位和边界尚未由当前客户端验证，以服务端协议为准。
     int64 send_time = 4;
     int32 operator_uid = 5;
     MessageType msg_type = 6;
@@ -431,7 +430,7 @@ message RecallMessage {
 
 // ========== 登录相关 ==========
 
-// 登录请求，按照 `login_type` 携带对应的验证码、密码或第三方凭据。
+// 登录请求，可携带客户端信息与多种凭据字段；字段组合由服务端登录协议约定。
 message LoginReq {
     ClientInfo client_info = 1;
     string country_code = 2;
@@ -460,7 +459,7 @@ message LoginReq {
     string second_mac = 20;
 }
 
-// 登录响应，返回用户、会话、服务地址以及服务端登录策略。
+// 登录响应，返回用户、会话、服务地址以及服务端保留字段。
 message LoginResp {
     CommonResult common_result = 1;
     UserBase user = 2;
@@ -469,23 +468,30 @@ message LoginResp {
     int32 review_model = 4;
     // 后续业务与长连接服务地址。
     UrlInfo urls = 5;
-    // 此次登录是否同时完成了注册。
+    // 服务端布尔标记；具体业务语义尚未由当前客户端验证。
     bool login_reg = 6;
+    // 服务端时间字段；单位和边界尚未由当前客户端验证，以服务端协议为准。
     int64 server_time = 7;
     string token = 8;
     string invite_code = 9;
     int32 privacy = 10;
+    // 服务端时间字段；单位和边界尚未由当前客户端验证，以服务端协议为准。
     int64 disable_time = 11;
     string agora_app_id = 12;
+    // 上传文件大小相关数值；单位和边界尚未由当前客户端验证，以服务端协议为准。
     int64 upload_file_size = 13;
+    // 上传图片大小相关数值；单位和边界尚未由当前客户端验证，以服务端协议为准。
     int64 upload_image_size = 14;
-    // 是否需要重置密码的服务端状态值。
+    // 服务端整型状态；具体业务语义尚未由当前客户端验证。
     int32 need_reset_password = 15;
     int32 key_version = 16;
+    // 服务端时限字段；单位和边界尚未由当前客户端验证，以服务端协议为准。
     int32 shoot_time_limit = 17;
+    // 服务端布尔标记；具体业务语义尚未由当前客户端验证。
     bool remind_change_password = 18;
+    // 上传身份图片大小相关数值；单位和边界尚未由当前客户端验证，以服务端协议为准。
     int64 upload_id_img_size = 19;
-    // 当前设备是否不同于最近一次登录设备。
+    // 服务端布尔标记；具体业务语义尚未由当前客户端验证。
     bool is_not_last_device_mac = 20;
 }
 

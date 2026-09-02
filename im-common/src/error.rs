@@ -1,7 +1,7 @@
 //! 跨 crate 的统一错误模型。
 //!
 //! 本模块将密码学、传输、协议、I/O、HTTP、业务、存储和配置等失败归一为
-//! [`AppError`]，并通过 [`AppResult`] 统一可失败操作的返回类型。
+//! [`AppError`]，并通过 [`crate::error::AppResult`] 统一可失败操作的返回类型。
 
 use thiserror::Error;
 
