@@ -7,7 +7,6 @@ rust-version.workspace = true
 [dependencies]
 aes.workspace = true
 cipher.workspace = true
-pkcs7.workspace = true
 md-5.workspace = true
 hex.workspace = true
 serde = { workspace = true, features = ["derive"] }

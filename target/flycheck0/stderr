@@ -1,0 +1,251 @@
+   0.225070541s  INFO prepare_target{force=false package_id=im-app v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app) target="im-app"}: cargo::core::compiler::fingerprint: fingerprint error for im-app v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app)/Check { test: false }/TargetInner { name: "im-app", doc: true, ..: with_path("/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app/src/main.rs", Edition2021) }
+   0.225092791s  INFO prepare_target{force=false package_id=im-app v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app) target="im-app"}: cargo::core::compiler::fingerprint:     err: failed to read `/Volumes/TRANSCEND/works/objects/rust/broadcast/target/debug/.fingerprint/im-app-7cddccb4f8b1d96e/bin-im-app`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.257683500s  INFO prepare_target{force=false package_id=im-chat v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-chat) target="im_chat"}: cargo::core::compiler::fingerprint: fingerprint error for im-chat v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-chat)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("im_chat", ["lib"], "/Volumes/TRANSCEND/works/objects/rust/broadcast/im-chat/src/lib.rs", Edition2021) }
+   0.257902666s  INFO prepare_target{force=false package_id=im-chat v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-chat) target="im_chat"}: cargo::core::compiler::fingerprint:     err: failed to read `/Volumes/TRANSCEND/works/objects/rust/broadcast/target/debug/.fingerprint/im-chat-0aaef80f28932e9c/lib-im_chat`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   8: cargo::ops::cargo_compile::compile_ws
+   9: cargo::ops::cargo_compile::compile_with_exec
+  10: cargo::ops::cargo_compile::compile
+  11: cargo::commands::check::exec
+  12: <cargo::cli::Exec>::exec
+  13: cargo::main
+  14: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  15: std::rt::lang_start::<()>::{closure#0}
+  16: std::rt::lang_start_internal
+  17: _main
+   0.259716333s  INFO prepare_target{force=false package_id=im-common v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-common) target="im_common"}: cargo::core::compiler::fingerprint: fingerprint error for im-common v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-common)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("im_common", ["lib"], "/Volumes/TRANSCEND/works/objects/rust/broadcast/im-common/src/lib.rs", Edition2021) }
+   0.259721500s  INFO prepare_target{force=false package_id=im-common v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-common) target="im_common"}: cargo::core::compiler::fingerprint:     err: failed to read `/Volumes/TRANSCEND/works/objects/rust/broadcast/target/debug/.fingerprint/im-common-af77a017db0d650d/lib-im_common`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   9: cargo::ops::cargo_compile::compile_ws
+  10: cargo::ops::cargo_compile::compile_with_exec
+  11: cargo::ops::cargo_compile::compile
+  12: cargo::commands::check::exec
+  13: <cargo::cli::Exec>::exec
+  14: cargo::main
+  15: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  16: std::rt::lang_start::<()>::{closure#0}
+  17: std::rt::lang_start_internal
+  18: _main
+   0.269539375s  INFO prepare_target{force=false package_id=im-http v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-http) target="im_http"}: cargo::core::compiler::fingerprint: fingerprint error for im-http v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-http)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("im_http", ["lib"], "/Volumes/TRANSCEND/works/objects/rust/broadcast/im-http/src/lib.rs", Edition2021) }
+   0.269543833s  INFO prepare_target{force=false package_id=im-http v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-http) target="im_http"}: cargo::core::compiler::fingerprint:     err: failed to read `/Volumes/TRANSCEND/works/objects/rust/broadcast/target/debug/.fingerprint/im-http-a8648f33dfd404f6/lib-im_http`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   8: cargo::ops::cargo_compile::compile_ws
+   9: cargo::ops::cargo_compile::compile_with_exec
+  10: cargo::ops::cargo_compile::compile
+  11: cargo::commands::check::exec
+  12: <cargo::cli::Exec>::exec
+  13: cargo::main
+  14: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  15: std::rt::lang_start::<()>::{closure#0}
+  16: std::rt::lang_start_internal
+  17: _main
+   0.282732083s  INFO prepare_target{force=false package_id=im-store v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-store) target="im_store"}: cargo::core::compiler::fingerprint: fingerprint error for im-store v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-store)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("im_store", ["lib"], "/Volumes/TRANSCEND/works/objects/rust/broadcast/im-store/src/lib.rs", Edition2021) }
+   0.282737833s  INFO prepare_target{force=false package_id=im-store v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-store) target="im_store"}: cargo::core::compiler::fingerprint:     err: failed to read `/Volumes/TRANSCEND/works/objects/rust/broadcast/target/debug/.fingerprint/im-store-7731b88eceed55a0/lib-im_store`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   8: cargo::ops::cargo_compile::compile_ws
+   9: cargo::ops::cargo_compile::compile_with_exec
+  10: cargo::ops::cargo_compile::compile
+  11: cargo::commands::check::exec
+  12: <cargo::cli::Exec>::exec
+  13: cargo::main
+  14: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  15: std::rt::lang_start::<()>::{closure#0}
+  16: std::rt::lang_start_internal
+  17: _main
+   0.320281500s  INFO prepare_target{force=false package_id=im-app v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app) target="im-app"}: cargo::core::compiler::fingerprint: fingerprint error for im-app v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app)/Check { test: true }/TargetInner { name: "im-app", doc: true, ..: with_path("/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app/src/main.rs", Edition2021) }
+   0.320294458s  INFO prepare_target{force=false package_id=im-app v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app) target="im-app"}: cargo::core::compiler::fingerprint:     err: failed to read `/Volumes/TRANSCEND/works/objects/rust/broadcast/target/debug/.fingerprint/im-app-77c7f4beb586813b/test-bin-im-app`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.322761041s  INFO prepare_target{force=false package_id=im-chat v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-chat) target="im_chat"}: cargo::core::compiler::fingerprint: fingerprint error for im-chat v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-chat)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("im_chat", ["lib"], "/Volumes/TRANSCEND/works/objects/rust/broadcast/im-chat/src/lib.rs", Edition2021) }
+   0.322777833s  INFO prepare_target{force=false package_id=im-chat v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-chat) target="im_chat"}: cargo::core::compiler::fingerprint:     err: failed to read `/Volumes/TRANSCEND/works/objects/rust/broadcast/target/debug/.fingerprint/im-chat-c9cb21313aeea355/test-lib-im_chat`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.323811291s  INFO prepare_target{force=false package_id=im-common v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-common) target="im_common"}: cargo::core::compiler::fingerprint: fingerprint error for im-common v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-common)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("im_common", ["lib"], "/Volumes/TRANSCEND/works/objects/rust/broadcast/im-common/src/lib.rs", Edition2021) }
+   0.323825333s  INFO prepare_target{force=false package_id=im-common v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-common) target="im_common"}: cargo::core::compiler::fingerprint:     err: failed to read `/Volumes/TRANSCEND/works/objects/rust/broadcast/target/debug/.fingerprint/im-common-040051b88bb2f851/test-lib-im_common`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.324329291s  INFO prepare_target{force=false package_id=im-http v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-http) target="im_http"}: cargo::core::compiler::fingerprint: fingerprint error for im-http v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-http)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("im_http", ["lib"], "/Volumes/TRANSCEND/works/objects/rust/broadcast/im-http/src/lib.rs", Edition2021) }
+   0.324336708s  INFO prepare_target{force=false package_id=im-http v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-http) target="im_http"}: cargo::core::compiler::fingerprint:     err: failed to read `/Volumes/TRANSCEND/works/objects/rust/broadcast/target/debug/.fingerprint/im-http-da37ad2f665c8e35/test-lib-im_http`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.325343083s  INFO prepare_target{force=false package_id=im-store v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-store) target="im_store"}: cargo::core::compiler::fingerprint: fingerprint error for im-store v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-store)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("im_store", ["lib"], "/Volumes/TRANSCEND/works/objects/rust/broadcast/im-store/src/lib.rs", Edition2021) }
+   0.325364791s  INFO prepare_target{force=false package_id=im-store v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-store) target="im_store"}: cargo::core::compiler::fingerprint:     err: failed to read `/Volumes/TRANSCEND/works/objects/rust/broadcast/target/debug/.fingerprint/im-store-3acf55b2f677dabf/test-lib-im_store`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+    Checking im-common v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-common)
+    Checking im-http v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-http)
+    Checking im-chat v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-chat)
+    Checking im-store v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-store)
+    Checking im-app v0.1.0 (/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.51s

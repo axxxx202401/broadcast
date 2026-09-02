@@ -1,0 +1,13 @@
+/Volumes/TRANSCEND/works/objects/rust/broadcast/target/debug/deps/const_oid-4d0818f9455fc554.d: /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/lib.rs /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/checked.rs /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/arcs.rs /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/encoder.rs /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/error.rs /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/parser.rs /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/db.rs /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/db/gen.rs /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/../README.md
+
+/Volumes/TRANSCEND/works/objects/rust/broadcast/target/debug/deps/libconst_oid-4d0818f9455fc554.rmeta: /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/lib.rs /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/checked.rs /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/arcs.rs /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/encoder.rs /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/error.rs /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/parser.rs /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/db.rs /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/db/gen.rs /Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/../README.md
+
+/Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/lib.rs:
+/Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/checked.rs:
+/Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/arcs.rs:
+/Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/encoder.rs:
+/Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/error.rs:
+/Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/parser.rs:
+/Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/db.rs:
+/Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/db/gen.rs:
+/Users/a/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-oid-0.9.6/src/../README.md:
