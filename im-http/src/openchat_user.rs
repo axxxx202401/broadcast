@@ -1,3 +1,8 @@
+//! OpenChat 用户认证 HTTP 客户端、请求/响应 DTO 与错误模型。
+//!
+//! 本模块按 OpenChat 网关协议发送 JSON：请求正文封装为加密网关帧并以
+//! `application/octet-stream` 发送，响应正文则依据帧标志选择是否解压和解密。
+
 use super::{
     client::{build_gateway_request_body, parse_gateway_response},
     http_clients::{read_response_body_limited, MAX_HTTP_RESPONSE_SIZE},
@@ -10,6 +15,11 @@ use im_common::version_key::HeaderManager;
 #[cfg(debug_assertions)]
 use std::time::Instant;
 
+/// OpenChat 用户认证 API 客户端。
+///
+/// 客户端保存网关地址、HTTP 客户端、正文密码器、请求头生成器及设备参数；调用端点
+/// 时会执行真实网络请求。匿名请求与认证请求都会生成 `X-One`、`X-Ten`，后者还会
+/// 将访问令牌交给认证请求头生成逻辑。
 pub struct OpenChatUserClient {
     base_url: String,
     http: reqwest::Client,
@@ -21,21 +31,32 @@ pub struct OpenChatUserClient {
 const USER_DETAIL_PATH: &str = "/user/user/userDetail";
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+/// OpenChat API 的通用响应 envelope。
+///
+/// 只有 [`ApiResponse::is_success`] 判定 `code == 200` 后，`data` 才会被解析为目标
+/// 成功类型；其他状态由 [`ApiBusinessError`] 原样保留可用的 envelope 字段。
 pub struct ApiResponse<T> {
+    /// 服务端响应码；当前协议仅将 `200` 视为成功。
     pub code: i32,
     #[serde(default)]
+    /// 服务端返回的消息，缺失时为空字符串。
     pub msg: String,
     #[serde(default)]
+    /// 服务端返回的数据；其具体结构由端点和响应码决定。
     pub data: Option<T>,
     #[serde(default)]
+    /// 服务端可选的展示控制值，不在客户端解释其业务含义。
     pub display: Option<i32>,
     #[serde(default)]
+    /// 服务端可选标题。
     pub title: Option<String>,
     #[serde(default)]
+    /// 服务端可选参数列表。
     pub params: Option<Vec<String>>,
 }
 
 impl<T> ApiResponse<T> {
+    /// 仅在响应码严格等于 `200` 时返回 `true`。
     pub fn is_success(&self) -> bool {
         self.code == 200
     }
@@ -43,27 +64,47 @@ impl<T> ApiResponse<T> {
 
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("business error {code}: {msg}")]
+/// OpenChat 返回非 `200` 响应码时形成的业务错误。
+///
+/// 该类型保留响应 envelope 中的响应码、消息、原始 `data` 及可选展示字段，便于上层
+/// 在不丢失服务端上下文的情况下决定后续流程。
 pub struct ApiBusinessError {
+    /// 服务端业务响应码。
     pub code: i32,
+    /// 服务端业务错误消息。
     pub msg: String,
+    /// 未转换为成功 DTO 的原始业务数据。
     pub data: Option<serde_json::Value>,
+    /// 服务端可选的展示控制值。
     pub display: Option<i32>,
+    /// 服务端可选标题。
     pub title: Option<String>,
+    /// 服务端可选参数列表。
     pub params: Option<Vec<String>>,
 }
 
 #[derive(Debug, thiserror::Error)]
+/// OpenChat 用户认证调用可能产生的错误。
 pub enum OpenChatUserError {
+    /// HTTP、网关帧、加解密或响应大小限制等传输层错误。
     #[error(transparent)]
     Transport(#[from] AppError),
+    /// JSON 编码或解码失败。
     #[error("invalid API response: {0}")]
     Decode(#[from] serde_json::Error),
+    /// 客户端在发起网络请求前发现请求参数不满足本地约束。
     #[error("invalid request: {0}")]
     Validation(String),
+    /// 服务端返回了非 `200` 业务响应，且 envelope 字段保存在错误值中。
     #[error(transparent)]
     Business(#[from] ApiBusinessError),
 }
 
+/// 解析 OpenChat 通用响应 envelope。
+///
+/// `code != 200` 时不把 `data` 反序列化为成功类型，而是返回保留 envelope 字段的
+/// [`ApiBusinessError`]；仅在 `code == 200` 时将 `data`（缺失时按 JSON `null`）解析
+/// 为目标类型。
 fn parse_api_response<T>(bytes: &[u8]) -> Result<T, OpenChatUserError>
 where
     T: serde::de::DeserializeOwned,
@@ -85,6 +126,9 @@ where
         .map_err(OpenChatUserError::from)
 }
 
+/// 定义使用 `i32` 作为 serde wire 表示的协议枚举。
+///
+/// 生成的反序列化实现只接受声明过的整数，未知值直接返回 serde 错误。
 macro_rules! integer_enum {
     (
         $(#[$meta:meta])*
@@ -95,7 +139,10 @@ macro_rules! integer_enum {
         $(#[$meta])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum $name {
-            $($variant = $value),+
+            $(
+                #[doc = concat!("协议使用的整数枚举值 `", stringify!($value), "`。")]
+                $variant = $value
+            ),+
         }
 
         impl serde::Serialize for $name {
@@ -126,6 +173,9 @@ macro_rules! integer_enum {
 }
 
 integer_enum! {
+    /// 登录方式的协议枚举。
+    ///
+    /// 序列化与反序列化均使用 `i32`；反序列化遇到未列出的整数时返回错误。
     pub enum LoginType {
         PhoneCode = 1,
         EmailCode = 2,
@@ -140,6 +190,9 @@ integer_enum! {
 }
 
 integer_enum! {
+    /// 校验方式的协议枚举。
+    ///
+    /// 序列化与反序列化均使用 `i32`；反序列化遇到未列出的整数时返回错误。
     pub enum ValidateType {
         EmailCode = 16,
         PhoneCode = 17,
@@ -156,6 +209,9 @@ integer_enum! {
 }
 
 integer_enum! {
+    /// 校验场景的协议枚举。
+    ///
+    /// 序列化与反序列化均使用 `i32`；反序列化遇到未列出的整数时返回错误。
     pub enum ValidateScene {
         Register = 4,
         Login = 5,
@@ -164,118 +220,173 @@ integer_enum! {
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+/// GT4 校验数据。
+///
+/// 字段默认按 camelCase 编码；嵌入短信或邮件请求时，外层字段名固定为 `gt4DTO`。
 pub struct Gt4Dto {
+    /// 线协议中的 `lotNumber` 值。
     pub lot_number: String,
+    /// 线协议中的 `captchaOutput` 值。
     pub captcha_output: String,
+    /// 线协议中的 `passToken` 值。
     pub pass_token: String,
+    /// 线协议中的 `genTime` 值。
     pub gen_time: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+/// 发送短信验证码请求。
 pub struct SendSmsCodeReq {
+    /// 线协议中的 `phone` 值。
     pub phone: String,
+    /// 线协议中的 `countryCode` 整数值。
     pub country_code: i32,
+    /// 线协议中的 `codeType` 整数值。
     pub code_type: i32,
     #[serde(rename = "gt4DTO")]
+    /// GT4 数据；线协议字段名为大小写固定的 `gt4DTO`。
     pub gt4_dto: Gt4Dto,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+/// 发送邮件验证码请求。
 pub struct SendEmailCodeReq {
+    /// 线协议中的 `email` 值。
     pub email: String,
+    /// 线协议中的 `codeType` 整数值。
     pub code_type: i32,
     #[serde(rename = "gt4DTO")]
+    /// GT4 数据；线协议字段名为大小写固定的 `gt4DTO`。
     pub gt4_dto: Gt4Dto,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+/// 申请校验信息的请求。
 pub struct IssuedReq {
+    /// 校验场景，以 [`ValidateScene`] 的 `i32` 值编码。
     pub validate_scene: ValidateScene,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// 可选校验方式列表；为 `None` 时不写入 JSON。
     pub validate_types: Option<Vec<ValidateType>>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+/// 申请校验信息的响应数据。
 pub struct IssuedResp {
+    /// 后续校验请求使用的令牌值。
     pub validate_token: String,
     #[serde(default)]
+    /// 服务端返回的校验方式列表；字段缺失时为空列表。
     pub validate_types: Vec<ValidateType>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+/// 一项待提交的校验数据。
 pub struct PendingValidateDto {
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// 可选 `countryCode` 整数值；为 `None` 时不写入 JSON。
     pub country_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// 可选 `account` 值；为 `None` 时不写入 JSON。
     pub account: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// 可选 `accountType` 整数值；为 `None` 时不写入 JSON。
     pub account_type: Option<i32>,
+    /// 校验方式，以 [`ValidateType`] 的 `i32` 值编码。
     pub validate_type: ValidateType,
+    /// 提交给服务端的 `validateValue` 值。
     pub validate_value: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+/// 提交校验数据的请求。
 pub struct VerifyReq {
+    /// [`IssuedResp`] 返回的校验令牌。
     pub validate_token: String,
     #[serde(rename = "pendingValidateDTOS")]
+    /// 待校验项目；线协议字段名为大小写固定的 `pendingValidateDTOS`。
     pub pending_validate_dtos: Vec<PendingValidateDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// 可选 `secondMac` 值；为 `None` 时不写入 JSON。
     pub second_mac: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+/// 服务端返回的一项校验模型。
 pub struct ValidateModelVo {
+    /// 可选 `countryCode` 整数值。
     pub country_code: Option<i32>,
+    /// 可选 `account` 值。
     pub account: Option<String>,
+    /// 可选 `accountType` 整数值。
     pub account_type: Option<i32>,
+    /// 校验方式，以 [`ValidateType`] 的 `i32` 值编码。
     pub validate_type: ValidateType,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+/// 服务端返回的一项业务处理结果。
 pub struct BusinessProcessingDto {
+    /// 线协议中的 `businessCode` 整数值。
     pub business_code: i32,
     #[serde(default)]
+    /// 可选 `businessMsg` 值；字段缺失时为 `None`。
     pub business_msg: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+/// 提交校验数据后的响应。
 pub struct VerifyResp {
     #[serde(default, rename = "validateModelVOS")]
+    /// 校验模型列表；线协议字段名为 `validateModelVOS`，缺失时为空列表。
     pub validate_model_vos: Vec<ValidateModelVo>,
     #[serde(default)]
+    /// 业务处理结果列表；字段缺失时为空列表。
     pub business_processing: Vec<BusinessProcessingDto>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+/// 查询待校验项目的请求。
 pub struct ListPendingValidateReq {
+    /// 查询所使用的校验令牌。
     pub validate_token: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+/// 登录请求。
+///
+/// 可选字段为 `None` 时不写入 JSON；其余字段按 camelCase 编码。
 pub struct LoginReq {
+    /// 登录方式，以 [`LoginType`] 的 `i32` 值编码。
     pub login_type: LoginType,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// 可选 `phone` 值。
     pub phone: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// 可选 `email` 值。
     pub email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// 可选 `countryCode` 整数值。
     pub country_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// 可选 `validateToken` 值。
     pub validate_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// 可选 `secondMac` 值。
     pub second_mac: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// 可选 `credentials` 值。
     pub credentials: Option<String>,
 }
 
@@ -294,6 +405,11 @@ impl Default for LoginReq {
 }
 
 impl LoginReq {
+    /// 按当前客户端规则检查登录请求的必填字段。
+    ///
+    /// 手机验证码或手机密码登录要求非空 `phone` 和存在 `country_code`；邮件验证码或
+    /// 邮件密码登录要求非空 `email`；人脸登录要求非空 `credentials`。注册、扫码、
+    /// 交易密码和 Google 验证码登录目前不增加本地必填检查。
     pub fn validate(&self) -> Result<(), String> {
         match self.login_type {
             LoginType::PhoneCode | LoginType::PhonePassword => {
@@ -328,6 +444,11 @@ fn require_non_empty(value: &Option<String>, field: &str) -> Result<(), String> 
     }
 }
 
+/// 生成供日志使用的脱敏 JSON 文本。
+///
+/// 该函数递归遍历对象和数组，并在忽略键名中的 `_`、`-` 及大小写后，对当前明确
+/// 列出的令牌、账号、验证码等敏感键替换值。它不承诺覆盖未列入匹配表的其他敏感键；
+/// 非 JSON 输入只记录字节数。
 pub(crate) fn sanitize_debug_json(bytes: &[u8]) -> String {
     fn redact(value: &mut serde_json::Value) {
         match value {
@@ -383,6 +504,7 @@ pub(crate) fn sanitize_debug_json(bytes: &[u8]) -> String {
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+/// 登录响应中的授权信息。
 pub struct Authorization {
     #[serde(
         default,
@@ -390,35 +512,55 @@ pub struct Authorization {
         alias = "accessToken",
         alias = "token"
     )]
+    /// 访问令牌；反序列化兼容 `access_token`、`accessToken` 和 `token`，序列化使用
+    /// `access_token`。
     pub access_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+/// 登录成功响应中的数据。
+///
+/// 字段通常按 camelCase 解码；直接令牌字段还兼容 `token`、`access_token` 和
+/// `accessToken`。
 pub struct LoginData {
+    /// 可选 `uid` 值。
     pub uid: Option<i64>,
+    /// 可选 `isNotLastDeviceMac` 值。
     pub is_not_last_device_mac: Option<bool>,
+    /// 可选 `isLoginOut` 整数值。
     pub is_login_out: Option<i32>,
+    /// 可选 `oldSessionId` 值。
     pub old_session_id: Option<String>,
     #[serde(default)]
+    /// 可选嵌套授权信息。
     pub authorization: Option<Authorization>,
     #[serde(default, alias = "access_token", alias = "accessToken")]
+    /// 可选直接令牌；反序列化兼容 `token`、`access_token` 和 `accessToken`。
     pub token: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+/// 用户详情中的基础数据。
 pub struct UserBase {
+    /// 可选用户标识值。
     pub uid: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+/// 用户详情端点返回的数据。
 pub struct UserDetailResp {
+    /// 线协议 `userBase` 对应的基础数据。
     pub user_base: UserBase,
 }
 
 impl LoginData {
+    /// 返回可用的访问令牌切片。
+    ///
+    /// 优先读取嵌套 `authorization` 中已通过 `access_token`、`accessToken` 或 `token`
+    /// 映射得到的值；没有时再读取登录数据顶层的兼容令牌字段。
     pub fn access_token(&self) -> Option<&str> {
         self.authorization
             .as_ref()
@@ -428,6 +570,10 @@ impl LoginData {
 }
 
 impl OpenChatUserClient {
+    /// 创建 OpenChat 用户认证客户端。
+    ///
+    /// `body_aes_key` 在构造时用于初始化网关正文密码器；密钥无效时返回
+    /// [`AppError`]。本方法只创建客户端，不发起网络请求。
     pub fn new(
         http: reqwest::Client,
         base_url: String,
@@ -444,10 +590,20 @@ impl OpenChatUserClient {
         })
     }
 
+    /// 通过匿名 OpenChat 请求头发送 JSON 字节。
+    ///
+    /// 该层委托给令牌可选的传输实现，并生成匿名 `X-One`、`X-Ten`。
     async fn post_encrypted(&self, path: &str, json_bytes: &[u8]) -> Result<Vec<u8>, AppError> {
         self.post_encrypted_with_token(path, json_bytes, None).await
     }
 
+    /// 将 JSON 封装为 Gateway 加密帧并执行 POST。
+    ///
+    /// 请求使用 `application/octet-stream`；无令牌时生成匿名 `X-One`、`X-Ten`，有
+    /// 令牌时使用认证请求头生成逻辑。响应先受大小限制，再依据帧中的压缩、加密标志
+    /// 选择是否解压和解密，并非每个响应都必经两步。调试日志仅记录经
+    /// [`sanitize_debug_json`] 处理的请求、原始响应和解码响应。网络、HTTP 状态、
+    /// 帧解析及密码处理失败均返回 [`AppError`]。
     async fn post_encrypted_with_token(
         &self,
         path: &str,
@@ -542,6 +698,10 @@ impl OpenChatUserClient {
         Ok(decoded)
     }
 
+    /// 序列化请求、经匿名加密传输发送，并解析通用响应 envelope。
+    ///
+    /// 序列化失败、传输失败、成功数据解码失败或服务端业务错误分别转换为
+    /// [`OpenChatUserError`]。
     async fn post_api<Req, Resp>(
         &self,
         path: &str,
@@ -556,6 +716,9 @@ impl OpenChatUserClient {
         parse_api_response(&data)
     }
 
+    /// 序列化请求、经带令牌的认证加密传输发送，并解析通用响应 envelope。
+    ///
+    /// 认证传输仍生成 `X-One`、`X-Ten`，日志继续使用统一递归脱敏。
     async fn post_authenticated_api<Req, Resp>(
         &self,
         path: &str,
@@ -573,11 +736,21 @@ impl OpenChatUserClient {
         parse_api_response(&data)
     }
 
+    /// 向 `/user/unauthorized/sendSmsCaptchaWithGt4` 发送短信验证码请求。
+    ///
+    /// 此匿名端点以带 `X-One`、`X-Ten` 的 `application/octet-stream` Gateway 加密帧
+    /// 执行真实 POST。响应成功数据按 `()` 解析；编码、网络、HTTP、帧或业务失败返回
+    /// [`OpenChatUserError`]。
     pub async fn send_sms_code(&self, request: &SendSmsCodeReq) -> Result<(), OpenChatUserError> {
         self.post_api("/user/unauthorized/sendSmsCaptchaWithGt4", request)
             .await
     }
 
+    /// 向 `/user/unauthorized/sendEmailCaptchaWithGt4` 发送邮件验证码请求。
+    ///
+    /// 此匿名端点以带 `X-One`、`X-Ten` 的 `application/octet-stream` Gateway 加密帧
+    /// 执行真实 POST。响应成功数据按 `()` 解析；编码、网络、HTTP、帧或业务失败返回
+    /// [`OpenChatUserError`]。
     pub async fn send_email_code(
         &self,
         request: &SendEmailCodeReq,
@@ -586,10 +759,21 @@ impl OpenChatUserClient {
             .await
     }
 
+    /// 向 `/user/unauthorized/issued` 申请校验信息。
+    ///
+    /// 此匿名端点以带 `X-One`、`X-Ten` 的 `application/octet-stream` Gateway 加密帧
+    /// 执行真实 POST，并将成功数据解析为 [`IssuedResp`]。编码、网络、HTTP、帧、业务
+    /// 或响应解码失败返回 [`OpenChatUserError`]。
     pub async fn issued(&self, request: &IssuedReq) -> Result<IssuedResp, OpenChatUserError> {
         self.post_api("/user/unauthorized/issued", request).await
     }
 
+    /// 向 `/user/unauthorized/verify` 提交校验数据。
+    ///
+    /// 发起网络请求前要求非空 `validate_token`、至少一个待校验项目，且每个
+    /// `validate_value` 非空。通过检查后，此匿名端点以带 `X-One`、`X-Ten` 的
+    /// `application/octet-stream` Gateway 加密帧执行真实 POST。校验、编码、网络、
+    /// HTTP、帧、业务或响应解码失败返回 [`OpenChatUserError`]。
     pub async fn verify(&self, request: &VerifyReq) -> Result<VerifyResp, OpenChatUserError> {
         if request.validate_token.trim().is_empty() {
             return Err(OpenChatUserError::Validation(
@@ -614,6 +798,12 @@ impl OpenChatUserClient {
         self.post_api("/user/unauthorized/verify", request).await
     }
 
+    /// 向 `/user/unauthorized/listPedingValidate` 查询待校验项目。
+    ///
+    /// 路径中的 `Peding` 是服务端 API 的既有拼写，为端点兼容而保留，并非 JSON
+    /// wire 字段兼容。此匿名端点以带 `X-One`、`X-Ten` 的
+    /// `application/octet-stream` Gateway 加密帧执行真实 POST。编码、网络、HTTP、
+    /// 帧、业务或响应解码失败返回 [`OpenChatUserError`]。
     pub async fn list_pending_validations(
         &self,
         request: &ListPendingValidateReq,
@@ -622,11 +812,21 @@ impl OpenChatUserClient {
             .await
     }
 
+    /// 向 `/sns/login/login` 发起登录。
+    ///
+    /// 先执行 [`LoginReq::validate`]，通过后以匿名 `X-One`、`X-Ten` 和
+    /// `application/octet-stream` Gateway 加密帧执行真实 POST。校验、编码、网络、
+    /// HTTP、帧、业务或响应解码失败返回 [`OpenChatUserError`]。
     pub async fn login(&self, request: &LoginReq) -> Result<LoginData, OpenChatUserError> {
         request.validate().map_err(OpenChatUserError::Validation)?;
         self.post_api("/sns/login/login", request).await
     }
 
+    /// 使用访问令牌向 `/user/user/userDetail` 查询用户详情。
+    ///
+    /// 空白令牌会在网络请求前被拒绝；有效令牌交给认证请求头生成逻辑，生成
+    /// `X-One`、`X-Ten` 后，以 `application/octet-stream` Gateway 加密帧执行真实
+    /// POST。编码、网络、HTTP、帧、业务或响应解码失败返回 [`OpenChatUserError`]。
     pub async fn user_detail(&self, token: &str) -> Result<UserDetailResp, OpenChatUserError> {
         if token.trim().is_empty() {
             return Err(OpenChatUserError::Validation(
@@ -678,6 +878,7 @@ mod tests {
 
     #[test]
     fn integer_enums_cover_java_contract_and_reject_unknown_values() {
+        // 锁定整数 wire 表示，并确认未知值不会静默映射为已有枚举项。
         assert_eq!(serde_json::to_value(LoginType::GoogleCode).unwrap(), 9);
         assert_eq!(serde_json::to_value(ValidateType::EmailCode).unwrap(), 16);
         assert_eq!(
@@ -696,6 +897,7 @@ mod tests {
 
     #[test]
     fn request_dtos_serialize_documented_camel_case_wire_fields() {
+        // 同时覆盖常规 camelCase 与服务端约定的 DTO 大写缩写字段名。
         let gt4 = Gt4Dto {
             lot_number: "lot".to_string(),
             captcha_output: "output".to_string(),
@@ -836,6 +1038,7 @@ mod tests {
 
     #[test]
     fn login_data_maps_java_fields_and_authorization_token_aliases() {
+        // 服务端历史响应使用过三种令牌键名，三者应汇聚到同一读取入口。
         for (field, token) in [
             ("access_token", "snake"),
             ("accessToken", "camel"),
@@ -882,6 +1085,7 @@ mod tests {
 
     #[test]
     fn business_error_preserves_code_message_and_challenge_data() {
+        // 非 200 数据可能承载后续流程所需上下文，不能按成功 DTO 解码或丢弃。
         let error = parse_api_response::<LoginData>(
             br#"{
                 "code": 3114179,
@@ -914,6 +1118,7 @@ mod tests {
 
     #[test]
     fn verify_response_maps_business_processing_objects() {
+        // 锁定 validateModelVOS 的特殊缩写大小写及嵌套业务处理对象映射。
         let response: VerifyResp = serde_json::from_value(serde_json::json!({
             "validateModelVOS": [],
             "businessProcessing": [{
@@ -951,6 +1156,7 @@ mod tests {
 
     #[test]
     fn debug_json_redacts_authentication_and_account_values() {
+        // 验证递归对象中的已知认证、账号和校验值不会进入调试文本。
         let sanitized = sanitize_debug_json(
             br#"{
                 "phone":"13800138000",
@@ -987,6 +1193,7 @@ mod tests {
 
     #[tokio::test]
     async fn encrypted_openchat_request_includes_x_ten() {
+        // 用本地监听器观察真实请求头，避免依赖外部服务或暴露实际凭据。
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
