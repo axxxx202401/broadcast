@@ -53,8 +53,9 @@ pub fn build_gateway_request_body_with_options(
 /// 解析 Gateway 的长度分帧响应。
 ///
 /// 响应格式为 `[2B head][4B BE length][content]`。首个 head 字节仅要求高两位为
-/// `0b11`，低六位作为兼容的协议版本保留；加密、压缩标志来自第二个 head 字节。
-/// 两个标志同时存在时按“先 gzip 解压、后 AES 解密”的响应顺序处理。
+/// `0b11`，低六位由当前解析器为兼容性直接忽略，不解释其业务含义。协议版本位于
+/// 第二个 head 字节的低四位，加密、压缩标志也来自第二个 head 字节。两个标志同时
+/// 存在时按“先 gzip 解压、后 AES 解密”的响应顺序处理。
 ///
 /// 帧过短、marker 非法、声明长度超限或数据截断，以及解压、解密失败时返回错误。
 pub fn parse_gateway_response(cipher: &AesCipher, data: &[u8]) -> Result<Vec<u8>, AppError> {
@@ -167,17 +168,19 @@ fn gzip(content: &[u8]) -> Result<Vec<u8>, AppError> {
 /// 解析 im-biz 的长度分帧响应。
 ///
 /// 响应格式为 `[2B head][4B BE length][content]`，首个 head 字节按高两位识别兼容
-/// marker，低六位允许携带协议版本。若 head 同时声明压缩和加密，则先 gzip 解压、
-/// 后 AES 解密。帧校验、大小检查、解压或解密失败时返回错误。
+/// marker，低六位由当前解析器为兼容性忽略，不解释其业务含义；协议版本位于第二个
+/// head 字节的低四位。若 head 同时声明压缩和加密，则先 gzip 解压、后 AES 解密。
+/// 帧校验、大小检查、解压或解密失败时返回错误。
 pub fn parse_im_biz_response(cipher: &AesCipher, data: &[u8]) -> Result<Vec<u8>, AppError> {
     parse_length_framed_response(cipher, data)
 }
 
 /// 校验并解析通用的 `[2B head][4B BE length][content]` 响应帧。
 ///
-/// marker 仅检查高两位为 `0b11`，从而兼容低六位协议版本。函数先拒绝超过
-/// [`MAX_FRAME_BODY_SIZE`] 的声明长度，再切取完整内容；若声明了压缩和加密，则按
-/// 服务端响应顺序先解压、后解密。帧尾多余字节不属于当前帧，不参与解析。
+/// marker 仅检查首字节高两位为 `0b11`；首字节低六位为兼容性直接忽略，代码不解释
+/// 其业务含义。协议版本取自第二字节低四位。函数先拒绝超过 [`MAX_FRAME_BODY_SIZE`]
+/// 的声明长度，再切取完整内容；若声明了压缩和加密，则按服务端响应顺序先解压、
+/// 后解密。帧尾多余字节不属于当前帧，不参与解析。
 fn parse_length_framed_response(cipher: &AesCipher, data: &[u8]) -> Result<Vec<u8>, AppError> {
     if data.len() < 6 {
         return Err(AppError::TcpFrame("response too short".to_string()));
@@ -374,7 +377,7 @@ mod tests {
 
     #[test]
     fn response_accepts_protocol_version_in_first_head_byte() {
-        // 首个 head 字节只固定高两位，低六位协议版本变化不应破坏兼容解析。
+        // 此处改变的是首字节被兼容性忽略的低六位；协议版本实际位于第二字节低四位。
         let cipher = AesCipher::new(KEY);
         let plaintext = b"versioned response";
         let encrypted = cipher.encrypt(plaintext).unwrap();
