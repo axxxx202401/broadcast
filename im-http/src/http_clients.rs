@@ -61,7 +61,9 @@ pub(crate) async fn read_response_body_limited(
 ///
 /// 两个业务客户端共享连接池与超时配置，但分别持有自己的请求头管理器及协议封装。
 pub struct AppHttpClients {
+    /// OpenChat 用户接口客户端，负责登录、验证及用户资料等 JSON API。
     pub openchat_user: OpenChatUserClient,
+    /// IM 业务接口客户端，负责群列表等 Protobuf 业务请求。
     pub im_biz: ImBizClient,
 }
 
@@ -148,7 +150,6 @@ mod tests {
 
     #[tokio::test]
     async fn configured_client_enforces_total_request_timeout() {
-        // 服务端迟迟不返回响应时，总请求超时应中止等待并产生 timeout 错误。
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {

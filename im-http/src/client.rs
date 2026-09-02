@@ -54,8 +54,11 @@ pub fn build_gateway_request_body_with_options(
 ///
 /// 响应格式为 `[2B head][4B BE length][content]`。首个 head 字节仅要求高两位为
 /// `0b11`，低六位由当前解析器为兼容性直接忽略，不解释其业务含义。协议版本位于
-/// 第二个 head 字节的低四位，加密、压缩标志也来自第二个 head 字节。两个标志同时
-/// 存在时按“先 gzip 解压、后 AES 解密”的响应顺序处理。
+/// 第二个 head 字节的低四位；同一字节的位 7、6、5、4 依次为 `encrypted`、
+/// `zipped`、`encrypted_system_version`（协议字段 `encryptedSystemVersion`）和
+/// `is_report`（协议字段 `isReport`）。解析响应正文时当前只根据 `encrypted` 与
+/// `zipped` 决定变换，其他元数据虽会解析，但不参与正文处理。两个标志同时存在时
+/// 按“先 gzip 解压、后 AES 解密”的响应顺序处理。
 ///
 /// 帧过短、marker 非法、声明长度超限或数据截断，以及解压、解密失败时返回错误。
 pub fn parse_gateway_response(cipher: &AesCipher, data: &[u8]) -> Result<Vec<u8>, AppError> {
@@ -169,8 +172,11 @@ fn gzip(content: &[u8]) -> Result<Vec<u8>, AppError> {
 ///
 /// 响应格式为 `[2B head][4B BE length][content]`，首个 head 字节按高两位识别兼容
 /// marker，低六位由当前解析器为兼容性忽略，不解释其业务含义；协议版本位于第二个
-/// head 字节的低四位。若 head 同时声明压缩和加密，则先 gzip 解压、后 AES 解密。
-/// 帧校验、大小检查、解压或解密失败时返回错误。
+/// head 字节的低四位。第二字节的位 7、6、5、4 依次表示 `encrypted`、`zipped`、
+/// `encrypted_system_version`（`encryptedSystemVersion`）与 `is_report`（`isReport`）。
+/// 当前响应正文处理只使用前两个标志；其余元数据会被解析但不影响正文变换。若同时
+/// 声明压缩和加密，则先 gzip 解压、后 AES 解密。帧校验、大小检查、解压或解密失败
+/// 时返回错误。
 pub fn parse_im_biz_response(cipher: &AesCipher, data: &[u8]) -> Result<Vec<u8>, AppError> {
     parse_length_framed_response(cipher, data)
 }
@@ -178,9 +184,12 @@ pub fn parse_im_biz_response(cipher: &AesCipher, data: &[u8]) -> Result<Vec<u8>,
 /// 校验并解析通用的 `[2B head][4B BE length][content]` 响应帧。
 ///
 /// marker 仅检查首字节高两位为 `0b11`；首字节低六位为兼容性直接忽略，代码不解释
-/// 其业务含义。协议版本取自第二字节低四位。函数先拒绝超过 [`MAX_FRAME_BODY_SIZE`]
-/// 的声明长度，再切取完整内容；若声明了压缩和加密，则按服务端响应顺序先解压、
-/// 后解密。帧尾多余字节不属于当前帧，不参与解析。
+/// 其业务含义。第二字节的位 7、6、5、4 依次解析为 `encrypted`、`zipped`、
+/// `encrypted_system_version`、`is_report`，低四位解析为 `protocol_version`。当前
+/// 只有 `encrypted` 与 `zipped` 决定响应正文的解压、解密，其余元数据不参与正文
+/// 处理。函数先拒绝超过 [`MAX_FRAME_BODY_SIZE`] 的声明长度，再切取完整内容；若声明
+/// 了压缩和加密，则按服务端响应顺序先解压、后解密。帧尾多余字节不属于当前帧，
+/// 不参与解析。
 fn parse_length_framed_response(cipher: &AesCipher, data: &[u8]) -> Result<Vec<u8>, AppError> {
     if data.len() < 6 {
         return Err(AppError::TcpFrame("response too short".to_string()));
