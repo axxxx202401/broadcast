@@ -1,0 +1,27 @@
+---
+description: 项目中文注释与文档维护规范
+alwaysApply: true
+---
+
+# 中文注释与文档维护规范
+
+本规则以 [全项目详细中文注释设计](../../docs/superpowers/specs/2026-09-03-project-chinese-comments-design.md) 为依据。
+
+## 适用范围
+
+- 纳入 Rust、TypeScript、Vue、CSS 的项目自有源码与测试、`proto/broadcast.proto` 及项目自写构建脚本。
+- 排除 `target/`、`node_modules/`、`dist/`、`prost` 生成代码、`vendor/gt4.js`、锁文件和纯资源文件。
+
+## 注释要求
+
+- 使用语义级详细中文注释，说明职责、约束、错误条件、副作用和协议含义，不复述自明语法。
+- 协议名、字段名、HTTP 头、算法标识保留英文，说明文字使用简体中文；无法从实现、协议或设计验证的含义不得编造。
+- Rust 公开 API 使用 `///`，crate 与模块说明使用 `//!`，局部决策、阶段和不变量使用 `//`。
+- TypeScript/Vue 的导出接口、组合式函数和复杂服务函数使用 JSDoc；Vue 模板和 CSS 仅对区域或非自明交互分区说明。
+- 新增或修改模块、公开 API、复杂私有逻辑、测试场景时，必须同步维护相关注释及相邻注释；评审不合格不得合并。
+
+## 渐进检查
+
+- 仅在单个 crate 完成注释基线后为其启用 `missing_docs = "warn"`。
+- `prost` 生成模块可局部豁免 `missing_docs`。
+- 初期禁止在 workspace 级启用 `missing_docs = "deny"`，避免历史缺口阻塞开发。
