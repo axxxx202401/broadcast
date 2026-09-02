@@ -38,7 +38,12 @@ pub struct DecodedFrame {
 pub enum FrameDecodeError {
     /// 数据尚不足以组成声明长度的完整帧。
     #[error("incomplete frame: need {needed} bytes, have {available}")]
-    Incomplete { needed: usize, available: usize },
+    Incomplete {
+        /// 按当前帧头声明，完成该帧所需的总字节数。
+        needed: usize,
+        /// 调用解码器时缓冲区内实际可用的字节数。
+        available: usize,
+    },
     /// 帧头、长度或正文传输变换无效。
     #[error("invalid frame: {0}")]
     Invalid(#[from] AppError),
