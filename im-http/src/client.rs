@@ -4,16 +4,23 @@ use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use im_common::aes::AesCipher;
 use im_common::error::AppError;
 use im_common::tcp_head::TcpFrameHeader;
+/// 重新导出协议大小限制：[`MAX_FRAME_BODY_SIZE`] 限制帧中编码后的内容，
+/// [`MAX_DECOMPRESSED_BODY_SIZE`] 限制请求明文和响应解压结果。
 pub use im_common::{MAX_DECOMPRESSED_BODY_SIZE, MAX_FRAME_BODY_SIZE};
 
 const JAVA_GZIP_THRESHOLD: usize = 5 * 1024;
 const GATEWAY_REQUEST_MARKER: u8 = 0xC0;
 const IM_BIZ_REQUEST_MARKER: u8 = 0xC1;
 
-/// Encrypt JSON bytes and wrap in gateway request body format:
-/// [2B head][4B big-endian length][AES-encrypted, optionally gzipped content].
+/// 将 JSON 明文编码为 Gateway 请求体。
 ///
-/// Java enables gzip only when the encrypted payload exceeds 5 KiB.
+/// 帧格式为 `[2B head][4B BE length][content]`，首字节 marker 固定为 `0xC0`。
+/// 本函数先对明文做 AES 加密，再在加密后 payload **严格大于** 5 KiB 时 gzip 压缩，
+/// 以兼容 Java 客户端的阈值与处理顺序。AES 仅用于协议兼容，不应据此推断该接口具备
+/// 端到端安全性。
+///
+/// 明文超过 [`MAX_DECOMPRESSED_BODY_SIZE`]，或最终编码内容超过
+/// [`MAX_FRAME_BODY_SIZE`] 时返回 [`AppError::TcpFrame`]；加密、压缩失败也会返回对应错误。
 pub fn build_gateway_request_body(
     cipher: &AesCipher,
     json_bytes: &[u8],
@@ -25,6 +32,14 @@ pub fn build_gateway_request_body(
     build_length_framed_request(GATEWAY_REQUEST_MARKER, true, zipped, content)
 }
 
+/// 按指定选项将内容编码为 Gateway 请求体。
+///
+/// 帧格式为 `[2B head][4B BE length][content]`，marker 为 `0xC0`。
+/// `encrypted` 控制是否 AES 加密，`zipped` 控制是否 gzip；两者同时启用时固定为
+/// “先加密、后压缩”，也允许只启用其中之一或均不启用。即使关闭加密或压缩，仍会执行
+/// 明文与编码后大小检查。AES 的用途是兼容服务端协议，并不额外承诺传输安全性。
+///
+/// 大小超限、长度无法表示为 `u32`，或所选编码步骤失败时返回错误。
 pub fn build_gateway_request_body_with_options(
     cipher: &AesCipher,
     content: &[u8],
@@ -35,17 +50,33 @@ pub fn build_gateway_request_body_with_options(
     build_length_framed_request(GATEWAY_REQUEST_MARKER, encrypted, zipped, content)
 }
 
-/// Decrypt and optionally decompress a gateway response.
-/// Response format: [0xC0, head][4B length(big-endian)][AES-encrypted possibly-gzipped content]
+/// 解析 Gateway 的长度分帧响应。
+///
+/// 响应格式为 `[2B head][4B BE length][content]`。首个 head 字节仅要求高两位为
+/// `0b11`，低六位作为兼容的协议版本保留；加密、压缩标志来自第二个 head 字节。
+/// 两个标志同时存在时按“先 gzip 解压、后 AES 解密”的响应顺序处理。
+///
+/// 帧过短、marker 非法、声明长度超限或数据截断，以及解压、解密失败时返回错误。
 pub fn parse_gateway_response(cipher: &AesCipher, data: &[u8]) -> Result<Vec<u8>, AppError> {
     parse_length_framed_response(cipher, data)
 }
 
-/// Build an im-biz request body: [2B head][4B length(big-endian)][AES-encrypted content]
+/// 将内容编码为 im-biz 请求体。
+///
+/// 帧格式为 `[2B head][4B BE length][content]`，首字节 marker 固定为 `0xC1`；
+/// 默认对内容做 AES 加密但不压缩。AES 用于协议兼容，不代表额外的端到端安全保证。
+/// 明文或编码后内容超限，以及加密失败时返回错误。
 pub fn build_im_biz_request_body(cipher: &AesCipher, content: &[u8]) -> Result<Vec<u8>, AppError> {
     build_im_biz_request_body_with_options(cipher, content, true, false)
 }
 
+/// 按指定选项将内容编码为 im-biz 请求体。
+///
+/// 帧格式为 `[2B head][4B BE length][content]`，marker 为 `0xC1`。
+/// `encrypted` 与 `zipped` 分别控制 AES 加密和 gzip 压缩；两者同时启用时先加密、
+/// 后压缩，也支持仅加密、仅压缩或二者均关闭。所有组合都受明文和编码后大小限制。
+///
+/// 大小超限、长度无法表示为 `u32`，或所选编码步骤失败时返回错误。
 pub fn build_im_biz_request_body_with_options(
     cipher: &AesCipher,
     content: &[u8],
@@ -56,6 +87,10 @@ pub fn build_im_biz_request_body_with_options(
     build_length_framed_request(IM_BIZ_REQUEST_MARKER, encrypted, zipped, content)
 }
 
+/// 写入两字节 head、四字节大端内容长度以及编码后的内容。
+///
+/// `marker` 区分请求通道，第二个 head 字节由加密和压缩标志生成；写入前再次检查
+/// 编码后内容上限，避免内部调用绕过限制。
 fn build_length_framed_request(
     marker: u8,
     encrypted: bool,
@@ -73,6 +108,10 @@ fn build_length_framed_request(
     Ok(body)
 }
 
+/// 根据选项编码请求内容，并在编码前后分别执行大小限制。
+///
+/// 同时启用两个选项时顺序固定为明文 → AES → gzip；关闭加密或压缩时跳过对应步骤，
+/// 不改变剩余步骤的次序。
 fn encode_request_content(
     cipher: &AesCipher,
     content: &[u8],
@@ -94,6 +133,7 @@ fn encode_request_content(
     Ok(content)
 }
 
+/// 限制编码前的请求明文，避免后续复制和编码处理无界增长。
 fn validate_plain_request_size(content: &[u8]) -> Result<(), AppError> {
     if content.len() > MAX_DECOMPRESSED_BODY_SIZE {
         return Err(AppError::TcpFrame(format!(
@@ -105,6 +145,7 @@ fn validate_plain_request_size(content: &[u8]) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 限制将写入帧的编码后内容，确保其不超过协议允许的帧体上限。
 fn validate_encoded_request_size(content: &[u8]) -> Result<(), AppError> {
     if content.len() > MAX_FRAME_BODY_SIZE {
         return Err(AppError::TcpFrame(format!(
@@ -116,18 +157,27 @@ fn validate_encoded_request_size(content: &[u8]) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 使用默认压缩级别生成 gzip 数据，并将 I/O 错误转换为应用错误。
 fn gzip(content: &[u8]) -> Result<Vec<u8>, AppError> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(content)?;
     Ok(encoder.finish()?)
 }
 
-/// Decrypt and optionally decompress an im-biz response.
-/// Response format: [2B head][4B length][AES-encrypted possibly-gzipped content]
+/// 解析 im-biz 的长度分帧响应。
+///
+/// 响应格式为 `[2B head][4B BE length][content]`，首个 head 字节按高两位识别兼容
+/// marker，低六位允许携带协议版本。若 head 同时声明压缩和加密，则先 gzip 解压、
+/// 后 AES 解密。帧校验、大小检查、解压或解密失败时返回错误。
 pub fn parse_im_biz_response(cipher: &AesCipher, data: &[u8]) -> Result<Vec<u8>, AppError> {
     parse_length_framed_response(cipher, data)
 }
 
+/// 校验并解析通用的 `[2B head][4B BE length][content]` 响应帧。
+///
+/// marker 仅检查高两位为 `0b11`，从而兼容低六位协议版本。函数先拒绝超过
+/// [`MAX_FRAME_BODY_SIZE`] 的声明长度，再切取完整内容；若声明了压缩和加密，则按
+/// 服务端响应顺序先解压、后解密。帧尾多余字节不属于当前帧，不参与解析。
 fn parse_length_framed_response(cipher: &AesCipher, data: &[u8]) -> Result<Vec<u8>, AppError> {
     if data.len() < 6 {
         return Err(AppError::TcpFrame("response too short".to_string()));
@@ -169,6 +219,10 @@ fn parse_length_framed_response(cipher: &AesCipher, data: &[u8]) -> Result<Vec<u
     Ok(content)
 }
 
+/// 在解压过程中最多读取“解压上限 + 1”字节。
+///
+/// 额外的一字节用于可靠识别超限结果；一旦超过 [`MAX_DECOMPRESSED_BODY_SIZE`] 即报错，
+/// 避免高压缩比数据（zip bomb）令解压后的内存无界增长。
 fn decompress_limited(content: &[u8]) -> Result<Vec<u8>, AppError> {
     let decoder = GzDecoder::new(content);
     let mut limited = decoder.take((MAX_DECOMPRESSED_BODY_SIZE as u64) + 1);
@@ -219,6 +273,7 @@ mod tests {
 
     #[test]
     fn gateway_request_encrypts_then_compresses() {
+        // 验证双开选项的线序是 AES 后 gzip，而非对明文先压缩。
         let cipher = AesCipher::new(KEY);
         let plaintext = br#"{"payload":"repeat repeat repeat repeat"}"#;
 
@@ -235,6 +290,7 @@ mod tests {
 
     #[test]
     fn gateway_request_auto_compresses_only_above_java_encrypted_threshold() {
+        // 阈值针对带 AES 填充后的 payload，且必须严格大于 5 KiB 才自动压缩。
         let cipher = AesCipher::new(KEY);
 
         let below = build_gateway_request_body(&cipher, &vec![0u8; 5104]).unwrap();
@@ -257,6 +313,7 @@ mod tests {
 
     #[test]
     fn gateway_response_decompresses_then_decrypts() {
+        // 响应线序与请求逆向对应：先还原 gzip，再解密其中的密文。
         let cipher = AesCipher::new(KEY);
         let plaintext = br#"{"payload":"compress me compress me compress me"}"#;
         let encrypted = cipher.encrypt(plaintext).unwrap();
@@ -301,6 +358,7 @@ mod tests {
 
     #[test]
     fn im_biz_response_decompresses_then_decrypts() {
+        // im-biz 与 Gateway 共用响应解析约定，双标志下同样先解压后解密。
         let cipher = AesCipher::new(KEY);
         let plaintext = b"protobuf response protobuf response";
         let encrypted = cipher.encrypt(plaintext).unwrap();
@@ -316,6 +374,7 @@ mod tests {
 
     #[test]
     fn response_accepts_protocol_version_in_first_head_byte() {
+        // 首个 head 字节只固定高两位，低六位协议版本变化不应破坏兼容解析。
         let cipher = AesCipher::new(KEY);
         let plaintext = b"versioned response";
         let encrypted = cipher.encrypt(plaintext).unwrap();
@@ -343,6 +402,7 @@ mod tests {
 
     #[test]
     fn request_body_over_limit_is_rejected() {
+        // 即使不加密也不压缩，超限明文仍必须在构帧前被拒绝。
         let cipher = AesCipher::new(KEY);
         let oversized = vec![0u8; MAX_FRAME_BODY_SIZE + 1];
 
@@ -354,6 +414,7 @@ mod tests {
 
     #[test]
     fn oversized_declared_response_is_rejected_before_waiting_for_body() {
+        // 仅凭帧头即可拒绝超限声明，无需等待攻击者发送完整大响应体。
         let cipher = AesCipher::new(KEY);
         let mut response = TcpFrameHeader::build(false, false).to_vec();
         response.extend_from_slice(&((MAX_FRAME_BODY_SIZE + 1) as u32).to_be_bytes());
@@ -365,6 +426,7 @@ mod tests {
 
     #[test]
     fn gzip_response_over_decompressed_limit_is_rejected() {
+        // 高压缩比响应解压超过上限时终止，覆盖 zip bomb 的内存防护。
         let cipher = AesCipher::new(KEY);
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         let chunk = [0u8; 8192];
