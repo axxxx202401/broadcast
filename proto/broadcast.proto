@@ -1,0 +1,353 @@
+syntax = "proto3";
+
+option java_package = "com.im.pb";
+option java_outer_classname = "IMPB";
+
+// ========== 枚举 ==========
+
+enum MessageType {
+    text = 0;
+    image = 1;
+    audio = 2;
+    video = 3;
+    location = 4;
+    nameCard = 5;
+    system = 6;
+    file = 7;
+    notice = 8;
+    dynamicImage = 9;
+    redPacket = 10;
+    html = 11;
+    setImage = 12;
+    chatTransfer = 13;
+    chatTransferResult = 14;
+    redPacketResult = 15;
+    html2 = 16;
+    mediasCaption = 17;
+    animatedGame = 18;
+    redPacketCountChange = 19;
+    redPacketGameEvent = 20;
+    groupChatTrade = 21;
+}
+
+enum Platform {
+    ANDROID = 0;
+    IPHONE = 1;
+    UNKOWN = 2;
+    MAC = 3;
+    WIN = 4;
+    HARMONYOS = 5;
+}
+
+enum GroupMemberType {
+    HOST = 0;
+    MANAGE = 1;
+    MEMBER = 2;
+}
+
+enum AccountType {
+    MOBILE = 0;
+    EMAIL = 1;
+}
+
+enum LoginMode {
+    HAND = 0;
+    SYS_AUTO = 1;
+}
+
+enum LoginType {
+    SMS_CODE = 0;
+    PASSWORD = 1;
+    AUTH_KEY = 2;
+    GOOGLE_TOKEN = 3;
+    APPLE_TOKEN = 4;
+}
+
+enum GetValidateCodeType {
+    REG = 0;
+    LOGIN = 1;
+    FIND_PASSWORD = 2;
+    UPDATE_PASSWORD = 3;
+    UPDATE_PHONE = 4;
+    VALIDATE_PASSWORD = 6;
+    FIND_GESTURE_PASSWORD = 7;
+    TRADE_PASSWORD = 8;
+    UPDATE_TRADE_PASSWORD = 9;
+    BIND_PHONE = 10;
+    BIND_EMAIL = 11;
+    UPDATE_EMAIL = 12;
+    VERIFY_GOOGLE_CODE = 19;
+    BIND_ACCOUNT = 20;
+    VERIFY_LOGIN_PHONE = 21;
+    VERIFY_LOGIN_EMAIL = 22;
+    VERIFY_LOGIN_PASSWORD = 23;
+}
+
+enum Gender {
+    SECRECY = 0;
+    MALE = 1;
+    FEMALE = 2;
+}
+
+enum UploadChannelType {
+    OSS_DEFAULT = 0;
+    OSS_CHAT = 1;
+    OSS_LOW_RATE = 2;
+}
+
+// ========== 消息 ==========
+
+message ClientInfo {
+    string session_id = 1;
+    int32 app_ver = 2;
+    int32 package_code = 3;
+    Platform plat = 4;
+    int32 language = 5;
+    string sys_mac = 6;
+    string sys_model = 7;
+    string token = 8;
+    string version = 9;
+}
+
+message CommonResult {
+    int32 err_code = 1;
+    string err_msg = 2;
+    string flag = 3;
+    int32 display = 4;
+    string title = 5;
+}
+
+message CommonResultReq {
+    ClientInfo client_info = 1;
+}
+
+message UserBase {
+    int64 uid = 1;
+    string nick_name = 2;
+    string icon = 3;
+    Gender gender = 4;
+    FriendRelation friend_relation = 5;
+    UserOnOrOffLine user_on_or_off_line = 6;
+    string signature = 7;
+    string depict = 8;
+    bool bf_cancel = 9;
+    bool bf_banned = 10;
+    string identify = 11;
+    string real_name = 12;
+    string id_number = 13;
+    int64 create_time = 14;
+    int32 user_type = 15;
+}
+
+message FriendRelation {
+    bool bf_friend = 1;
+    string remark_name = 2;
+    int32 status = 3;
+}
+
+message UserOnOrOffLine {
+    int64 uid = 1;
+    bool online = 2;
+    int64 create_time = 3;
+    bool bf_show = 4;
+}
+
+message GroupMemberBase {
+    UserBase user = 1;
+    int64 group_id = 2;
+    GroupMemberType type = 3;
+    string group_nick_name = 4;
+    int64 score = 5;
+    AdminRightBase right = 6;
+    bool bf_my_black = 7;
+    int32 label_type = 8;
+}
+
+message AdminRightBase {
+    bool bf_update_data = 1;
+    bool bf_join_check = 2;
+    bool bf_push_notice = 3;
+    bool bf_set_admin = 4;
+    bool bf_reset_qrcode = 5;
+    bool bf_set_join_notice = 6;
+    bool bf_set_live = 7;
+}
+
+message GroupBase {
+    int64 group_id = 1;
+    int64 host_id = 2;
+    string name = 3;
+    string pic = 4;
+    bool bf_join_check = 5;
+    int64 create_time = 6;
+    int64 member_count = 7;
+    string desc = 8;
+    int32 group_type = 9;
+    int32 status = 10;
+    int64 last_msg_time = 11;
+    string last_msg = 12;
+    int32 mute = 13;
+    int64 owner_uid = 14;
+    string alias = 15;
+    bool bf_quit = 16;
+    bool bf_disturb = 17;
+    bool bf_star = 18;
+    int32 member_limit = 19;
+    int32 show_group_name = 20;
+    int64 notice_id = 21;
+    string notice = 22;
+    int64 notice_time = 23;
+    string notice_user_id = 24;
+    int32 apply_join_type = 25;
+    int64 last_msg_id = 26;
+    int32 msg_count = 27;
+    int32 remark = 28;
+    string extra = 29;
+    bool bf_hide = 30;
+}
+
+message GroupContactListReq {
+    CommonResultReq common_result_req = 1;
+}
+
+message GroupContactListResp {
+    CommonResult common_result = 1;
+    int32 group_count = 2;
+    repeated GroupBase groups = 3;
+}
+
+message LoginSessionMessage {
+    ClientInfo clinet_info = 1;
+    int64 latest_login_time = 2;
+    string install_code = 3;
+    int32 push_tag = 4;
+}
+
+message GroupMessage {
+    int64 send_uid = 1;
+    int64 group_id = 2;
+    MessageType msg_type = 3;
+    bytes content = 4;
+    repeated int64 at_uids = 6;
+    int64 send_time = 7;
+    int64 msg_id = 8;
+    GroupMemberBase send_member = 9;
+    int32 version = 10;
+    string content_md5 = 11;
+    string attachment_key = 12;
+    string group_name = 13;
+    int32 snapchat_time = 14;
+    repeated AtUser at_users = 15;
+    UploadChannelType channel_type = 16;
+    int32 msg_from = 17;
+    int32 edit = 18;
+    repeated LinkObj links = 19;
+    int64 sent_over_time = 20;
+    bool is_hide = 21;
+}
+
+message AtUser {
+    int64 uid = 1;
+    string nick_name = 2;
+    FriendRelation friend_relation = 5;
+}
+
+message LinkObj {
+    string link = 1;
+    int32 location = 2;
+    int32 length = 3;
+}
+
+message PushGroupMessage {
+    repeated GroupMessage group_msg = 1;
+    map<int64, int32> unread_count_map = 2;
+}
+
+message RecallMessage {
+    int64 msg_id = 1;
+    int64 send_uid = 2;
+    int64 group_id = 3;
+    int64 send_time = 4;
+    int32 operator_uid = 5;
+    MessageType msg_type = 6;
+    string operator_name = 7;
+    string content = 8;
+    int32 version = 9;
+    string content_md5 = 10;
+    string attachment_key = 11;
+    string group_name = 12;
+}
+
+// ========== 登录相关 ==========
+
+message LoginReq {
+    ClientInfo client_info = 1;
+    string country_code = 2;
+    string phone = 3;
+    LoginMode login_mode = 4;
+    LoginType login_type = 5;
+    GetValidateCodeType type = 6;
+    string sms_code = 7;
+    string password = 8;
+    string sys_version = 9;
+    string sys_model = 10;
+    string sys_mac = 11;
+    string token = 12;
+    string device_token = 13;
+    string device_info = 14;
+    AccountType account_type = 15;
+    string auth_key = 16;
+    string id_token = 17;
+    string public_key = 18;
+    string official_key = 19;
+    string second_mac = 20;
+}
+
+message LoginResp {
+    CommonResult common_result = 1;
+    UserBase user = 2;
+    string session_id = 3;
+    int32 review_model = 4;
+    UrlInfo urls = 5;
+    bool login_reg = 6;
+    int64 server_time = 7;
+    string token = 8;
+    string invite_code = 9;
+    int32 privacy = 10;
+    int64 disable_time = 11;
+    string agora_app_id = 12;
+    int64 upload_file_size = 13;
+    int64 upload_image_size = 14;
+    int32 need_reset_password = 15;
+    int32 key_version = 16;
+    int32 shoot_time_limit = 17;
+    bool remind_change_password = 18;
+    int64 upload_id_img_size = 19;
+    bool is_not_last_device_mac = 20;
+}
+
+message UrlInfo {
+    string biz = 1;
+    string session = 2;
+    string friend = 3;
+    string group = 4;
+    string static_map = 5;
+    string download = 6;
+    string login = 7;
+    string config = 8;
+    string wss = 9;
+    int32 socket_protocol = 10;
+    int32 upload_server = 11;
+    string upload_url = 12;
+    string wallet_url = 13;
+    string news_url = 14;
+    string otc_url = 15;
+    string red_packet_url = 16;
+    string payment_url = 17;
+}
+
+message ErrrMessage {
+    int32 error_msg_code = 1;
+    string error_msg = 2;
+    int32 message_protocol_id = 3;
+}
