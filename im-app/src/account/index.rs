@@ -1,7 +1,7 @@
 //! 非敏感账号索引：持久化账号摘要与最后使用账号，不保存密码或 Token。
 
 use super::AccountError;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
@@ -98,7 +98,9 @@ impl AccountIndexStore {
     /// 写入或更新一条账号记录，并把该 UID 标为最后使用账号。
     ///
     /// 同一 UID 再次写入会覆盖原摘要而不是追加重复项。新登录账号视为已持有 Token
-    ///（`has_token = true`）。本方法不写入密码、Token 或任何密钥摘要。
+    ///（`has_token = true`）。之后若再次 `upsert(AccountRecord::new(...))`，会用构造默认值
+    /// 覆盖 `has_saved_password`（默认为 `false`），除非调用方在记录上显式设置该标志，
+    /// 或在写入后再调用 [`Self::set_secret_flags`]。本方法不写入密码、Token 或任何密钥摘要。
     pub async fn upsert(&self, mut record: AccountRecord) -> Result<(), AccountError> {
         self.mutate(|index| {
             record.has_token = true;
@@ -173,6 +175,8 @@ impl AccountIndexStore {
     /// 将索引原子写入正式文件。
     ///
     /// 先写入同目录临时文件并 `sync_all`，再替换正式路径，避免半写入损坏已有索引。
+    /// Unix 直接 `rename` 覆盖目标；Windows 不能覆盖已存在文件，因此在临时文件同步完成后再
+    /// 删除目标并 `rename`，把空窗限制在这次替换过程内。
     async fn save(&self, index: &AccountIndex) -> Result<(), AccountError> {
         if let Some(parent) = self.path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -186,7 +190,23 @@ impl AccountIndexStore {
         file.write_all(&payload).await?;
         file.sync_all().await?;
         drop(file);
-        tokio::fs::rename(&tmp_path, &self.path).await?;
+        self.replace_official_file(&tmp_path).await?;
+        Ok(())
+    }
+
+    /// 用已同步的临时文件替换正式索引。
+    ///
+    /// Windows 上 `rename` 不能覆盖已存在目标，所以先删除正式文件再改名；目标不存在视为成功。
+    async fn replace_official_file(&self, tmp_path: &Path) -> Result<(), AccountError> {
+        #[cfg(windows)]
+        {
+            match tokio::fs::remove_file(&self.path).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        tokio::fs::rename(tmp_path, &self.path).await?;
         Ok(())
     }
 }
@@ -196,7 +216,7 @@ mod tests {
     use super::{AccountIndex, AccountIndexStore, AccountRecord};
     use crate::account::AccountError;
 
-    /// 新写入账号成为最后使用账号；退出只清 Token 标志，保留记录。
+    /// 新写入账号成为最后使用账号；退出只清 Token 标志，保留记录与已保存密码标志。
     #[tokio::test]
     async fn account_index_tracks_last_account_and_logout_state() {
         let temp = tempfile::tempdir().unwrap();
@@ -209,17 +229,25 @@ mod tests {
             .upsert(AccountRecord::new(84, "13800138000", 3, 200))
             .await
             .unwrap();
+        store.set_secret_flags(84, true, true).await.unwrap();
         store.mark_logged_out(84).await.unwrap();
 
         let snapshot = store.load().await.unwrap();
         assert_eq!(snapshot.last_used_uid, Some(84));
-        assert!(
-            !snapshot
+        let logged_out = snapshot
+            .accounts
+            .iter()
+            .find(|item| item.uid == 84)
+            .unwrap();
+        assert!(logged_out.has_saved_password);
+        assert!(!logged_out.has_token);
+        assert_eq!(
+            snapshot
                 .accounts
                 .iter()
-                .find(|item| item.uid == 84)
-                .unwrap()
-                .has_token
+                .find(|item| item.uid == 42)
+                .unwrap(),
+            &AccountRecord::new(42, "a@example.com", 4, 100)
         );
         assert_eq!(snapshot.accounts.len(), 2);
     }
