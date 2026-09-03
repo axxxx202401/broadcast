@@ -110,6 +110,10 @@ export interface Gt4Fields {
 
 /** 需要本地账号字段校验的登录方式：手机验证码、邮件验证码、手机密码、邮件密码。 */
 export type PrimaryLoginType = 1 | 2 | 3 | 4
+/** 把 IPC 返回的未知 i32 收敛到主登录方式；异常值回退为邮箱密码，避免前端崩溃。 */
+export function toPrimaryLoginType(value: unknown): PrimaryLoginType {
+  return value === 1 || value === 2 || value === 3 || value === 4 ? value : 4
+}
 /** 当前前端可提交的登录方式；`7`、`8`、`9` 分别对应人脸、交易密码和 Google 验证码。 */
 export type LoginType = PrimaryLoginType | 7 | 8 | 9
 /** 服务端校验类型整数 `16..26`；具体判定规则由服务端决定。 */
@@ -242,7 +246,7 @@ export interface AccountSummary {
   /** 用户输入的邮箱或手机号，仅用于展示和回填。 */
   displayAccount: string
   /** 首次主登录使用的登录方式标识。 */
-  loginType: number
+  loginType: PrimaryLoginType
   /** 系统凭据库是否已保存该账号登录密码。 */
   hasSavedPassword: boolean
   /** 该账号是否为当前已发布会话对应的账号。 */
@@ -326,8 +330,8 @@ export type RestoreSessionResult =
       uid: string
       /** 用户输入的邮箱或手机号，仅用于展示和回填。 */
       displayAccount: string
-      /** 首次主登录使用的登录方式标识；Rust 为 i32，因此保持 number。 */
-      loginType: number
+      /** 首次主登录使用的登录方式标识；运行时异常值需在边界处回退为邮箱密码。 */
+      loginType: PrimaryLoginType
       /** 系统凭据库是否已保存该账号登录密码。 */
       hasSavedPassword: boolean
     }

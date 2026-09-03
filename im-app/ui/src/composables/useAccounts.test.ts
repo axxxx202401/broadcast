@@ -97,6 +97,23 @@ describe('useAccounts', () => {
     wrapper.unmount()
   })
 
+  it('IPC 返回异常 loginType 时回退为邮箱密码而不崩溃', async () => {
+    const { accounts, backend, wrapper } = setupAccounts()
+    backend.restoreSession.mockResolvedValueOnce({
+      status: 'needsLogin',
+      uid: '42',
+      displayAccount: 'a@example.com',
+      loginType: 99,
+      hasSavedPassword: true,
+    } as unknown as RestoreSessionResult)
+
+    await accounts.restore()
+
+    expect(accounts.phase.value).toBe('needsLogin')
+    expect(accounts.selectedAccount.value?.loginType).toBe(4)
+    wrapper.unmount()
+  })
+
   it('无账号时进入 needsLogin 且不选择账号', async () => {
     const { accounts, backend, wrapper } = setupAccounts()
     backend.restoreSession.mockResolvedValueOnce({ status: 'noAccount' })

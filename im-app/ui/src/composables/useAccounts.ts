@@ -6,6 +6,7 @@ import type {
   RemoveAccountResult,
   RestoreSessionResult,
 } from '../types/im'
+import { toPrimaryLoginType } from '../types/im'
 
 /** 启动恢复与账号切换的前端阶段。 */
 export type AccountPhase = 'recovering' | 'ready' | 'needsLogin'
@@ -54,9 +55,17 @@ function accountFromNeedsLogin(
   return {
     uid: result.uid,
     displayAccount: result.displayAccount,
-    loginType: result.loginType,
+    loginType: toPrimaryLoginType(result.loginType),
     hasSavedPassword: result.hasSavedPassword,
     isCurrent: false,
+  }
+}
+
+/** 把 IPC 返回的账号摘要收敛到前端约束，防止异常 loginType 破坏界面状态。 */
+function normalizeAccountSummary(account: AccountSummary): AccountSummary {
+  return {
+    ...account,
+    loginType: toPrimaryLoginType(account.loginType),
   }
 }
 
@@ -84,7 +93,7 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
     try {
       const listed = await backend.listAccounts()
       if (token !== operationToken) return
-      accounts.value = listed
+      accounts.value = listed.map(normalizeAccountSummary)
     } catch {
       if (token !== operationToken) return
     }
@@ -95,7 +104,7 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
     switch (result.status) {
       case 'success':
         phase.value = 'ready'
-        selectedAccount.value = result.account
+        selectedAccount.value = normalizeAccountSummary(result.account)
         retryableMessage.value = ''
         void refreshAccounts(token)
         return result
@@ -204,7 +213,7 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
    */
   function applyManualLogin(account: AccountSummary) {
     phase.value = 'ready'
-    selectedAccount.value = { ...account, isCurrent: true }
+    selectedAccount.value = { ...normalizeAccountSummary(account), isCurrent: true }
     retryableMessage.value = ''
     void refreshAccounts(operationToken)
   }
