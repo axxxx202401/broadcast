@@ -78,25 +78,22 @@ jobs:
 
       - name: Install protoc (Windows)
         if: runner.os == 'Windows' && (github.event.inputs.platform == 'all' || github.event.inputs.platform == 'windows')
-        shell: powershell
+        shell: bash
         run: |
-          $ProtocVersion = "29.3"
-          $ProtocZip = "$env:TEMP\protoc-${ProtocVersion}-win64.zip"
-          $ProtocDir = "$env:TEMP\protoc"
-          Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v${ProtocVersion}/protoc-${ProtocVersion}-win64.zip" -OutFile $ProtocZip
-          Expand-Archive -Path $ProtocZip -DestinationPath $ProtocDir -Force
-          Remove-Item $ProtocZip
-          $env:PATH = "${ProtocDir}\bin;$env:PATH"
-          [Environment]::SetEnvironmentVariable("PATH", $env:PATH, "Process")
-          Write-Host "protoc path: $(Join-Path $ProtocDir 'bin\protoc.exe')"
-          & "${ProtocDir}\bin\protoc.exe" --version
+          PROTOC_VERSION="29.3"
+          mkdir -p /c/tools/protoc
+          curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-win64.zip" -o /tmp/protoc.zip
+          unzip -o /tmp/protoc.zip -d /c/tools/protoc
+          rm /tmp/protoc.zip
+          echo "/c/tools/protoc/bin" >> "$GITHUB_PATH"
 
       - name: Install protoc (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
           brew install protobuf
-          echo "PROTOC=/opt/homebrew/bin/protoc" >> "$GITHUB_ENV"
+          # macOS 上 brew 安装的 protoc 已在 PATH，无需额外设置
+          protoc --version
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
