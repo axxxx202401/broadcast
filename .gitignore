@@ -38,3 +38,5 @@
 tmp/
 /.worktrees/
 .history
+.superpowers
+.cursor
