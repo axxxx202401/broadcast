@@ -694,4 +694,27 @@ describe('useAuth', () => {
     }))
     wrapper.unmount()
   })
+
+  it('改写密码后切换到手动模式并提交 validateValue', async () => {
+    const { auth, backend, wrapper } = setupAuth()
+    auth.selectSavedAccount({
+      uid: '42',
+      displayAccount: 'a@example.com',
+      loginType: 4,
+      hasSavedPassword: true,
+      isCurrent: false,
+    })
+    expect(auth.passwordMode.value).toBe('saved')
+
+    auth.validateValue.value = 'typed-password'
+    expect(auth.passwordMode.value).toBe('manual')
+    await auth.submitLogin()
+
+    expect(backend.verifyValidations).toHaveBeenCalledWith(expect.objectContaining({
+      pendingValidateDTOS: [expect.objectContaining({ validateValue: 'typed-password' })],
+    }))
+    const dto = backend.verifyValidations.mock.calls[0]?.[0].pendingValidateDTOS[0]
+    expect(dto).not.toHaveProperty('savedPasswordUid')
+    wrapper.unmount()
+  })
 })

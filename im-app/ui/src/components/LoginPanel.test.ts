@@ -6,6 +6,18 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { PendingValidation } from '../types/im'
 import LoginPanel from './LoginPanel.vue'
+import panelSource from './LoginPanel.vue?raw'
+
+/** 挂载登录面板并注入最小认证桩。 */
+function mountPanel(auth: ReturnType<typeof authStub>) {
+  return mount(LoginPanel, {
+    props: {
+      auth: auth as never,
+      accounts: [],
+      selectedAccountUid: auth.selectedAccountUid.value,
+    },
+  })
+}
 
 function authStub(withChallenge = false) {
   const loginMethod = ref<1 | 2 | 3 | 4>(4)
@@ -58,31 +70,40 @@ function authStub(withChallenge = false) {
 }
 
 describe('LoginPanel', () => {
+  it('源码不含隐藏的协议介绍', () => {
+    expect(panelSource).not.toContain('v-if="false"')
+    expect(panelSource).not.toContain('login-intro')
+    expect(panelSource).not.toContain('protocol-track')
+    expect(panelSource).not.toContain('countryCode=')
+    expect(panelSource).not.toContain('validateToken')
+  })
+
   it('默认使用邮箱密码并折叠其他方式', async () => {
     const auth = authStub()
-    const wrapper = mount(LoginPanel, {
-      props: {
-        auth: auth as never,
-        accounts: [],
-        selectedAccountUid: auth.selectedAccountUid.value,
-      },
-    })
+    const wrapper = mountPanel(auth)
 
     expect(auth.loginMethod.value).toBe(4)
     expect(wrapper.find('input[type="email"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('其他登录方式')
     expect(wrapper.text()).not.toContain('手机号验证码')
+    const submit = wrapper.get('.login-submit').element
+    const other = wrapper.get('[data-test="toggle-other-methods"]').element
+    expect(submit.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+  })
+
+  it('主登录表单展示认证错误', async () => {
+    const auth = authStub()
+    auth.error.value = '登录密码不正确'
+    const wrapper = mountPanel(auth)
+
+    expect(wrapper.get('[role="alert"]').text()).toBe('登录密码不正确')
+    expect(wrapper.find('.challenge-step').exists()).toBe(false)
   })
 
   it('shows server pending validation details and submits the selected value', async () => {
     const auth = authStub(true)
-    const wrapper = mount(LoginPanel, {
-      props: {
-        auth: auth as never,
-        accounts: [],
-        selectedAccountUid: auth.selectedAccountUid.value,
-      },
-    })
+    const wrapper = mountPanel(auth)
 
     expect(wrapper.text()).toContain('138****8000')
     expect(wrapper.text()).toContain('op***@example.com')
@@ -103,13 +124,7 @@ describe('LoginPanel', () => {
     auth.account.value = '13800138000'
     auth.gt4Ready.value = false
     auth.gt4Loading.value = false
-    const wrapper = mount(LoginPanel, {
-      props: {
-        auth: auth as never,
-        accounts: [],
-        selectedAccountUid: auth.selectedAccountUid.value,
-      },
-    })
+    const wrapper = mountPanel(auth)
 
     expect(wrapper.get('[data-test="send-code"]').attributes('disabled')).toBeUndefined()
   })
@@ -122,13 +137,7 @@ describe('LoginPanel', () => {
       validateType: 16,
     }]
     auth.selectedChallengeType.value = 16
-    const wrapper = mount(LoginPanel, {
-      props: {
-        auth: auth as never,
-        accounts: [],
-        selectedAccountUid: auth.selectedAccountUid.value,
-      },
-    })
+    const wrapper = mountPanel(auth)
 
     expect(wrapper.get('[data-test="challenge-send-code"]').text()).toContain('发送邮箱验证码')
     await wrapper.get('[data-test="challenge-send-code"]').trigger('click')
@@ -138,13 +147,7 @@ describe('LoginPanel', () => {
   // 生命周期契约：组件卸载时应调用 destroyGt4 清理入口。
   it('destroys the GT4 instance when the login panel unmounts', () => {
     const auth = authStub()
-    const wrapper = mount(LoginPanel, {
-      props: {
-        auth: auth as never,
-        accounts: [],
-        selectedAccountUid: auth.selectedAccountUid.value,
-      },
-    })
+    const wrapper = mountPanel(auth)
 
     wrapper.unmount()
 

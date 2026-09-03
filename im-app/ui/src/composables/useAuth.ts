@@ -239,7 +239,7 @@ export function useAuth(
   watch(validateValue, (value) => {
     if (isCodeMode.value) return
     if (value.trim().length) passwordMode.value = 'manual'
-  })
+  }, { flush: 'sync' })
 
   const applyVerifyResponse = (
     response: Awaited<ReturnType<AuthApi['verifyValidations']>>,

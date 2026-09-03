@@ -1,13 +1,63 @@
-/* 登录页：双栏容器、产品导览与协议步骤。 */
+/* 登录页：居中单列卡片，不再使用双栏介绍。 */
 .login-shell {
   display: grid;
-  grid-template-columns: minmax(300px, 0.8fr) minmax(520px, 1.2fr);
-  width: min(1120px, calc(100% - 80px));
-  height: calc(100% - 80px);
+  place-content: start center;
+  width: min(440px, calc(100% - 48px));
+  min-height: calc(100% - 80px);
   margin: 40px auto;
+  animation: console-enter 380ms ease-out both;
+}
+
+.login-card {
+  display: grid;
+  gap: 16px;
+  width: 100%;
+  padding: 42px 36px;
+  background: var(--ink-900);
   border: 1px solid var(--ink-600);
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.38);
-  animation: console-enter 380ms ease-out both;
+}
+
+.login-header {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.login-logo {
+  width: 56px;
+  height: 56px;
+}
+
+.purpose {
+  margin: 0;
+  color: var(--text-500);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.login-form,
+.account-picker,
+.other-methods {
+  display: grid;
+  gap: 12px;
+}
+
+.login-form > label,
+.account-picker label,
+.challenge-step > label {
+  display: grid;
+  gap: 6px;
+}
+
+.account-picker select {
+  width: 100%;
+}
+
+.password-sentinel {
+  color: var(--text-500);
+  font-size: 12px;
 }
 
 .login-intro {
@@ -975,11 +1025,13 @@
 /* 响应式布局：收窄登录页、顶栏、工作区与消息列。 */
 @media (max-width: 900px) {
   .login-shell {
-    grid-template-columns: 1fr;
     width: calc(100% - 24px);
-    height: auto;
     min-height: calc(100% - 24px);
     margin: 12px;
+  }
+
+  .login-card {
+    padding: 30px 24px;
   }
 
   .login-intro {
