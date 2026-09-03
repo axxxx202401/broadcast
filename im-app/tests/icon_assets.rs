@@ -5,6 +5,12 @@
 
 const PRIMARY_ICON: &str = include_str!("../icons/icon.svg");
 const WEB_ICON: &str = include_str!("../ui/public/icon.svg");
+const PNG_32: &[u8] = include_bytes!("../icons/32x32.png");
+const PNG_128: &[u8] = include_bytes!("../icons/128x128.png");
+const PNG_256: &[u8] = include_bytes!("../icons/128x128@2x.png");
+const ICNS: &[u8] = include_bytes!("../icons/icon.icns");
+const ICO: &[u8] = include_bytes!("../icons/icon.ico");
+const TAURI_CONFIG: &str = include_str!("../tauri.conf.json");
 
 const RIGHT_FIVE_PATH: &str = r#"<path opacity="0.4" d="M30.25 37.2003H37.8218C37.882 38.4157 38.2135 39.3501 38.8163 40.0035C39.419 40.6568 40.2477 40.9834 41.3025 40.9834C42.7942 40.9834 43.962 40.4289 44.8058 39.3197C45.6497 38.1954 46.0716 36.6457 46.0716 34.6706C46.0716 33.288 45.7175 32.1865 45.0093 31.366C44.3011 30.5456 43.3593 30.1354 42.184 30.1354C41.4155 30.1354 40.7299 30.3025 40.1272 30.6367C39.5245 30.9558 39.0423 31.4116 38.6806 32.0041L31.7644 31.5028L35.4259 14H54.9995L53.7563 19.8343H40.195L38.9971 25.6685C39.9162 25.1975 40.7902 24.8557 41.6189 24.643C42.4477 24.4151 43.299 24.3011 44.173 24.3011C47.0661 24.3011 49.4468 25.2203 51.3153 27.0587C53.1988 28.8971 54.1406 31.2141 54.1406 34.0097C54.1406 37.9751 52.9803 41.1354 50.6598 43.4903C48.3393 45.8301 45.2202 47 41.3025 47C37.867 47 35.2074 46.1644 33.3239 44.4931C31.4404 42.8066 30.4157 40.3757 30.25 37.2003Z" fill="white"/>"#;
 const LEFT_FIVE_PATH: &str = r#"<path d="M5 37.2003H12.5718C12.632 38.4157 12.9635 39.3501 13.5663 40.0035C14.169 40.6568 14.9977 40.9834 16.0525 40.9834C17.5442 40.9834 18.712 40.4289 19.5558 39.3197C20.3997 38.1954 20.8216 36.6457 20.8216 34.6706C20.8216 33.288 20.4675 32.1865 19.7593 31.366C19.0511 30.5456 18.1093 30.1354 16.934 30.1354C16.1655 30.1354 15.4799 30.3025 14.8772 30.6367C14.2745 30.9558 13.7923 31.4116 13.4306 32.0041L6.51435 31.5028L10.1759 14H29.7495L28.5063 19.8343H14.945L13.7471 25.6685C14.6662 25.1975 15.5402 24.8557 16.3689 24.643C17.1977 24.4151 18.049 24.3011 18.923 24.3011C21.8161 24.3011 24.1968 25.2203 26.0653 27.0587C27.9488 28.8971 28.8906 31.2141 28.8906 34.0097C28.8906 37.9751 27.7303 41.1354 25.4098 43.4903C23.0893 45.8301 19.9702 47 16.0525 47C12.617 47 9.95743 46.1644 8.07391 44.4931C6.19038 42.8066 5.16575 40.3757 5 37.2003Z" fill="white"/>"#;
@@ -15,6 +21,24 @@ fn assert_contains(svg: &str, expected: &str, element_name: &str) {
         svg.contains(expected),
         "B1 SVG 缺少或改动了设计契约元素：{element_name}"
     );
+}
+
+/// 从 PNG 文件头读取 IHDR 中声明的画布尺寸。
+///
+/// 调用方必须传入完整 PNG 资源；函数先校验最小头部长度与八字节 PNG 签名，
+/// 再按 PNG 规范从固定偏移读取大端序宽高。该辅助函数仅用于静态资源契约测试，
+/// 目的是在不引入图像解码器的情况下发现 Tauri 图标生成尺寸回归。
+fn png_dimensions(bytes: &[u8]) -> (u32, u32) {
+    assert!(bytes.len() >= 24, "PNG 资源至少需要包含 24 字节文件头");
+    assert_eq!(
+        &bytes[..8],
+        b"\x89PNG\r\n\x1a\n",
+        "资源必须包含标准 PNG 八字节签名"
+    );
+
+    let width = u32::from_be_bytes(bytes[16..20].try_into().expect("宽度字段固定为四字节"));
+    let height = u32::from_be_bytes(bytes[20..24].try_into().expect("高度字段固定为四字节"));
+    (width, height)
 }
 
 #[test]
@@ -64,5 +88,32 @@ fn web_icon_is_byte_identical_to_primary_icon() {
     assert_eq!(
         WEB_ICON, PRIMARY_ICON,
         "Web SVG 必须与主 SVG 保持字节文本完全一致"
+    );
+}
+
+/// 验证 Tauri CLI 生成的桌面图标具有打包工具要求的格式标识与像素尺寸。
+#[test]
+fn generated_desktop_icons_have_expected_formats_and_sizes() {
+    assert_eq!(png_dimensions(PNG_32), (32, 32));
+    assert_eq!(png_dimensions(PNG_128), (128, 128));
+    assert_eq!(png_dimensions(PNG_256), (256, 256));
+    assert_eq!(&ICNS[..4], b"icns");
+    assert_eq!(&ICO[..4], &[0, 0, 1, 0]);
+}
+
+/// 验证打包配置完整且按稳定顺序引用全部桌面平台图标。
+#[test]
+fn tauri_bundle_references_all_desktop_icons() {
+    let config: serde_json::Value =
+        serde_json::from_str(TAURI_CONFIG).expect("tauri.conf.json 必须是有效 JSON");
+    assert_eq!(
+        config["bundle"]["icon"],
+        serde_json::json!([
+            "icons/32x32.png",
+            "icons/128x128.png",
+            "icons/128x128@2x.png",
+            "icons/icon.icns",
+            "icons/icon.ico"
+        ])
     );
 }
