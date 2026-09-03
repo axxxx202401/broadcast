@@ -257,7 +257,44 @@ export function useAuth(
     ) {
       loginMethod.value = saved.loginType
     }
+    // 切换账号后必须清理上一会话的瞬态状态，避免挑战/错误信息残留。
+    resetAuthForm({ preserveSelectedAccount: true })
+  }
+
+  /**
+   * 清理当前会话的瞬态认证状态，用于退出/恢复到登录页时的“干净起点”。
+   *
+   * `preserveSelectedAccount` 用于 needsLogin 后立即 `selectSavedAccount` 的衔接流程；
+   * 默认不覆盖当前选中的账号摘要，避免 UI 错配。
+   */
+  function resetAuthForm(options: { preserveSelectedAccount?: boolean } = {}) {
+    const preserveSelectedAccount = options.preserveSelectedAccount ?? true
+
+    // 会话消息与业务回填
+    notice.value = ''
+    error.value = ''
+    businessProcessing.value = []
+
+    // 主登录与二次验证材料
+    validateToken.value = ''
     validateValue.value = ''
+    secondMac.value = ''
+
+    // challenge 阶段状态
+    challengePending.value = []
+    selectedChallengeType.value = null
+    challengeValue.value = ''
+
+    // 串行化步骤门禁
+    busy.value = null
+    lastLoginRequest = null
+
+    if (!preserveSelectedAccount) {
+      selectedAccountUid.value = null
+      account.value = ''
+      loginMethod.value = 1
+      countryCode.value = 86
+    }
   }
 
   /** 处理登录成功或 challenge 结果；补查失败不丢弃登录响应已经携带的验证项。 */
@@ -529,5 +566,7 @@ export function useAuth(
     submitChallenge,
     /** 回填已保存账号的展示字段；Task 6 会继续完善登录页交互。 */
     selectSavedAccount,
+    /** 退出/恢复到登录页时清理瞬态认证状态。 */
+    resetAuthForm,
   }
 }

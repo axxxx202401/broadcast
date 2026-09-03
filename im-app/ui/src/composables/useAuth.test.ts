@@ -598,6 +598,59 @@ describe('useAuth', () => {
     wrapper.unmount()
   })
 
+  it('resetAuthForm 在 challenge 状态后清理瞬态认证状态并保留选中账号', async () => {
+    const { auth, backend, wrapper } = setupAuth()
+
+    auth.selectSavedAccount({
+      uid: '42',
+      displayAccount: 'operator@example.com',
+      loginType: 4,
+      hasSavedPassword: true,
+      isCurrent: false,
+    })
+
+    const pending: PendingValidation = {
+      account: 'op***@example.com',
+      accountType: 7,
+      validateType: 16,
+    }
+    backend.login.mockResolvedValueOnce({
+      status: 'challenge',
+      code: 3114179,
+      validateToken: 'challenge-token',
+      message: '需要二次验证',
+      pending: [pending],
+    } satisfies LoginResult)
+    backend.listPendingValidations.mockResolvedValueOnce([])
+
+    auth.validateValue.value = 'plain-password'
+    await auth.submitLogin()
+
+    expect(auth.validateToken.value).toBe('challenge-token')
+    expect(auth.notice.value).toBe('需要二次验证')
+    expect(auth.challengePending.value).toEqual([pending])
+
+    auth.businessProcessing.value = [{ businessCode: 9001, businessMsg: 'x' }]
+    auth.error.value = 'some error'
+    auth.challengeValue.value = '123'
+    auth.busy.value = 'some busy'
+
+    auth.resetAuthForm()
+
+    expect(auth.selectedAccountUid.value).toBe('42')
+    expect(auth.validateToken.value).toBe('')
+    expect(auth.validateValue.value).toBe('')
+    expect(auth.notice.value).toBe('')
+    expect(auth.error.value).toBe('')
+    expect(auth.businessProcessing.value).toEqual([])
+    expect(auth.challengePending.value).toEqual([])
+    expect(auth.selectedChallengeType.value).toBeNull()
+    expect(auth.challengeValue.value).toBe('')
+    expect(auth.busy.value).toBeNull()
+
+    wrapper.unmount()
+  })
+
   it('selectSavedAccount 只回填账号摘要，不写入密码明文', () => {
     const { auth, wrapper } = setupAuth()
     auth.validateValue.value = 'should-be-cleared'

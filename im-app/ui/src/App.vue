@@ -16,9 +16,8 @@ const accounts = useAccounts()
 const auth = useAuth((payload) => {
   accounts.applyManualLogin(payload.account)
   monitor.acceptLogin(payload.groups, payload.account.uid)
-  if (payload.warnings.length) {
-    monitor.warning.value = payload.warnings.join('\n')
-  }
+  // 必须在成功路径清空旧 warnings；空数组应回退为 ''。
+  monitor.warning.value = payload.warnings.join('\n')
   void monitor.fetchGroups()
 })
 
@@ -27,13 +26,13 @@ function applyRestoreOutcome(result: RestoreSessionResult | null) {
   if (!result) return
   if (result.status === 'success') {
     monitor.acceptLogin(result.groups, result.account.uid)
-    if (result.warnings.length) {
-      monitor.warning.value = result.warnings.join('\n')
-    }
+    // 必须在成功路径清空旧 warnings；空数组应回退为 ''。
+    monitor.warning.value = result.warnings.join('\n')
     void monitor.fetchGroups()
     return
   }
   if (result.status === 'needsLogin') {
+    auth.resetAuthForm({ preserveSelectedAccount: true })
     auth.selectSavedAccount({
       uid: result.uid,
       displayAccount: result.displayAccount,
@@ -42,7 +41,9 @@ function applyRestoreOutcome(result: RestoreSessionResult | null) {
       isCurrent: false,
     })
   }
-  // noAccount：只展示默认登录页。邮箱密码默认表单由 Task 6 负责，此处不改 loginMethod。
+  if (result.status === 'noAccount') {
+    auth.resetAuthForm({ preserveSelectedAccount: false })
+  }
 }
 
 onMounted(() => {
@@ -56,6 +57,18 @@ const retryRestore = () => {
 const useOtherAccount = () => {
   accounts.useOtherAccount()
 }
+
+/** 退出后进入登录页时必须重置 auth 的瞬态状态。 */
+const logout = () =>
+  monitor.logout().finally(() => {
+    accounts.phase.value = 'needsLogin'
+    if (accounts.selectedAccount.value) {
+      // Task 8 会补全“退出后选中账号”的菜单体验；这里至少保持刚退出账号的输入上下文。
+      auth.selectSavedAccount(accounts.selectedAccount.value)
+    } else {
+      auth.resetAuthForm({ preserveSelectedAccount: false })
+    }
+  })
 </script>
 
 <template>
@@ -118,7 +131,12 @@ const useOtherAccount = () => {
           :disabled="monitor.connectDisabled.value"
           @click="monitor.connect"
         >{{ monitor.connectionStatus.value === 'connecting' ? '连接中…' : '连接聊天' }}</button>
-        <button class="button ghost compact" type="button" :disabled="!!monitor.pending.value" @click="monitor.logout">
+        <button
+          class="button ghost compact"
+          type="button"
+          :disabled="!!monitor.pending.value"
+          @click="logout"
+        >
           退出
         </button>
       </div>

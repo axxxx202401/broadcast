@@ -5,12 +5,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AccountSummary, RestoreSessionResult } from './types/im'
 
+let onLoginCb: ((payload: { account: AccountSummary; groups: unknown[]; warnings: string[] }) => void) | null = null
+
 const mocks = vi.hoisted(() => ({
   restoreSession: vi.fn(),
   listAccounts: vi.fn(),
   switchAccount: vi.fn(),
   removeAccount: vi.fn(),
   selectSavedAccount: vi.fn(),
+  resetAuthForm: vi.fn(),
   monitor: {
     loggedIn: { value: true },
     warning: { value: '' },
@@ -55,10 +58,14 @@ vi.mock('./composables/useMonitor', () => ({
   useMonitor: () => mocks.monitor,
 }))
 vi.mock('./composables/useAuth', () => ({
-  useAuth: () => ({
-    selectSavedAccount: mocks.selectSavedAccount,
-    destroyGt4: vi.fn(),
-  }),
+  useAuth: (cb: unknown) => {
+    onLoginCb = cb as any
+    return {
+      selectSavedAccount: mocks.selectSavedAccount,
+      resetAuthForm: mocks.resetAuthForm,
+      destroyGt4: vi.fn(),
+    }
+  },
 }))
 
 import { api } from './services/tauri'
@@ -101,6 +108,7 @@ function mountApp() {
 describe('App 启动恢复', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    onLoginCb = null
     mocks.monitor.loggedIn.value = true
     mocks.monitor.warning.value = ''
     mocks.restoreSession.mockResolvedValue({
@@ -147,6 +155,38 @@ describe('App 启动恢复', () => {
     expect(wrapper.findComponent(LoginPanel).exists()).toBe(false)
     expect(wrapper.find('.operations-shell').exists()).toBe(true)
     expect(mocks.monitor.acceptLogin).toHaveBeenCalledWith(groups, '42')
+    wrapper.unmount()
+  })
+
+  it('恢复 success 会清空 monitor.warning（即使 warnings 为空）', async () => {
+    mocks.monitor.warning.value = '旧警告'
+    vi.mocked(api.restoreSession).mockResolvedValueOnce({
+      status: 'success',
+      account: restoredAccount,
+      groups: [],
+      warnings: [],
+    } satisfies RestoreSessionResult)
+
+    const wrapper = mountApp()
+    await flushPromises()
+
+    expect(mocks.monitor.warning.value).toBe('')
+    wrapper.unmount()
+  })
+
+  it('onLogin success 会清空 monitor.warning（warnings 为空）', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    mocks.monitor.warning.value = '旧警告'
+    onLoginCb?.({
+      account: restoredAccount,
+      groups: [],
+      warnings: [],
+    })
+    await flushPromises()
+
+    expect(mocks.monitor.warning.value).toBe('')
     wrapper.unmount()
   })
 
