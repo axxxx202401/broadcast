@@ -8,6 +8,7 @@ import type {
   LoginRequest,
   LoginResult,
   PendingValidation,
+  PendingValidationDto,
   PrimaryLoginType,
   ValidateType,
 } from '../types/im'
@@ -78,13 +79,23 @@ export function useAuth(
 ) {
   const backend = dependencies.api ?? api
   const gt4 = dependencies.gt4 ?? useGt4()
-  const loginMethod = ref<PrimaryLoginType>(1)
+  /** 主登录方式；Task 6 规定默认邮箱密码。 */
+  const loginMethod = ref<PrimaryLoginType>(4)
   const account = ref('')
   const selectedAccountUid = ref<string | null>(null)
   const countryCode = ref(86)
   const validateValue = ref('')
+  /**
+   * 密码模式：驱动“已保存密码”哨兵展示与提交参数构造。
+   *
+   * - empty：当前账号无已保存密码，提交时必须带 validateValue
+   * - saved：当前账号有已保存密码，提交时仅带 savedPasswordUid，绝不构造 validateValue
+   * - manual：用户编辑了密码输入框，提交时带 validateValue
+   */
+  const passwordMode = ref<'empty' | 'saved' | 'manual'>('empty')
+  /** “其他登录方式”折叠面板是否展开。 */
+  const otherMethodsOpen = ref(false)
   const validateToken = ref('')
-  const secondMac = ref('')
   const challengePending = ref<PendingValidation[]>([])
   const selectedChallengeType = ref<ValidateType | null>(null)
   const challengeValue = ref('')
@@ -221,6 +232,15 @@ export function useAuth(
     }
   }
 
+  /**
+   * 当用户编辑密码输入框时切换到 manual 模式。
+   * code 模式下 validateValue 表示验证码，不参与 passwordMode 状态机。
+   */
+  watch(validateValue, (value) => {
+    if (isCodeMode.value) return
+    if (value.trim().length) passwordMode.value = 'manual'
+  })
+
   const applyVerifyResponse = (
     response: Awaited<ReturnType<AuthApi['verifyValidations']>>,
   ) => {
@@ -247,18 +267,14 @@ export function useAuth(
    * 只保存 uid、展示账号和登录方式；不得写入密码明文。
    */
   function selectSavedAccount(saved: AccountSummary) {
-    selectedAccountUid.value = saved.uid
-    account.value = saved.displayAccount
-    if (
-      saved.loginType === 1
-      || saved.loginType === 2
-      || saved.loginType === 3
-      || saved.loginType === 4
-    ) {
-      loginMethod.value = saved.loginType
-    }
     // 切换账号后必须清理上一会话的瞬态状态，避免挑战/错误信息残留。
     resetAuthForm({ preserveSelectedAccount: true })
+    selectedAccountUid.value = saved.uid
+    loginMethod.value = saved.loginType
+    account.value = saved.displayAccount
+    validateValue.value = ''
+    passwordMode.value = saved.hasSavedPassword ? 'saved' : 'empty'
+    otherMethodsOpen.value = false
   }
 
   /**
@@ -274,11 +290,11 @@ export function useAuth(
     notice.value = ''
     error.value = ''
     businessProcessing.value = []
+    otherMethodsOpen.value = false
 
     // 主登录与二次验证材料
     validateToken.value = ''
     validateValue.value = ''
-    secondMac.value = ''
 
     // challenge 阶段状态
     challengePending.value = []
@@ -292,8 +308,9 @@ export function useAuth(
     if (!preserveSelectedAccount) {
       selectedAccountUid.value = null
       account.value = ''
-      loginMethod.value = 1
+      loginMethod.value = 4
       countryCode.value = 86
+      passwordMode.value = 'empty'
     }
   }
 
@@ -360,8 +377,12 @@ export function useAuth(
   const submitLogin = () =>
     run('login', async () => {
       if (!accountReady.value) throw new Error('请填写有效登录账号')
-      if (!validateValue.value.trim()) {
-        throw new Error(isCodeMode.value ? '请输入验证码' : '请输入登录密码')
+      if (isCodeMode.value) {
+        if (!validateValue.value.trim()) throw new Error('请输入验证码')
+      } else if (passwordMode.value === 'saved') {
+        if (!selectedAccountUid.value) throw new Error('缺少已保存账号信息')
+      } else {
+        if (!validateValue.value.trim()) throw new Error('请输入登录密码')
       }
       // 当前协议直接传递 validateValue；密码模式也不在前端 hash。
       gt4.destroy()
@@ -375,16 +396,27 @@ export function useAuth(
         loginType: loginMethod.value,
         ...accountFields(),
         validateToken: issued.validateToken,
-        ...(secondMac.value.trim() ? { secondMac: secondMac.value.trim() } : {}),
       }
-      const verifyResponse = await backend.verifyValidations({
-        validateToken: issued.validateToken,
-        pendingValidateDTOS: [{
+      const pendingValidateDTOS: PendingValidationDto[] = isCodeMode.value
+        ? [{
           ...pendingAccountFields(),
           validateType: contract.value.validateType,
           validateValue: validateValue.value.trim(),
-        }],
-        ...(secondMac.value.trim() ? { secondMac: secondMac.value.trim() } : {}),
+        }]
+        : passwordMode.value === 'saved'
+          ? [{
+            ...pendingAccountFields(),
+            validateType: contract.value.validateType,
+            savedPasswordUid: selectedAccountUid.value!,
+          }]
+          : [{
+            ...pendingAccountFields(),
+            validateType: contract.value.validateType,
+            validateValue: validateValue.value.trim(),
+          }]
+      const verifyResponse = await backend.verifyValidations({
+        validateToken: issued.validateToken,
+        pendingValidateDTOS,
       })
       if (applyVerifyResponse(verifyResponse)) return
       const result = await loginWithMissingValidationRecovery(lastLoginRequest)
@@ -411,7 +443,6 @@ export function useAuth(
           ),
           validateValue: challengeValue.value.trim(),
         }],
-        ...(secondMac.value.trim() ? { secondMac: secondMac.value.trim() } : {}),
       })
       if (applyVerifyResponse(verifyResponse)) {
         challengeValue.value = ''
@@ -531,6 +562,11 @@ export function useAuth(
     if (!methodContract[method].code) gt4.destroy()
   })
 
+  /** 折叠/展开“其他登录方式”面板。 */
+  const toggleOtherMethods = () => {
+    otherMethodsOpen.value = !otherMethodsOpen.value
+  }
+
   return {
     /** 表单 ref 可由视图双向绑定；切换登录方式不会自动清空账号或验证值。 */
     loginMethod,
@@ -539,8 +575,9 @@ export function useAuth(
     selectedAccountUid,
     countryCode,
     validateValue,
+    passwordMode,
+    otherMethodsOpen,
     validateToken,
-    secondMac,
     /** challenge 状态由 verify/login 响应重建；成功登录后清空待验证项和选择。 */
     challengePending,
     selectedChallengeType,
@@ -568,5 +605,7 @@ export function useAuth(
     selectSavedAccount,
     /** 退出/恢复到登录页时清理瞬态认证状态。 */
     resetAuthForm,
+    /** 折叠/展开“其他登录方式”。 */
+    toggleOtherMethods,
   }
 }

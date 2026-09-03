@@ -233,8 +233,6 @@ export interface LoginRequest {
   countryCode?: number
   /** 可随登录请求提交的校验流程令牌。 */
   validateToken?: string
-  /** 可选补充值；客户端不解释其内容。 */
-  secondMac?: string
   /** 人脸方式要求的认证材料。 */
   credentials?: string
 }

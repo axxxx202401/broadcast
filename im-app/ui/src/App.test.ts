@@ -98,6 +98,7 @@ function mountApp() {
       stubs: {
         LoginPanel: {
           name: 'LoginPanel',
+          props: ['auth', 'accounts', 'selectedAccountUid'],
           template: '<div class="login-panel-stub" />',
         },
       },

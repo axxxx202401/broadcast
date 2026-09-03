@@ -103,6 +103,7 @@ describe('useAuth', () => {
 
   it('上次成功销毁 GT4 后，再次发送验证码会重新初始化', async () => {
     const { auth, gt4, succeedGt4, wrapper } = setupAuth()
+    auth.loginMethod.value = 1
     auth.account.value = '13800138000'
     auth.sendCode()
     await succeedGt4()
@@ -665,6 +666,7 @@ describe('useAuth', () => {
     expect(auth.selectedAccountUid.value).toBe('42')
     expect(auth.account.value).toBe('a@example.com')
     expect(auth.loginMethod.value).toBe(4)
+    expect(auth.passwordMode.value).toBe('saved')
     expect(auth.validateValue.value).toBe('')
     expect(JSON.stringify({
       uid: auth.selectedAccountUid.value,
@@ -672,6 +674,23 @@ describe('useAuth', () => {
       loginMethod: auth.loginMethod.value,
       validateValue: auth.validateValue.value,
     })).not.toContain('saved-secret')
+    wrapper.unmount()
+  })
+
+  it('选择保存账号时不把密码明文放入前端', async () => {
+    const { auth, backend, wrapper } = setupAuth()
+    auth.selectSavedAccount({
+      uid: '42',
+      displayAccount: 'a@example.com',
+      loginType: 4,
+      hasSavedPassword: true,
+      isCurrent: false,
+    })
+    expect(auth.passwordMode.value).toBe('saved')
+    await auth.submitLogin()
+    expect(backend.verifyValidations).toHaveBeenCalledWith(expect.objectContaining({
+      pendingValidateDTOS: [expect.objectContaining({ savedPasswordUid: '42' })],
+    }))
     wrapper.unmount()
   })
 })

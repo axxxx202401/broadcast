@@ -102,7 +102,12 @@ const logout = () =>
   </section>
 
   <!-- 无账号或需要重新登录时展示登录入口；成功恢复后进入监控控制台。 -->
-  <LoginPanel v-else-if="accounts.phase.value === 'needsLogin' || !monitor.loggedIn.value" :auth="auth" />
+  <LoginPanel
+    v-else-if="accounts.phase.value === 'needsLogin' || !monitor.loggedIn.value"
+    :auth="auth"
+    :accounts="accounts.accounts.value"
+    :selectedAccountUid="auth.selectedAccountUid.value"
+  />
 
   <main v-else class="operations-shell">
     <!-- 顶栏集中呈现连接状态、操作员身份及连接和退出操作。 -->
