@@ -19,6 +19,9 @@ pub mod credentials;
 /// 按 UID 隔离的活动账号数据库。
 pub mod database;
 
+/// 旧单库一次性迁移。
+pub mod migration;
+
 /// 账号持久化与会话切换过程中可能出现的统一错误。
 ///
 /// 该类型保留底层文件系统、JSON 与数据库错误的来源，同时为凭据不可用、
