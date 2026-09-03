@@ -150,3 +150,29 @@ describe('消息分页 IPC 契约', () => {
     })
   })
 })
+
+describe('账号 IPC 契约', () => {
+  beforeEach(() => mocks.invoke.mockReset())
+
+  it('账号命令使用正确命令名，且载荷从不包含 password 或 token', async () => {
+    mocks.invoke.mockResolvedValue({ warnings: [] })
+
+    await api.restoreSession()
+    await api.listAccounts()
+    await api.switchAccount('42')
+    await api.removeAccount('42')
+    await api.logout()
+
+    expect(mocks.invoke.mock.calls[0]).toEqual(['restore_session'])
+    expect(mocks.invoke.mock.calls[1]).toEqual(['list_accounts'])
+    expect(mocks.invoke.mock.calls[2]).toEqual(['switch_account', { uid: '42' }])
+    expect(mocks.invoke.mock.calls[3]).toEqual(['remove_account', { uid: '42' }])
+    expect(mocks.invoke.mock.calls[4]).toEqual(['logout'])
+
+    for (const [, payload] of mocks.invoke.mock.calls) {
+      const serialized = JSON.stringify(payload ?? {})
+      expect(serialized).not.toMatch(/password/i)
+      expect(serialized).not.toMatch(/token/i)
+    }
+  })
+})

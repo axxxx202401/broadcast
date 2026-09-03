@@ -366,14 +366,21 @@ export function useMonitor() {
   /**
    * 尝试取得 `run` 的 pending 执行权后请求远程退出。
    * 若已有动作占用 pending，本次调用直接返回，不请求后端也不清理本地状态；若已开始执行，
-   * 即使远程 logout 失败也会在 finally 清理本地会话，并以 warning 披露链路状态不确定。
+   * 即使远程 logout 失败也会在 finally 清理本地会话。成功路径展示后端 warnings；
+   * 退出未确认的用户文案原样展示，其余拒绝值仍以 warning 披露链路状态不确定。
    */
   const logout = () =>
     run('logout', async () => {
       try {
-        await api.logout()
+        const result = await api.logout()
+        if (result.warnings.length) {
+          warning.value = result.warnings.join('\n')
+        }
       } catch (reason) {
-        warning.value = `已退出，但断开聊天链路时出现问题：${errorMessage(reason)}`
+        const text = errorMessage(reason)
+        warning.value = text === '本次无法确认已退出，请重试'
+          ? text
+          : `已退出，但断开聊天链路时出现问题：${text}`
       } finally {
         connectionStatusVersion += 1
         loggedIn.value = false

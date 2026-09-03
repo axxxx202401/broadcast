@@ -2,6 +2,7 @@ import { computed, ref, watch } from 'vue'
 
 import { api } from '../services/tauri'
 import type {
+  AccountSummary,
   BusinessProcessing,
   GroupDto,
   LoginRequest,
@@ -48,24 +49,38 @@ const methodContract: Record<
 }
 
 /**
+ * 登录成功后交给应用层的会话发布材料。
+ * 账号摘要缺失时由组合式函数按 uid 合成空展示字段，避免调用方因缺字段崩溃。
+ */
+export interface LoginSuccessPayload {
+  /** 当前账号的非密钥摘要，供头部展示。 */
+  account: AccountSummary
+  /** 本次远程快照同步后得到的本地群组列表。 */
+  groups: GroupDto[]
+  /** 非阻塞提示，例如本次无法安全保存登录信息。 */
+  warnings: string[]
+}
+
+/**
  * 管理主认证、服务端追加验证和验证码发送状态。
  *
  * 主链路固定为 issued → verify → login；密码值按当前实现原样提交给后端，不在前端
  * 进行 hash。远程调用失败可能已在服务端产生部分副作用，本地只能呈现错误，不能据此
  * 确认远端操作是否执行。可注入 API 与 GT4 控制器以隔离传输层和验证码 SDK。
  *
- * @param onLogin 登录成功后接收群组和用户标识的回调。
+ * @param onLogin 登录成功后接收账号摘要、群组和 warnings 的回调。
  * @param dependencies 可选的后端 API 与 GT4 控制器。
  * @returns 认证表单状态、派生状态、GT4 状态及四个主要用户动作。
  */
 export function useAuth(
-  onLogin: (groups: GroupDto[], uid: string) => void,
+  onLogin: (payload: LoginSuccessPayload) => void,
   dependencies: AuthDependencies = {},
 ) {
   const backend = dependencies.api ?? api
   const gt4 = dependencies.gt4 ?? useGt4()
   const loginMethod = ref<PrimaryLoginType>(1)
   const account = ref('')
+  const selectedAccountUid = ref<string | null>(null)
   const countryCode = ref(86)
   const validateValue = ref('')
   const validateToken = ref('')
@@ -216,12 +231,45 @@ export function useAuth(
     return true
   }
 
+  /** 登录成功但缺少账号摘要时，按 uid 合成空展示字段，避免调用方崩溃。 */
+  function accountFromLogin(result: Extract<LoginResult, { status: 'success' }>): AccountSummary {
+    return result.account ?? {
+      uid: result.uid,
+      displayAccount: '',
+      loginType: loginMethod.value,
+      hasSavedPassword: false,
+      isCurrent: true,
+    }
+  }
+
+  /**
+   * 回填已保存账号的展示字段，供后续登录页使用。
+   * 只保存 uid、展示账号和登录方式；不得写入密码明文。
+   */
+  function selectSavedAccount(saved: AccountSummary) {
+    selectedAccountUid.value = saved.uid
+    account.value = saved.displayAccount
+    if (
+      saved.loginType === 1
+      || saved.loginType === 2
+      || saved.loginType === 3
+      || saved.loginType === 4
+    ) {
+      loginMethod.value = saved.loginType
+    }
+    validateValue.value = ''
+  }
+
   /** 处理登录成功或 challenge 结果；补查失败不丢弃登录响应已经携带的验证项。 */
   async function handleLoginResult(result: LoginResult) {
     if (result.status === 'success') {
       challengePending.value = []
       selectedChallengeType.value = null
-      onLogin(result.groups, result.uid)
+      onLogin({
+        account: accountFromLogin(result),
+        groups: result.groups,
+        warnings: result.warnings ?? [],
+      })
       return
     }
     validateToken.value = result.validateToken
@@ -450,6 +498,8 @@ export function useAuth(
     /** 表单 ref 可由视图双向绑定；切换登录方式不会自动清空账号或验证值。 */
     loginMethod,
     account,
+    /** 已选择的保存账号 UID；selectSavedAccount 写入，不得关联密码明文。 */
+    selectedAccountUid,
     countryCode,
     validateValue,
     validateToken,
@@ -477,5 +527,7 @@ export function useAuth(
     sendChallengeCode,
     submitLogin,
     submitChallenge,
+    /** 回填已保存账号的展示字段；Task 6 会继续完善登录页交互。 */
+    selectSavedAccount,
   }
 }

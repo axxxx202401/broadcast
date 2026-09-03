@@ -127,6 +127,7 @@ describe('useMonitor', () => {
         return Promise.resolve(event === 'connection_status' ? statusUnlisten : messageUnlisten)
       },
     )
+    mocks.logout.mockResolvedValue({ warnings: [] })
   })
 
   it('登录后同步后端连接状态快照', async () => {
@@ -714,6 +715,32 @@ describe('useMonitor', () => {
     expect(monitor.connectionStatus.value).toBe('disconnected')
     expect(monitor.warning.value).toContain('disconnect timed out')
     expect(monitor.error.value).toBe('')
+    wrapper.unmount()
+  })
+
+  it('退出成功时展示 warnings 并清空本地会话', async () => {
+    mocks.logout.mockResolvedValueOnce({ warnings: ['本次无法完全清除登录信息'] })
+    const { monitor, wrapper } = mountMonitor()
+    monitor.acceptLogin([group('7')], '42')
+
+    await monitor.logout()
+
+    expect(monitor.loggedIn.value).toBe(false)
+    expect(monitor.uid.value).toBeNull()
+    expect(monitor.warning.value).toBe('本次无法完全清除登录信息')
+    expect(monitor.error.value).toBe('')
+    wrapper.unmount()
+  })
+
+  it('退出未确认的用户文案原样展示', async () => {
+    mocks.logout.mockRejectedValueOnce(new Error('本次无法确认已退出，请重试'))
+    const { monitor, wrapper } = mountMonitor()
+    monitor.acceptLogin([group('7')], '42')
+
+    await monitor.logout()
+
+    expect(monitor.loggedIn.value).toBe(false)
+    expect(monitor.warning.value).toBe('本次无法确认已退出，请重试')
     wrapper.unmount()
   })
 })

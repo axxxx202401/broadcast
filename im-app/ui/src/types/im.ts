@@ -303,3 +303,55 @@ export type AuthCommandError =
 
 /** 聊天连接状态；未知后端事件值应由归一化层降级为 `disconnected`。 */
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected'
+
+/**
+ * 启动恢复或切换账号后的会话结果；字段名与 Rust `RestoreSessionDto` 的 camelCase serde 输出一致。
+ * 联合分支不得携带 Token 或密码。
+ */
+export type RestoreSessionResult =
+  | {
+      /** Token 有效，已发布会话并打开对应账号数据库。 */
+      status: 'success'
+      /** 当前账号的非密钥摘要。 */
+      account: AccountSummary
+      /** 本次同步后的本地群组列表。 */
+      groups: GroupDto[]
+      /** 非阻塞提示；更新最后账号失败时只放普通用户文案。 */
+      warnings: string[]
+    }
+  | {
+      /** 需要用户重新登录，不得自动进入主界面。 */
+      status: 'needsLogin'
+      /** 用户 ID 的十进制字符串表示。 */
+      uid: string
+      /** 用户输入的邮箱或手机号，仅用于展示和回填。 */
+      displayAccount: string
+      /** 首次主登录使用的登录方式标识；Rust 为 i32，因此保持 number。 */
+      loginType: number
+      /** 系统凭据库是否已保存该账号登录密码。 */
+      hasSavedPassword: boolean
+    }
+  | {
+      /** 索引中没有任何账号，或最后账号记录已丢失。 */
+      status: 'noAccount'
+    }
+  | {
+      /** 网络等暂时失败，Token 仍保留，允许用户重试。 */
+      status: 'retryable'
+      /** 用户 ID 的十进制字符串表示。 */
+      uid: string
+      /** 普通用户可理解的失败说明，不含协议码或内部实现细节。 */
+      message: string
+    }
+
+/** 退出登录命令返回的非阻塞提示；字段名与 Rust `LogoutResultDto` 一致。 */
+export interface LogoutResult {
+  /** 删除 Token 失败等情况下的普通用户文案。 */
+  warnings: string[]
+}
+
+/** 移除账号命令返回的非阻塞提示；字段名与 Rust `RemoveAccountResultDto` 一致。 */
+export interface RemoveAccountResult {
+  /** 凭据删除失败等情况下的普通用户文案。 */
+  warnings: string[]
+}

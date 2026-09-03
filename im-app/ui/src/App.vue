@@ -1,17 +1,61 @@
 <script setup lang="ts">
+import { onMounted } from 'vue'
+
 import GroupSidebar from './components/GroupSidebar.vue'
 import LoginPanel from './components/LoginPanel.vue'
 import MessagePanel from './components/MessagePanel.vue'
 import StatusBadge from './components/StatusBadge.vue'
+import { useAccounts } from './composables/useAccounts'
 import { useAuth } from './composables/useAuth'
 import { useMonitor } from './composables/useMonitor'
+import type { RestoreSessionResult } from './types/im'
 
-// 根组件编排认证与监控状态：登录成功后把群组和用户信息交给监控流程，并刷新群组。
+// 根组件编排账号恢复、认证与监控状态。启动时先恢复上次登录，避免闪现登录页。
 const monitor = useMonitor()
-const auth = useAuth((groups, uid) => {
-  monitor.acceptLogin(groups, uid)
+const accounts = useAccounts()
+const auth = useAuth((payload) => {
+  accounts.applyManualLogin(payload.account)
+  monitor.acceptLogin(payload.groups, payload.account.uid)
+  if (payload.warnings.length) {
+    monitor.warning.value = payload.warnings.join('\n')
+  }
   void monitor.fetchGroups()
 })
+
+/** 把恢复/切换结果发布到监控会话或登录回填；过期结果为 `null` 时忽略。 */
+function applyRestoreOutcome(result: RestoreSessionResult | null) {
+  if (!result) return
+  if (result.status === 'success') {
+    monitor.acceptLogin(result.groups, result.account.uid)
+    if (result.warnings.length) {
+      monitor.warning.value = result.warnings.join('\n')
+    }
+    void monitor.fetchGroups()
+    return
+  }
+  if (result.status === 'needsLogin') {
+    auth.selectSavedAccount({
+      uid: result.uid,
+      displayAccount: result.displayAccount,
+      loginType: result.loginType,
+      hasSavedPassword: result.hasSavedPassword,
+      isCurrent: false,
+    })
+  }
+  // noAccount：只展示默认登录页。邮箱密码默认表单由 Task 6 负责，此处不改 loginMethod。
+}
+
+onMounted(() => {
+  void accounts.restore().then(applyRestoreOutcome)
+})
+
+const retryRestore = () => {
+  void accounts.retryRestore().then(applyRestoreOutcome)
+}
+
+const useOtherAccount = () => {
+  accounts.useOtherAccount()
+}
 </script>
 
 <template>
@@ -22,8 +66,30 @@ const auth = useAuth((groups, uid) => {
     <button type="button" aria-label="关闭警告" @click="monitor.warning.value = ''">×</button>
   </div>
 
-  <!-- 认证状态决定显示登录入口还是监控控制台。 -->
-  <LoginPanel v-if="!monitor.loggedIn.value" :auth="auth" />
+  <!-- 恢复完成前（含可重试）只显示启动状态，不得闪现登录页或操作主界面。 -->
+  <section v-if="accounts.phase.value === 'recovering'" class="restore-shell" role="status">
+    <p>正在恢复上次登录</p>
+    <p v-if="accounts.retryableMessage.value">{{ accounts.retryableMessage.value }}</p>
+    <div v-if="accounts.retryableMessage.value" class="restore-actions">
+      <button
+        class="button primary"
+        type="button"
+        data-test="retry-restore"
+        :disabled="!!accounts.busy.value"
+        @click="retryRestore"
+      >重试</button>
+      <button
+        class="button ghost"
+        type="button"
+        data-test="use-other-account"
+        :disabled="!!accounts.busy.value"
+        @click="useOtherAccount"
+      >使用其他账号</button>
+    </div>
+  </section>
+
+  <!-- 无账号或需要重新登录时展示登录入口；成功恢复后进入监控控制台。 -->
+  <LoginPanel v-else-if="accounts.phase.value === 'needsLogin' || !monitor.loggedIn.value" :auth="auth" />
 
   <main v-else class="operations-shell">
     <!-- 顶栏集中呈现连接状态、操作员身份及连接和退出操作。 -->
@@ -93,3 +159,20 @@ const auth = useAuth((groups, uid) => {
     </div>
   </main>
 </template>
+
+<style scoped>
+.restore-shell {
+  display: grid;
+  place-content: center;
+  gap: 16px;
+  min-height: 100%;
+  padding: 48px 24px;
+  text-align: center;
+}
+
+.restore-actions {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+}
+</style>

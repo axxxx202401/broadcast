@@ -148,7 +148,17 @@ describe('useAuth', () => {
         countryCode: accountField === 'phone' ? 86 : 0,
         validateToken: 'issued-token',
       })
-      expect(onLogin).toHaveBeenCalledWith([], '42')
+      expect(onLogin).toHaveBeenCalledWith({
+        account: {
+          uid: '42',
+          displayAccount: '',
+          loginType: method,
+          hasSavedPassword: false,
+          isCurrent: true,
+        },
+        groups: [],
+        warnings: [],
+      })
       wrapper.unmount()
     },
   )
@@ -528,6 +538,87 @@ describe('useAuth', () => {
     expect(auth.error.value).toContain('认证失败')
     expect(auth.error.value).toContain('2')
     expect(auth.error.value).toContain('remaining')
+    wrapper.unmount()
+  })
+
+  it('登录成功且缺少账号摘要时按 uid 合成展示账号', async () => {
+    const { auth, onLogin, wrapper } = setupAuth()
+    auth.loginMethod.value = 4
+    auth.account.value = 'operator@example.com'
+    auth.validateValue.value = 'plain-password'
+
+    await auth.submitLogin()
+
+    expect(onLogin).toHaveBeenCalledWith({
+      account: {
+        uid: '42',
+        displayAccount: '',
+        loginType: 4,
+        hasSavedPassword: false,
+        isCurrent: true,
+      },
+      groups: [],
+      warnings: [],
+    })
+    wrapper.unmount()
+  })
+
+  it('登录成功时把账号摘要和 warnings 交给 onLogin', async () => {
+    const { auth, backend, onLogin, wrapper } = setupAuth()
+    backend.login.mockResolvedValueOnce({
+      status: 'success',
+      uid: '42',
+      groups: [],
+      account: {
+        uid: '42',
+        displayAccount: 'a@example.com',
+        loginType: 4,
+        hasSavedPassword: true,
+        isCurrent: true,
+      },
+      warnings: ['本次无法安全保存登录信息'],
+    })
+    auth.loginMethod.value = 4
+    auth.account.value = 'a@example.com'
+    auth.validateValue.value = 'plain-password'
+
+    await auth.submitLogin()
+
+    expect(onLogin).toHaveBeenCalledWith({
+      account: {
+        uid: '42',
+        displayAccount: 'a@example.com',
+        loginType: 4,
+        hasSavedPassword: true,
+        isCurrent: true,
+      },
+      groups: [],
+      warnings: ['本次无法安全保存登录信息'],
+    })
+    wrapper.unmount()
+  })
+
+  it('selectSavedAccount 只回填账号摘要，不写入密码明文', () => {
+    const { auth, wrapper } = setupAuth()
+    auth.validateValue.value = 'should-be-cleared'
+    auth.selectSavedAccount({
+      uid: '42',
+      displayAccount: 'a@example.com',
+      loginType: 4,
+      hasSavedPassword: true,
+      isCurrent: false,
+    })
+
+    expect(auth.selectedAccountUid.value).toBe('42')
+    expect(auth.account.value).toBe('a@example.com')
+    expect(auth.loginMethod.value).toBe(4)
+    expect(auth.validateValue.value).toBe('')
+    expect(JSON.stringify({
+      uid: auth.selectedAccountUid.value,
+      account: auth.account.value,
+      loginMethod: auth.loginMethod.value,
+      validateValue: auth.validateValue.value,
+    })).not.toContain('saved-secret')
     wrapper.unmount()
   })
 })
