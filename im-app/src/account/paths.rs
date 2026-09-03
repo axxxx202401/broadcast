@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use super::AccountError;
 use std::path::PathBuf;
 

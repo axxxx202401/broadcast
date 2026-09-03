@@ -1,4 +1,8 @@
 //! 非敏感账号索引：持久化账号摘要与最后使用账号，不保存密码或 Token。
+//!
+//! 生产接线完成前，二进制目标不会引用本模块公开类型，因此允许 dead_code。
+
+#![allow(dead_code)]
 
 use super::AccountError;
 use std::path::{Path, PathBuf};
