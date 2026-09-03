@@ -45,10 +45,37 @@
 }
 
 .login-form > label,
-.account-picker label,
+.account-picker label {
+  display: grid;
+  gap: 6px;
+}
+
+.challenge-step {
+  display: grid;
+  gap: 12px;
+}
+
 .challenge-step > label {
   display: grid;
   gap: 6px;
+}
+
+.challenge-step > h3,
+.challenge-progress,
+.challenge-method,
+.challenge-target {
+  margin: 0;
+}
+
+.challenge-progress,
+.challenge-target {
+  color: var(--text-500);
+  font-size: 13px;
+}
+
+.pending-list {
+  display: grid;
+  gap: 8px;
 }
 
 .account-picker select {

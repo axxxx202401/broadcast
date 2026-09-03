@@ -2,7 +2,7 @@
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, h, ref } from 'vue'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Gt4Fields, LoginResult, PendingValidation, PrimaryLoginType } from '../types/im'
 import { useAuth } from './useAuth'
@@ -23,9 +23,14 @@ function setupAuth() {
       validateToken: 'issued-token',
       validateTypes: [],
     }),
-    verifyValidations: vi.fn().mockResolvedValue({
-      validateModelVOS: [],
-      businessProcessing: [],
+    verifyValidations: vi.fn().mockImplementation(async (request: {
+      pendingValidateDTOS: Array<{ reuseLoginPassword?: boolean }>
+    }) => {
+      // 默认把登录密码自动复用视为已消费，迫使界面展示密码输入；成功复用由个别用例覆盖。
+      if (request.pendingValidateDTOS.some((item) => item.reuseLoginPassword)) {
+        throw { kind: 'other', message: '登录密码已被使用，禁止重复消费' }
+      }
+      return { validateModelVOS: [], businessProcessing: [] }
     }),
     listPendingValidations: vi.fn().mockResolvedValue([]),
     login: vi.fn().mockResolvedValue({
@@ -74,6 +79,9 @@ function setupAuth() {
 
 describe('useAuth', () => {
   beforeEach(() => vi.clearAllMocks())
+  afterEach(() => {
+    vi.useRealTimers()
+  })
 
   it('仅验证码模式展示 GT4，并对冻结账号只发送一次验证码', async () => {
     const { auth, backend, gt4, succeedGt4, wrapper } = setupAuth()
@@ -741,6 +749,248 @@ describe('useAuth', () => {
     const dto = backend.verifyValidations.mock.calls[0]?.[0].pendingValidateDTOS[0]
     expect(dto).not.toHaveProperty('savedPasswordUid')
     expect(dto).toEqual(expect.objectContaining({ validateValue: 'phone-password' }))
+    wrapper.unmount()
+  })
+
+  it('resetChallenge 清空令牌、待办、补全目标和倒计时，不删除已选账号', async () => {
+    const { auth, backend, wrapper } = setupAuth()
+    auth.selectSavedAccount({
+      uid: '42',
+      displayAccount: 'operator@example.com',
+      loginType: 4,
+      hasSavedPassword: true,
+      isCurrent: false,
+    })
+    const pending: PendingValidation = {
+      account: 'op***@example.com',
+      accountType: 7,
+      validateType: 16,
+    }
+    backend.login.mockResolvedValueOnce({
+      status: 'challenge',
+      code: 3114179,
+      validateToken: 'challenge-token',
+      message: '需要二次验证',
+      pending: [pending],
+    })
+    backend.listPendingValidations.mockResolvedValueOnce([pending])
+    auth.validateValue.value = 'plain-password'
+    await auth.submitLogin()
+    auth.supplementedTarget.value = 'operator@example.com'
+    auth.resendSeconds.value = 40
+    auth.challengeValue.value = '123456'
+
+    auth.resetChallenge()
+
+    expect(auth.validateToken.value).toBe('')
+    expect(auth.challengePending.value).toEqual([])
+    expect(auth.challengeValue.value).toBe('')
+    expect(auth.supplementedTarget.value).toBe('')
+    expect(auth.resendSeconds.value).toBe(0)
+    expect(auth.challengeStep.value).toBe(0)
+    expect(auth.completedChallengeKeys.value).toEqual([])
+    expect(auth.selectedAccountUid.value).toBe('42')
+    expect(auth.account.value).toBe('operator@example.com')
+    wrapper.unmount()
+  })
+
+  it('进入邮箱验证码挑战时不启动 GT4，发送后才初始化并进入 60 秒倒计时', async () => {
+    vi.useFakeTimers()
+    const { auth, backend, gt4, succeedGt4, wrapper } = setupAuth()
+    const pending: PendingValidation = {
+      account: 'op***@example.com',
+      accountType: 7,
+      validateType: 16,
+    }
+    backend.login.mockResolvedValueOnce({
+      status: 'challenge',
+      code: 3114179,
+      validateToken: 'challenge-token',
+      message: '需要邮箱验证码',
+      pending: [pending],
+    })
+    backend.listPendingValidations.mockResolvedValueOnce([pending])
+    auth.loginMethod.value = 4
+    auth.account.value = 'operator@example.com'
+    auth.validateValue.value = 'plain-password'
+    await auth.submitLogin()
+    await flushPromises()
+
+    expect(gt4.initialize).not.toHaveBeenCalled()
+    expect(auth.challengeStep.value).toBe(1)
+
+    await auth.sendChallengeCode()
+    await succeedGt4()
+    await flushPromises()
+
+    expect(gt4.initialize).toHaveBeenCalledTimes(1)
+    expect(backend.sendEmailCode).toHaveBeenCalledTimes(1)
+    expect(auth.resendSeconds.value).toBe(60)
+
+    await auth.sendChallengeCode()
+    expect(backend.sendEmailCode).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(auth.resendSeconds.value).toBe(59)
+    await vi.advanceTimersByTimeAsync(59_000)
+    expect(auth.resendSeconds.value).toBe(0)
+
+    wrapper.unmount()
+    await vi.advanceTimersByTimeAsync(5_000)
+  })
+
+  it('脱敏目标必须补全且前后缀一致，补全值不写入账号', async () => {
+    const { auth, backend, gt4, succeedGt4, wrapper } = setupAuth()
+    const pending: PendingValidation = {
+      account: 'op***@example.com',
+      accountType: 7,
+      validateType: 16,
+    }
+    backend.login.mockResolvedValueOnce({
+      status: 'challenge',
+      code: 3114179,
+      validateToken: 'challenge-token',
+      message: '需要邮箱验证码',
+      pending: [pending],
+    })
+    backend.listPendingValidations.mockResolvedValueOnce([pending])
+    auth.loginMethod.value = 3
+    auth.account.value = '13800138000'
+    auth.validateValue.value = 'plain-password'
+    await auth.submitLogin()
+
+    await auth.sendChallengeCode()
+    expect(backend.sendEmailCode).not.toHaveBeenCalled()
+    expect(auth.error.value).toContain('完整')
+
+    auth.supplementedTarget.value = 'wrong@other.com'
+    await auth.sendChallengeCode()
+    expect(backend.sendEmailCode).not.toHaveBeenCalled()
+    expect(auth.error.value).toContain('前后缀')
+
+    auth.supplementedTarget.value = 'operator@example.com'
+    await auth.sendChallengeCode()
+    await succeedGt4()
+    await flushPromises()
+
+    expect(gt4.show).toHaveBeenLastCalledWith('operator@example.com', expect.any(Function))
+    expect(backend.sendEmailCode).toHaveBeenCalledWith({
+      email: 'operator@example.com',
+      codeType: 1,
+      gt4DTO: gt4Fields,
+    })
+    expect(auth.account.value).toBe('13800138000')
+    expect(auth.selectedAccountUid.value).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('进入登录密码挑战时自动复用一次，已复用后展示输入且不重试', async () => {
+    const { auth, backend, wrapper } = setupAuth()
+    const pending: PendingValidation = {
+      account: 'op***@example.com',
+      accountType: 7,
+      validateType: 21,
+    }
+    backend.login.mockResolvedValueOnce({
+      status: 'challenge',
+      code: 3114179,
+      validateToken: 'challenge-token',
+      message: '需要邮箱登录密码',
+      pending: [pending],
+    })
+    backend.listPendingValidations.mockResolvedValueOnce([pending])
+    auth.loginMethod.value = 4
+    auth.account.value = 'operator@example.com'
+    auth.validateValue.value = 'plain-password'
+    await auth.submitLogin()
+    await flushPromises()
+
+    const reuseCalls = backend.verifyValidations.mock.calls.filter((call) =>
+      call[0].pendingValidateDTOS.some((item: { reuseLoginPassword?: boolean }) => item.reuseLoginPassword),
+    )
+    expect(reuseCalls).toHaveLength(1)
+    expect(reuseCalls[0]?.[0]).toEqual({
+      validateToken: 'challenge-token',
+      pendingValidateDTOS: [expect.objectContaining({
+        validateType: 21,
+        reuseLoginPassword: true,
+      })],
+    })
+    expect(auth.error.value).toBe('')
+    expect(auth.challengePending.value).toEqual([pending])
+
+    await flushPromises()
+    const reuseAfterWait = backend.verifyValidations.mock.calls.filter((call) =>
+      call[0].pendingValidateDTOS.some((item: { reuseLoginPassword?: boolean }) => item.reuseLoginPassword),
+    )
+    expect(reuseAfterWait).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('PasswordAlreadyReused 英文标识同样停止自动复用', async () => {
+    const { auth, backend, wrapper } = setupAuth()
+    backend.verifyValidations.mockImplementation(async (request: {
+      pendingValidateDTOS: Array<{ reuseLoginPassword?: boolean }>
+    }) => {
+      if (request.pendingValidateDTOS.some((item) => item.reuseLoginPassword)) {
+        throw { kind: 'other', message: 'PasswordAlreadyReused: already consumed' }
+      }
+      return { validateModelVOS: [], businessProcessing: [] }
+    })
+    const pending: PendingValidation = {
+      countryCode: 86,
+      account: '138****8000',
+      accountType: 1,
+      validateType: 20,
+    }
+    backend.login.mockResolvedValueOnce({
+      status: 'challenge',
+      code: 3114179,
+      validateToken: 'challenge-token',
+      message: '需要手机登录密码',
+      pending: [pending],
+    })
+    backend.listPendingValidations.mockResolvedValueOnce([pending])
+    auth.loginMethod.value = 3
+    auth.account.value = '13800138000'
+    auth.validateValue.value = 'plain-password'
+    await auth.submitLogin()
+    await flushPromises()
+
+    expect(auth.challengePending.value).toEqual([pending])
+    expect(backend.verifyValidations.mock.calls.filter((call) =>
+      call[0].pendingValidateDTOS.some((item: { reuseLoginPassword?: boolean }) => item.reuseLoginPassword),
+    )).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('连续挑战推进步数并记录已完成项', async () => {
+    const { auth, backend, wrapper } = setupAuth()
+    const initial: PendingValidation = { validateType: 18, account: 'masked' }
+    const remaining: PendingValidation[] = [{ validateType: 19, account: 'masked' }]
+    backend.login.mockResolvedValueOnce({
+      status: 'challenge',
+      code: 3114179,
+      validateToken: 'challenge-token',
+      message: '需要二次验证',
+      pending: [initial],
+    })
+    backend.listPendingValidations.mockResolvedValueOnce([initial])
+    auth.account.value = '13800138000'
+    auth.validateValue.value = '123456'
+    await auth.submitLogin()
+    expect(auth.challengeStep.value).toBe(1)
+
+    auth.challengeValue.value = 'trade-value'
+    backend.verifyValidations.mockResolvedValueOnce({
+      validateModelVOS: remaining,
+      businessProcessing: [],
+    })
+    await auth.submitChallenge()
+
+    expect(auth.challengeStep.value).toBe(2)
+    expect(auth.challengePending.value).toEqual(remaining)
+    expect(auth.completedChallengeKeys.value.length).toBeGreaterThan(0)
     wrapper.unmount()
   })
 

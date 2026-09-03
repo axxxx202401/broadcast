@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 
 import type { useAuth } from '../composables/useAuth'
 import type { AccountSummary, PrimaryLoginType } from '../types/im'
@@ -38,6 +38,32 @@ const validateTypeLabels: Partial<Record<number, string>> = {
 const isPhoneMethod = computed(() =>
   props.auth.loginMethod.value === 1 || props.auth.loginMethod.value === 3,
 )
+
+/** 多种待验证方式时，展开“改用其他验证方式”后才显示选项列表。 */
+const choosingOtherMethods = ref(false)
+
+const challengeMethodLabel = computed(() => {
+  const type = props.auth.selectedChallenge.value?.validateType
+  return type == null ? '验证' : (validateTypeLabels[type] ?? '安全验证')
+})
+
+const showChallengeSecretInput = computed(() => {
+  const type = props.auth.selectedChallenge.value?.validateType
+  if (type === 20 || type === 21) return props.auth.passwordReuseFailed.value
+  return true
+})
+
+const needsSupplementedTarget = computed(() => {
+  const account = props.auth.selectedChallenge.value?.account ?? ''
+  return props.auth.isChallengeCode.value && account.includes('*')
+})
+
+const challengeTotalKnown = computed(() => {
+  const completed = props.auth.completedChallengeKeys.value.length
+  const remaining = props.auth.challengePending.value.length
+  // 仅当已经完成过至少一项且当前仍有待办时，才能把“已完成 + 当前待办”视为已知总数。
+  return completed > 0 && remaining > 0 ? completed + remaining : null
+})
 
 /** 从已保存账号列表回填或清空为「添加账号」。 */
 function onAccountChange(event: Event) {
@@ -162,11 +188,39 @@ const canSubmitPrimary = computed(() => {
         </div>
       </template>
 
-      <!-- 二次验证：展示待验证项并允许提交挑战值，不展示协议字段名。 -->
+      <!-- 二次验证：只展示用户可理解的步骤与方式，不展示协议字段、业务码或 GT4 状态。 -->
       <template v-else>
         <section class="challenge-step" aria-label="二次验证">
-          <h3>二次验证</h3>
-          <div class="pending-list" aria-label="服务端待验证项">
+          <h3>还差一步，请确认是你本人</h3>
+          <p class="challenge-progress">
+            安全验证第 {{ auth.challengeStep.value || 1 }} 步
+            <template v-if="challengeTotalKnown !== null">
+              （共 {{ challengeTotalKnown }} 步）
+            </template>
+          </p>
+          <p class="challenge-method">{{ challengeMethodLabel }}</p>
+          <p
+            v-if="auth.selectedChallenge.value?.account"
+            class="challenge-target"
+          >
+            {{ auth.selectedChallenge.value.account }}
+          </p>
+
+          <button
+            v-if="auth.challengePending.value.length > 1"
+            class="button ghost"
+            data-test="challenge-switch"
+            type="button"
+            @click="choosingOtherMethods = !choosingOtherMethods"
+          >
+            改用其他验证方式
+          </button>
+
+          <div
+            v-if="choosingOtherMethods && auth.challengePending.value.length > 1"
+            class="pending-list"
+            aria-label="其他验证方式"
+          >
             <label
               v-for="item in auth.challengePending.value"
               :key="`${item.validateType}-${item.account ?? ''}`"
@@ -177,31 +231,40 @@ const canSubmitPrimary = computed(() => {
                 name="pending-validation"
                 :value="item.validateType"
               />
-              <span>
-                {{ validateTypeLabels[item.validateType] ?? '验证值' }}
-                · {{ item.account ?? '服务端未提供账号' }}
-              </span>
+              <span>{{ validateTypeLabels[item.validateType] ?? '安全验证' }}</span>
             </label>
           </div>
+
+          <label v-if="needsSupplementedTarget">
+            <span>补充完整{{ auth.selectedChallenge.value?.validateType === 17 ? '手机号' : '邮箱' }}</span>
+            <input
+              v-model.trim="auth.supplementedTarget.value"
+              data-test="challenge-supplement"
+              :type="auth.selectedChallenge.value?.validateType === 17 ? 'tel' : 'email'"
+              autocomplete="off"
+            />
+          </label>
 
           <section v-if="auth.isChallengeCode.value" class="challenge-code">
             <button
               class="button secondary"
               data-test="challenge-send-code"
               type="button"
-              :disabled="!!auth.busy.value || auth.gt4Loading.value"
+              :disabled="!!auth.busy.value || auth.gt4Loading.value || auth.resendSeconds.value > 0"
               @click="auth.sendChallengeCode"
             >
               {{
-                auth.selectedChallenge.value?.validateType === 16
-                  ? '发送邮箱验证码'
-                  : '发送手机验证码'
+                auth.resendSeconds.value > 0
+                  ? `${auth.resendSeconds.value}s 后可重发`
+                  : auth.selectedChallenge.value?.validateType === 16
+                    ? '发送邮箱验证码'
+                    : '发送手机验证码'
               }}
             </button>
             <p v-if="auth.gt4Error.value" class="warning-note">{{ auth.gt4Error.value }}</p>
           </section>
 
-          <label>
+          <label v-if="showChallengeSecretInput">
             <span>
               {{
                 isPasswordValidation(auth.selectedChallenge.value?.validateType)
@@ -219,23 +282,24 @@ const canSubmitPrimary = computed(() => {
           </label>
 
           <button
+            v-if="showChallengeSecretInput"
             class="button primary login-submit"
             data-test="challenge-submit"
             type="button"
             :disabled="!!auth.busy.value || !auth.selectedChallenge.value || !auth.challengeValue.value.trim()"
             @click="auth.submitChallenge"
           >
-            完成二次验证
+            完成验证
           </button>
 
-          <section v-if="auth.businessProcessing.value.length" class="business-processing" role="status" aria-live="polite">
-            <p
-              v-for="item in auth.businessProcessing.value"
-              :key="item.businessCode"
-            >
-              {{ item.businessMsg || '服务端未提供消息' }}
-            </p>
-          </section>
+          <button
+            class="button ghost"
+            data-test="challenge-back"
+            type="button"
+            @click="auth.resetChallenge"
+          >
+            返回登录
+          </button>
         </section>
       </template>
 

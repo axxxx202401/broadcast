@@ -1,19 +1,33 @@
 // @vitest-environment jsdom
 
-import { mount } from '@vue/test-utils'
-import { computed, ref } from 'vue'
-import { describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { computed, defineComponent, h, ref } from 'vue'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { PendingValidation } from '../types/im'
+import { useAuth } from '../composables/useAuth'
+import type { Gt4Fields, LoginResult, PendingValidation } from '../types/im'
 import LoginPanel from './LoginPanel.vue'
 import panelSource from './LoginPanel.vue?raw'
 
+const gt4Fields: Gt4Fields = {
+  lotNumber: 'lot',
+  captchaOutput: 'output',
+  passToken: 'pass',
+  genTime: 'time',
+}
+
 /** 挂载登录面板并注入最小认证桩。 */
-function mountPanel(auth: ReturnType<typeof authStub>) {
+function mountPanel(auth: ReturnType<typeof authStub>, accounts: Array<{
+  uid: string
+  displayAccount: string
+  loginType: 1 | 2 | 3 | 4
+  hasSavedPassword: boolean
+  isCurrent: boolean
+}> = []) {
   return mount(LoginPanel, {
     props: {
       auth: auth as never,
-      accounts: [],
+      accounts,
       selectedAccountUid: auth.selectedAccountUid.value,
     },
   })
@@ -28,10 +42,14 @@ function authStub(withChallenge = false) {
     { countryCode: 86, account: '138****8000', accountType: 1, validateType: 18 as const },
     { account: 'op***@example.com', accountType: 2, validateType: 23 as const },
   ] : [])
-  const selectedChallengeType = ref<number | null>(18)
+  const selectedChallengeType = ref<number | null>(withChallenge ? 18 : null)
   const toggleOtherMethods = () => {
     otherMethodsOpen.value = !otherMethodsOpen.value
   }
+  const resetChallenge = vi.fn(() => {
+    challengePending.value = []
+    selectedChallengeType.value = null
+  })
   return {
     loginMethod,
     selectedAccountUid,
@@ -46,6 +64,11 @@ function authStub(withChallenge = false) {
       challengePending.value.find((item) => item.validateType === selectedChallengeType.value),
     ),
     challengeValue: ref(''),
+    challengeStep: ref(withChallenge ? 1 : 0),
+    resendSeconds: ref(0),
+    completedChallengeKeys: ref<string[]>([]),
+    supplementedTarget: ref(''),
+    passwordReuseFailed: ref(false),
     businessProcessing: ref([
       { businessCode: 9001, businessMsg: '设备已变更' },
     ]),
@@ -66,16 +89,95 @@ function authStub(withChallenge = false) {
     submitChallenge: vi.fn(),
     destroyGt4: vi.fn(),
     toggleOtherMethods,
+    resetChallenge,
+    resetAuthForm: vi.fn(),
+    selectSavedAccount: vi.fn(),
   }
 }
 
+const emailCodePending: PendingValidation = {
+  account: 'op***@example.com',
+  accountType: 7,
+  validateType: 16,
+}
+
+/** 走真实 useAuth，进入邮箱验证码二次验证卡片。 */
+async function enterEmailCodeChallenge() {
+  const backend = {
+    sendSmsCode: vi.fn().mockResolvedValue(undefined),
+    sendEmailCode: vi.fn().mockResolvedValue(undefined),
+    issueValidationToken: vi.fn().mockResolvedValue({
+      validateToken: 'issued-token',
+      validateTypes: [],
+    }),
+    verifyValidations: vi.fn().mockResolvedValue({
+      validateModelVOS: [],
+      businessProcessing: [],
+    }),
+    listPendingValidations: vi.fn().mockResolvedValue([emailCodePending]),
+    login: vi.fn().mockResolvedValue({
+      status: 'challenge',
+      code: 3114179,
+      validateToken: 'challenge-token',
+      message: '需要邮箱验证码',
+      pending: [emailCodePending],
+    } satisfies LoginResult),
+  }
+  const gt4Ready = ref(true)
+  const gt4 = {
+    loading: ref(false),
+    ready: gt4Ready,
+    error: ref(''),
+    initialize: vi.fn(async () => {
+      gt4Ready.value = true
+      return true
+    }),
+    show: vi.fn((_snapshot: string, _success: (snapshot: string, fields: Gt4Fields) => void | Promise<void>) => true),
+    reset: vi.fn(),
+    destroy: vi.fn(() => {
+      gt4Ready.value = false
+    }),
+  }
+  let auth!: ReturnType<typeof useAuth>
+  const host = mount(defineComponent({
+    setup() {
+      auth = useAuth(() => {}, { api: backend, gt4 })
+      return () => h(LoginPanel, {
+        auth,
+        accounts: [{
+          uid: '42',
+          displayAccount: 'operator@example.com',
+          loginType: 4,
+          hasSavedPassword: true,
+          isCurrent: false,
+        }],
+        selectedAccountUid: auth.selectedAccountUid.value,
+      })
+    },
+  }))
+  auth.loginMethod.value = 4
+  auth.account.value = 'operator@example.com'
+  auth.validateValue.value = 'plain-password'
+  await auth.submitLogin()
+  await flushPromises()
+  const wrapper = host.findComponent(LoginPanel)
+  return { auth, backend, gt4, host, wrapper }
+}
+
 describe('LoginPanel', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('源码不含隐藏的协议介绍', () => {
     expect(panelSource).not.toContain('v-if="false"')
     expect(panelSource).not.toContain('login-intro')
     expect(panelSource).not.toContain('protocol-track')
     expect(panelSource).not.toContain('countryCode=')
     expect(panelSource).not.toContain('validateToken')
+    expect(panelSource).not.toContain('ValidateType')
+    expect(panelSource).not.toContain('LOCAL IPC')
+    expect(panelSource).not.toContain('GT4 READY')
   })
 
   it('默认使用邮箱密码并折叠其他方式', async () => {
@@ -115,20 +217,106 @@ describe('LoginPanel', () => {
     expect(wrapper.find('.password-sentinel').exists()).toBe(false)
   })
 
-  it('shows server pending validation details and submits the selected value', async () => {
+  it('二次验证隐藏协议字段并允许返回登录', async () => {
+    const { auth, wrapper, host } = await enterEmailCodeChallenge()
+    expect(wrapper.text()).toContain('还差一步，请确认是你本人')
+    expect(wrapper.text()).not.toContain('validateToken')
+    expect(wrapper.text()).not.toContain('ValidateType')
+    await wrapper.get('[data-test="challenge-back"]').trigger('click')
+    expect(auth.challengePending.value).toEqual([])
+    expect(auth.validateToken.value).toBe('')
+    host.unmount()
+  })
+
+  it('单一待验证方式直接展示，不渲染选项列表', async () => {
+    const auth = authStub()
+    auth.challengePending.value = [emailCodePending]
+    auth.selectedChallengeType.value = 16
+    auth.challengeStep.value = 1
+    const wrapper = mountPanel(auth)
+
+    expect(wrapper.text()).toContain('邮箱验证码')
+    expect(wrapper.find('input[type="radio"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('改用其他验证方式')
+    expect(wrapper.text()).toContain('安全验证第 1 步')
+  })
+
+  it('多种待验证方式提供可理解选项而不是协议枚举', async () => {
     const auth = authStub(true)
     const wrapper = mountPanel(auth)
 
-    expect(wrapper.text()).toContain('138****8000')
-    expect(wrapper.text()).toContain('op***@example.com')
     expect(wrapper.text()).toContain('交易密码')
-    expect(wrapper.text()).toContain('设备已变更')
+    expect(wrapper.text()).toContain('改用其他验证方式')
+    await wrapper.get('[data-test="challenge-switch"]').trigger('click')
+    expect(wrapper.text()).toContain('Messenger 验证码')
+    expect(wrapper.text()).not.toContain('ValidateType 18')
+    expect(wrapper.text()).not.toContain('ValidateType 23')
+    expect(wrapper.text()).not.toContain('9001')
     expect(wrapper.get('[data-test="challenge-value"]').attributes('type')).toBe('password')
     auth.challengeValue.value = 'trade-value'
     await wrapper.vm.$nextTick()
     await wrapper.get('[data-test="challenge-submit"]').trigger('click')
-
     expect(auth.submitChallenge).toHaveBeenCalledTimes(1)
+  })
+
+  it('连续挑战在同一卡片显示第 2 步', async () => {
+    const auth = authStub()
+    auth.challengePending.value = [{ validateType: 19, account: 'masked' }]
+    auth.selectedChallengeType.value = 19
+    auth.challengeStep.value = 2
+    const wrapper = mountPanel(auth)
+
+    expect(wrapper.text()).toContain('还差一步，请确认是你本人')
+    expect(wrapper.text()).toContain('安全验证第 2 步')
+    expect(wrapper.text()).toContain('谷歌验证码')
+    expect(wrapper.find('input[type="email"]').exists()).toBe(false)
+  })
+
+  it('发送验证码后倒计时内禁止重发，卸载后不残留定时器', async () => {
+    vi.useFakeTimers()
+    const { auth, backend, gt4, host, wrapper } = await enterEmailCodeChallenge()
+    let gt4Success: ((snapshot: string, fields: Gt4Fields) => void | Promise<void>) | undefined
+    gt4.show.mockImplementation((
+      _snapshot: string,
+      success: (snapshot: string, fields: Gt4Fields) => void | Promise<void>,
+    ) => {
+      gt4Success = success
+      return true
+    })
+
+    await wrapper.get('[data-test="challenge-send-code"]').trigger('click')
+    await gt4Success?.('operator@example.com', gt4Fields)
+    await flushPromises()
+
+    expect(backend.sendEmailCode).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toMatch(/60/)
+    expect(wrapper.get('[data-test="challenge-send-code"]').attributes('disabled')).toBeDefined()
+
+    await wrapper.get('[data-test="challenge-send-code"]').trigger('click')
+    expect(backend.sendEmailCode).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(auth.resendSeconds.value).toBe(59)
+
+    host.unmount()
+    await vi.advanceTimersByTimeAsync(5_000)
+  })
+
+  it('登录密码挑战在复用失败后才展示密码框', async () => {
+    const auth = authStub()
+    auth.challengePending.value = [{
+      account: 'op***@example.com',
+      accountType: 7,
+      validateType: 21,
+    }]
+    auth.selectedChallengeType.value = 21
+    auth.challengeStep.value = 1
+    const wrapper = mountPanel(auth)
+    expect(wrapper.find('[data-test="challenge-value"]').exists()).toBe(false)
+
+    auth.passwordReuseFailed.value = true
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-test="challenge-value"]').attributes('type')).toBe('password')
   })
 
   // 仅模拟 ready、loading、error 等响应式状态，验证发送按钮可用及 IDLE 提示；不覆盖 GT4 实例销毁或重建。
@@ -153,7 +341,7 @@ describe('LoginPanel', () => {
     auth.selectedChallengeType.value = 16
     const wrapper = mountPanel(auth)
 
-    expect(wrapper.get('[data-test="challenge-send-code"]').text()).toContain('发送邮箱验证码')
+    expect(wrapper.get('[data-test="challenge-send-code"]').text()).toContain('发送')
     await wrapper.get('[data-test="challenge-send-code"]').trigger('click')
     expect(auth.sendChallengeCode).toHaveBeenCalledTimes(1)
   })
