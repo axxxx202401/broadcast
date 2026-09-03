@@ -348,6 +348,8 @@ pub(crate) struct ResolvedVerifySecrets {
     pub request: im_http::openchat_user::VerifyReq,
     /// 仅在该 token 尚无缓存且本次包含主登录校验时存在。
     pub first_primary: Option<crate::account::pending_login::PendingLogin>,
+    /// 本次是否通过 `reuseLoginPassword` 取出了缓存密码；真正消费要等服务端见到请求之后。
+    pub reuse_requested: bool,
 }
 
 /// 提交一组待验证项并返回服务端验证结果。
@@ -365,46 +367,72 @@ pub async fn verify_validations(
     verify_validations_inner(&state, request).await
 }
 
-/// 解析秘密、在测试中跳过真实 HTTP，并在验证成功后写入待登录缓存。
+/// 解析秘密、发起远程验证，并在服务端见到请求后再消费一次性复用。
 ///
-/// 单元测试不得访问真实网络：`cfg(test)` 下视为远程验证成功并返回空响应。
-/// 生产路径在解析成功后调用 `openchat_user.verify`；HTTP 失败时不写入首次主验证缓存。
+/// 单元测试默认视为远程验证成功并返回空响应，可用 [`verify_validations_inner_with_http`]
+/// 注入传输失败或业务错误。生产路径调用 `openchat_user.verify`。
+/// HTTP 未成功时不写入首次主验证缓存；传输失败不消费 `reuseLoginPassword`。
 pub(crate) async fn verify_validations_inner(
     state: &AppState,
     dto: VerifyValidationsDto,
 ) -> Result<im_http::openchat_user::VerifyResp, AuthCommandError> {
-    let resolved = resolve_verify_secrets(state, dto).await?;
-    let token = resolved.request.validate_token.clone();
-    let mut request = resolved.request;
-    hash_verify_passwords(&mut request);
-
-    let response = verify_resolved_request(state, &request).await?;
-    record_pending_login_after_verify(state, &token, resolved.first_primary).await;
-    Ok(response)
-}
-
-/// 将已摘要的协议请求交给远程校验，或在测试中返回空成功响应。
-async fn verify_resolved_request(
-    state: &AppState,
-    request: &im_http::openchat_user::VerifyReq,
-) -> Result<im_http::openchat_user::VerifyResp, AuthCommandError> {
     #[cfg(test)]
     {
-        let _ = (state, request);
-        return Ok(im_http::openchat_user::VerifyResp {
-            validate_model_vos: Vec::new(),
-            business_processing: Vec::new(),
-        });
+        return verify_validations_after_http(
+            state,
+            dto,
+            Ok(im_http::openchat_user::VerifyResp {
+                validate_model_vos: Vec::new(),
+                business_processing: Vec::new(),
+            }),
+        )
+        .await;
     }
     #[cfg(not(test))]
     {
-        state
-            .http
-            .openchat_user
-            .verify(request)
+        let resolved = resolve_verify_secrets(state, dto).await?;
+        let token = resolved.request.validate_token.clone();
+        let reuse_requested = resolved.reuse_requested;
+        let first_primary = resolved.first_primary;
+        let mut request = resolved.request;
+        hash_verify_passwords(&mut request);
+        let http_result = state.http.openchat_user.verify(&request).await;
+        finish_verify_after_http(state, &token, reuse_requested, first_primary, http_result)
             .await
-            .map_err(AuthCommandError::from)
     }
+}
+
+/// 测试用：用注入的 HTTP 结果走完整解析与复用消费路径，不访问真实网络。
+#[cfg(test)]
+pub(crate) async fn verify_validations_inner_with_http(
+    state: &AppState,
+    dto: VerifyValidationsDto,
+    http_result: Result<
+        im_http::openchat_user::VerifyResp,
+        im_http::openchat_user::OpenChatUserError,
+    >,
+) -> Result<im_http::openchat_user::VerifyResp, AuthCommandError> {
+    verify_validations_after_http(state, dto, http_result).await
+}
+
+/// 解析秘密并套用注入的 HTTP 结果，供测试覆盖传输失败与成功消费。
+#[cfg(test)]
+async fn verify_validations_after_http(
+    state: &AppState,
+    dto: VerifyValidationsDto,
+    http_result: Result<
+        im_http::openchat_user::VerifyResp,
+        im_http::openchat_user::OpenChatUserError,
+    >,
+) -> Result<im_http::openchat_user::VerifyResp, AuthCommandError> {
+    let resolved = resolve_verify_secrets(state, dto).await?;
+    let token = resolved.request.validate_token.clone();
+    let reuse_requested = resolved.reuse_requested;
+    let first_primary = resolved.first_primary;
+    let mut request = resolved.request;
+    hash_verify_passwords(&mut request);
+    let _ = request;
+    finish_verify_after_http(state, &token, reuse_requested, first_primary, http_result).await
 }
 
 /// 解析每项恰好一种秘密来源，并决定是否准备首次主验证缓存。
@@ -420,9 +448,13 @@ pub(crate) async fn resolve_verify_secrets(
 
     let existing = state.pending_login.get(&dto.validate_token).await;
     let mut first_primary = None;
+    let mut reuse_requested = false;
     let mut pending_validate_dtos = Vec::with_capacity(dto.pending_validate_dtos.len());
 
     for item in &dto.pending_validate_dtos {
+        if item.reuse_login_password {
+            reuse_requested = true;
+        }
         let secret = resolve_one_secret(state, &dto.validate_token, item).await?;
         if existing.is_none()
             && first_primary.is_none()
@@ -456,7 +488,47 @@ pub(crate) async fn resolve_verify_secrets(
             second_mac: None,
         },
         first_primary,
+        reuse_requested,
     })
+}
+
+/// 根据远程验证是否到达服务端决定是否消费一次性复用，并仅在成功时写入首次主验证缓存。
+async fn finish_verify_after_http(
+    state: &AppState,
+    token: &str,
+    reuse_requested: bool,
+    first_primary: Option<crate::account::pending_login::PendingLogin>,
+    http_result: Result<
+        im_http::openchat_user::VerifyResp,
+        im_http::openchat_user::OpenChatUserError,
+    >,
+) -> Result<im_http::openchat_user::VerifyResp, AuthCommandError> {
+    if reuse_requested && verify_reached_server(&http_result) {
+        state.pending_login.reuse_password_once(token).await?;
+    }
+    match http_result {
+        Ok(response) => {
+            record_pending_login_after_verify(state, token, first_primary).await;
+            Ok(response)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// 判断远程校验是否已经让服务端见到请求：成功响应、业务错误或可解码失败都算。
+fn verify_reached_server(
+    result: &Result<
+        im_http::openchat_user::VerifyResp,
+        im_http::openchat_user::OpenChatUserError,
+    >,
+) -> bool {
+    match result {
+        Ok(_) => true,
+        Err(im_http::openchat_user::OpenChatUserError::Business(_)) => true,
+        Err(im_http::openchat_user::OpenChatUserError::Decode(_)) => true,
+        Err(im_http::openchat_user::OpenChatUserError::Transport(_)) => false,
+        Err(im_http::openchat_user::OpenChatUserError::Validation(_)) => false,
+    }
 }
 
 /// 远程验证成功后写入首次主验证上下文；后续 challenge 不会传入 `first_primary`。
@@ -502,11 +574,7 @@ async fn resolve_one_secret(
         }
         (false, false, true) => {
             ensure_login_password_type(item.validate_type)?;
-            Ok(state
-                .pending_login
-                .reuse_password_once(token)
-                .await?
-                .to_string())
+            Ok(state.pending_login.peek_password(token).await?.to_string())
         }
         _ => Err(AuthCommandError::from(
             "每个待验证项必须且只能选择 validateValue、savedPasswordUid 或 reuseLoginPassword 之一",
@@ -866,8 +934,9 @@ mod tests {
     use super::{
         begin_auth_transition, classify_remote_login, clear_session_state,
         finish_login_after_opening_account, finish_login_after_sync, hash_verify_passwords,
-        verify_validations_inner, AuthCommandError, LoginResultDto, LoginStateRefs,
-        PendingValidationInputDto, RemoteLogin, VerifyValidationsDto,
+        verify_validations_inner, verify_validations_inner_with_http, AuthCommandError,
+        LoginResultDto, LoginStateRefs, PendingValidationInputDto, RemoteLogin,
+        VerifyValidationsDto,
     };
 
     /// 构造已向内存凭据库写入登录密码的测试状态。
@@ -940,6 +1009,61 @@ mod tests {
             );
         }
         assert!(state.pending_login.take("issued-token").await.is_none());
+    }
+
+    /// 传输失败不得消费一次性复用；验证成功后第二次复用必须拒绝。
+    #[tokio::test]
+    async fn verify_validations_reuse_survives_transport_failure_then_consumes() {
+        let (state, _temp) = crate::state::test_state_with_account_foundation().await;
+        state
+            .pending_login
+            .insert(
+                "issued-token",
+                crate::account::pending_login::PendingLogin {
+                    display_account: "a@example.com".into(),
+                    primary_login_type: 4,
+                    password: Some(zeroize::Zeroizing::new("cached-secret".into())),
+                    password_reused: false,
+                },
+            )
+            .await;
+        let request = VerifyValidationsDto::reuse_login_password(
+            "issued-token",
+            "a***@example.com",
+            21,
+        );
+        let transport = Err(im_http::openchat_user::OpenChatUserError::Transport(
+            im_common::error::AppError::Http("simulated transport failure".into()),
+        ));
+        let error = verify_validations_inner_with_http(&state, request.clone(), transport)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, AuthCommandError::Other { ref message } if message.contains("HTTP")),
+            "传输失败应原样返回，不得伪装成已复用"
+        );
+        assert!(!state.pending_login.get("issued-token").await.unwrap().password_reused);
+
+        verify_validations_inner_with_http(
+            &state,
+            request.clone(),
+            Ok(im_http::openchat_user::VerifyResp {
+                validate_model_vos: Vec::new(),
+                business_processing: Vec::new(),
+            }),
+        )
+        .await
+        .unwrap();
+        let reused = verify_validations_inner(&state, request).await.unwrap_err();
+        assert!(
+            matches!(
+                reused,
+                AuthCommandError::Other { ref message }
+                    if message.contains("禁止重复消费")
+            ),
+            "成功验证后第二次复用必须映射为 PasswordAlreadyReused"
+        );
+        assert!(state.pending_login.get("issued-token").await.unwrap().password_reused);
     }
 
     /// `reuseLoginPassword` 只能成功消费一次，第二次必须返回已复用错误。

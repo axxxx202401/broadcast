@@ -100,6 +100,30 @@ impl PendingLoginCache {
         Ok(())
     }
 
+    /// 读取密码副本，但不将 `password_reused` 置位。
+    ///
+    /// 用于在发起远程验证前取出明文，真正的一次性消费仍由 [`Self::reuse_password_once`] 完成。
+    /// 条目不存在、已过期或没有密码时返回 [`AccountError::MissingPendingLogin`]；
+    /// 密码已被消费过则返回 [`AccountError::PasswordAlreadyReused`]。
+    pub async fn peek_password(
+        &self,
+        token: &str,
+    ) -> Result<zeroize::Zeroizing<String>, AccountError> {
+        let entries = self.lock_live().await;
+        let timed = entries
+            .get(token)
+            .ok_or(AccountError::MissingPendingLogin)?;
+        let password = timed
+            .login
+            .password
+            .as_ref()
+            .ok_or(AccountError::MissingPendingLogin)?;
+        if timed.login.password_reused {
+            return Err(AccountError::PasswordAlreadyReused);
+        }
+        Ok(password.clone())
+    }
+
     /// 一次性取出指定条目中的密码副本，并将 `password_reused` 置为已消费。
     ///
     /// 条目不存在、已过期或没有密码时返回 [`AccountError::MissingPendingLogin`]；
@@ -205,6 +229,23 @@ mod tests {
         assert_eq!(&*first, "secret");
 
         let error = cache.reuse_password_once("tok").await.unwrap_err();
+        assert!(matches!(error, AccountError::PasswordAlreadyReused));
+    }
+
+    /// `peek_password` 只读取副本，不得把 `password_reused` 置位；已消费后 peek 也拒绝。
+    #[tokio::test]
+    async fn peek_password_does_not_consume_reuse() {
+        let cache = PendingLoginCache::default();
+        cache.insert("tok", password_login()).await;
+
+        let first = cache.peek_password("tok").await.unwrap();
+        assert_eq!(&*first, "secret");
+        let second = cache.peek_password("tok").await.unwrap();
+        assert_eq!(&*second, "secret");
+        assert!(!cache.get("tok").await.unwrap().password_reused);
+
+        cache.reuse_password_once("tok").await.unwrap();
+        let error = cache.peek_password("tok").await.unwrap_err();
         assert!(matches!(error, AccountError::PasswordAlreadyReused));
     }
 
