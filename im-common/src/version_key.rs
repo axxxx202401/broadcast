@@ -234,8 +234,8 @@ mod tests {
     #[test]
     fn test_version_key_manager_creation() {
         let manager = VersionKeyManager::new(
-            "f82956caf0fa90aecf24d5ef9541f624".to_string(),
-            "f58c15f54e8f7826".to_string(),
+            "0123456789abcdef0123456789abcdef".to_string(),
+            "0123456789abcdef".to_string(),
         );
         let x_one = manager.build_x_one().unwrap();
         assert!(!x_one.is_empty());
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn test_build_x_one_length() {
         let manager = VersionKeyManager::new(
-            "f82956caf0fa90aecf24d5ef9541f624".to_string(),
+            "0123456789abcdef0123456789abcdef".to_string(),
             "79b461d1ffebcf44".to_string(),
         );
         let x_one = manager.build_x_one().unwrap();
@@ -329,7 +329,7 @@ mod tests {
     #[should_panic(expected = "header key must be 16 bytes")]
     fn test_invalid_header_key_length() {
         VersionKeyManager::new(
-            "f82956caf0fa90aecf24d5ef9541f624".to_string(),
+            "0123456789abcdef0123456789abcdef".to_string(),
             "short".to_string(),
         );
     }

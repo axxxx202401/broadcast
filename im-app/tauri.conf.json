@@ -1,6 +1,5 @@
 {
   "productName": "IM Monitor",
-  "version": "0.1.0",
   "identifier": "co.68chat.im-monitor",
   "build": {
     "beforeDevCommand": "npm run dev",

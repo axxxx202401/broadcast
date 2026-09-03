@@ -1,7 +1,7 @@
 //! OpenChat `issued` 端点的人工联调测试。
 //!
-//! 测试默认 `ignored`，通过 [`AppConfig::default`] 使用项目默认测试环境并访问真实
-//! 网络，仅用于显式联调，不作为常规验证的硬门槛。测试代码和配置不得加入真实
+//! 测试默认 `ignored`，通过 [`AppConfig::from_build_env`] 使用构建时注入的环境并访问
+//! 真实网络，仅用于显式联调，不作为常规验证的硬门槛。测试代码和配置不得加入真实
 //! 账号、访问令牌、验证码或其他凭据。
 
 use im_common::config::AppConfig;
@@ -19,7 +19,8 @@ async fn live_issued_endpoint_accepts_680_client() {
         .with_test_writer()
         .try_init();
 
-    let config = AppConfig::default();
+    let config =
+        AppConfig::from_build_env().expect("live test requires complete build environment");
     assert_eq!(config.device.app_ver, 680);
     assert_eq!(config.device.package_code, 9803);
 

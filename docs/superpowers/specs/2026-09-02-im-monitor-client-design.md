@@ -93,7 +93,7 @@ GT4 实现位于 `/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app/ui/src/
 
 - script URL：`https://static.geetest.com/v4/gt4.js`；
 - 初始化使用 `product: "bind"`、`language: "zho"`、`protocol: "https://"`；
-- captchaId 从公开环境变量 `VITE_GT4_CAPTCHA_ID` 读取；当前 `plat=0`、`appVer=680` 使用服务端 Android 640+ 配置对应的公开站点标识 `d7b9e5c52c8d9d8b214bc7a4c6db1f4f`，示例位于 `/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app/ui/.env.example`；
+- captchaId 从构建环境变量 `VITE_GT4_CAPTCHA_ID` 读取；测试与生产模板分别位于 `/Volumes/TRANSCEND/works/objects/rust/broadcast/config/.env.test.example` 和 `/Volumes/TRANSCEND/works/objects/rust/broadcast/config/.env.production.example`，源码不提供真实 ID 回退值；
 - 没有 captchaKey，也不得把服务端密钥放入前端；
 - `onSuccess` 从 SDK 的 snake_case `lot_number`、`captcha_output`、`pass_token`、`gen_time` 映射成 IPC DTO 的 camelCase；
 - 结果只用于紧接着的一次验证码发送，成功后销毁实例，失败时 reset；账号使用打开滑块时的快照，避免验证期间编辑造成串号；

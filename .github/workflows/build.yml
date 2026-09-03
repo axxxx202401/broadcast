@@ -1,0 +1,115 @@
+name: Build desktop bundles
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Build environment
+        required: true
+        default: test
+        type: choice
+        options:
+          - test
+          - production
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ inputs.environment }} / ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    environment: ${{ inputs.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - label: macos-x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+          - label: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - label: linux-x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+
+    env:
+      IM_OPENCHAT_USER_URL: ${{ vars.IM_OPENCHAT_USER_URL }}
+      IM_BIZ_URL: ${{ vars.IM_BIZ_URL }}
+      IM_CHAT_HOST: ${{ vars.IM_CHAT_HOST }}
+      IM_CHAT_PORT: ${{ vars.IM_CHAT_PORT }}
+      IM_VERSION_SECRET_NAME: ${{ secrets.IM_VERSION_SECRET_NAME }}
+      IM_BODY_AES_KEY: ${{ secrets.IM_BODY_AES_KEY }}
+      IM_HEADER_AES_KEY: ${{ secrets.IM_HEADER_AES_KEY }}
+      IM_APP_VER: ${{ vars.IM_APP_VER }}
+      IM_PACKAGE_CODE: ${{ vars.IM_PACKAGE_CODE }}
+      IM_PLAT: ${{ vars.IM_PLAT }}
+      IM_LANGUAGE: ${{ vars.IM_LANGUAGE }}
+      IM_SYS_MODEL: ${{ vars.IM_SYS_MODEL }}
+      VITE_GT4_CAPTCHA_ID: ${{ vars.VITE_GT4_CAPTCHA_ID }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libfuse2 \
+            xdg-utils
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            im-app/package-lock.json
+            im-app/ui/package-lock.json
+
+      - name: Install Rust target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - name: Install application dependencies
+        working-directory: im-app
+        run: npm ci
+
+      - name: Install UI dependencies
+        working-directory: im-app/ui
+        run: npm ci
+
+      - name: Build Tauri bundles
+        working-directory: im-app
+        run: npm run build:${{ inputs.environment }} -- --target ${{ matrix.target }}
+
+      - name: Upload desktop bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: im-monitor-${{ inputs.environment }}-${{ matrix.label }}
+          path: target/${{ matrix.target }}/release/bundle/**/*
+          if-no-files-found: error
+          retention-days: 14

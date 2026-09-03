@@ -45,7 +45,7 @@
 ### 2.2 GT4
 
 - `/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app/ui/src/composables/useGt4.ts` 加载 `https://static.geetest.com/v4/gt4.js` 并使用 bind product；
-- captchaId 来自公开环境变量 `VITE_GT4_CAPTCHA_ID`；当前 `plat=0`、`appVer=680` 的公开默认值为服务端 Android 640+ 配置对应的 `d7b9e5c52c8d9d8b214bc7a4c6db1f4f`，示例位于 `/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app/ui/.env.example`；没有 captchaKey；
+- captchaId 来自构建环境变量 `VITE_GT4_CAPTCHA_ID`；测试与生产模板位于 `/Volumes/TRANSCEND/works/objects/rust/broadcast/config/`，源码不提供真实 ID 回退值；没有 captchaKey；
 - SDK `onSuccess` 的 snake_case 已转换为 IPC camelCase；
 - 主验证和二次验证发送手机/邮箱验证码前都必须先通过滑块；结果一次性消费，成功销毁、失败重置，并受 generation/卸载保护；
 - `/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app/tauri.conf.json` 的生产/dev CSP 均允许实际 GT4 域名；dev 另开放 1420 的 HTTP/WebSocket。

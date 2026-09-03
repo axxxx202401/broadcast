@@ -250,7 +250,7 @@ crate 文档说明其边界；`frame.rs` 统一说明：
 [head(2)][message_id(2, BE)][content_length(4, BE)][content]
 ```
 
-说明发送顺序为明文 → AES → 可选 gzip，接收顺序相反；说明 8 MiB wire 限制、32 MiB 解压限制、`Incomplete` 与 `Invalid` 差异、message ID `9999` 的会话前密钥回退及 `content.len() <= 1` 的 Java 兼容行为。
+说明发送顺序为明文 → AES → 可选 gzip，接收顺序相反；说明 8 MiB wire 限制、32 MiB 解压限制、`Incomplete` 与 `Invalid` 差异、所有服务端密文统一使用 Session 正文密钥，以及 `content.len() <= 1` 的 Java 兼容行为。
 
 - [ ] **Step 3：文档化心跳与重连**
 

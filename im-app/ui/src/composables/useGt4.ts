@@ -2,8 +2,6 @@ import { onUnmounted, ref } from 'vue'
 
 import type { Gt4Fields } from '../types/im'
 
-/** 默认的 GT4 captchaId；可由调用参数或构建环境变量覆盖。 */
-export const DEFAULT_GT4_CAPTCHA_ID = 'd7b9e5c52c8d9d8b214bc7a4c6db1f4f'
 /** GT4 脚本候选地址，严格按本地资源、官方 CDN 的顺序尝试。加载会向全局文档插入脚本。 */
 export const GT4_SCRIPT_URLS = [
   '/vendor/gt4.js',
@@ -119,7 +117,7 @@ export function loadGt4Script(): Promise<Gt4Init> {
 
 /** `useGt4` 的可替换配置，主要用于覆盖 captchaId、初始化器及脚本加载器。 */
 export interface UseGt4Options {
-  /** 显式 captchaId，优先级高于环境变量和默认值。 */
+  /** 显式 captchaId，主要供测试或嵌入方覆盖构建环境变量。 */
   captchaId?: string
   /** 直接注入初始化函数；提供后不会加载外部脚本。 */
   init?: Gt4Init
@@ -173,6 +171,12 @@ export function useGt4(options: UseGt4Options = {}) {
       }
       void (async () => {
         try {
+          const captchaId = (options.captchaId
+            ?? import.meta.env.VITE_GT4_CAPTCHA_ID
+            ?? '').trim()
+          if (!captchaId) {
+            throw new Error('GT4 配置缺少 VITE_GT4_CAPTCHA_ID')
+          }
           const init = options.init ?? await (options.loadScript ?? loadGt4Script)()
           if (disposed || currentGeneration !== generation) {
             settleInitialization?.(false)
@@ -180,9 +184,7 @@ export function useGt4(options: UseGt4Options = {}) {
           }
           init(
             {
-              captchaId: options.captchaId
-                || import.meta.env.VITE_GT4_CAPTCHA_ID
-                || DEFAULT_GT4_CAPTCHA_ID,
+              captchaId,
               product: 'bind',
               language: 'zho',
               protocol: 'https://',

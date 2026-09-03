@@ -260,7 +260,7 @@ mod tests {
 
     use super::*;
 
-    const KEY: &[u8] = b"97b1f52761ffc7f8";
+    const KEY: &[u8] = b"0123456789abcdef";
 
     fn length_framed_response(encrypted: bool, zipped: bool, content: &[u8]) -> Vec<u8> {
         let mut response = TcpFrameHeader::build(encrypted, zipped).to_vec();

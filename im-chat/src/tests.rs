@@ -17,9 +17,8 @@ use super::{
     client::build_login_frame,
     client::ChatClient,
     frame::{
-        decode_frame, decode_server_frame, decode_transport_frame, encode_frame,
-        encode_transport_frame, FrameDecodeError, MAX_DECOMPRESSED_BODY_SIZE, MAX_FRAME_BODY_SIZE,
-        PRE_SESSION_AES_KEY,
+        decode_frame, decode_transport_frame, encode_frame, encode_transport_frame,
+        FrameDecodeError, MAX_DECOMPRESSED_BODY_SIZE, MAX_FRAME_BODY_SIZE,
     },
     heartbeat::{heartbeat_loop, heartbeat_message, HEARTBEAT_MSG_ID},
     reconnect::{reconnect_loop, ExponentialBackoff},
@@ -161,15 +160,15 @@ fn encrypted_empty_connection_ack_is_not_decrypted() {
     let config = AppConfig::default();
     let frame = encode_frame(200, &[], true, false).unwrap();
 
-    let decoded = decode_server_frame(&config.server.body_aes_key, &frame).unwrap();
+    let decoded = decode_transport_frame(&config.server.body_aes_key, &frame).unwrap();
 
     assert_eq!(decoded.message_id, 200);
     assert!(decoded.content.is_empty());
 }
 
 #[test]
-fn pre_session_error_frame_uses_java_default_key() {
-    // 消息 9999 使用会话 key 解密失败后，才以会话前固定 key 兼容重试。
+fn server_error_frame_does_not_retry_a_different_key() {
+    // 已建立 Session 后所有服务端密文必须使用当前正文 key；9999 也不能回退到固定 key。
     let config = AppConfig::default();
     let error = im_proto::ErrrMessage {
         error_msg_code: 4003,
@@ -178,7 +177,7 @@ fn pre_session_error_frame_uses_java_default_key() {
         ..Default::default()
     };
     let frame = encode_transport_frame(
-        PRE_SESSION_AES_KEY,
+        "fedcba9876543210",
         9999,
         &error.encode_to_vec(),
         true,
@@ -186,12 +185,9 @@ fn pre_session_error_frame_uses_java_default_key() {
     )
     .unwrap();
 
-    let decoded = decode_server_frame(&config.server.body_aes_key, &frame).unwrap();
-    let decoded_error = im_proto::ErrrMessage::decode(decoded.content.as_slice()).unwrap();
+    let result = decode_transport_frame(&config.server.body_aes_key, &frame);
 
-    assert_eq!(decoded.message_id, 9999);
-    assert_eq!(decoded_error.error_msg_code, 4003);
-    assert_eq!(decoded_error.error_msg, "permission denied");
+    assert!(matches!(result, Err(FrameDecodeError::Invalid(_))));
 }
 
 #[test]
@@ -636,8 +632,8 @@ async fn reconnect_uses_injected_wait_and_connect_login_action_until_success() {
 fn test_version_key_generation() {
     use im_common::version_key::VersionKeyManager;
     let manager = VersionKeyManager::new(
-        "f82956caf0fa90aecf24d5ef9541f624".to_string(),
-        "f58c15f54e8f7826".to_string(),
+        "0123456789abcdef0123456789abcdef".to_string(),
+        "0123456789abcdef".to_string(),
     );
     let x_one = manager.build_x_one().unwrap();
     assert_eq!(x_one.len(), 96);

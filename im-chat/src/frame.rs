@@ -7,14 +7,6 @@ use im_common::tcp_head::TcpFrameHeader;
 /// 重新导出正文长度上限：线上帧正文最大 8 MiB，应用原文或解压后正文最大 32 MiB。
 pub use im_common::{MAX_DECOMPRESSED_BODY_SIZE, MAX_FRAME_BODY_SIZE};
 
-/// 为兼容既有 Java 服务端错误帧而保留的固定 AES key。
-///
-/// 预期用途是解码会话建立前返回的错误帧，但代码不检查会话状态；真实触发条件
-/// 是消息 ID 为 `9999`，且使用调用方提供的 `body_aes_key` 发生 AES 解密失败。
-/// 固定 key 本身不提供额外的安全保证。
-pub const PRE_SESSION_AES_KEY: &str = "1234560000000000";
-const SERVER_ERROR_MESSAGE_ID: u16 = 9999;
-
 /// 完整解码并撤销传输变换后的单个 TCP 帧。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedFrame {
@@ -238,26 +230,6 @@ pub fn decode_transport_frame(
         content,
         wire_len,
     })
-}
-
-/// 解码服务端帧，并兼容预期在会话建立前返回的消息 `9999` 错误帧。
-///
-/// “会话建立前”仅描述预期用途，本函数没有会话状态门控。它首先使用调用方提供
-/// 的 `body_aes_key` 解码；仅当消息 ID 为 `9999` 且发生 AES 解密失败时，才以
-/// [`PRE_SESSION_AES_KEY`] 重试。其他消息或其他错误不会触发固定 key 回退。
-pub fn decode_server_frame(
-    body_aes_key: &str,
-    data: &[u8],
-) -> Result<DecodedFrame, FrameDecodeError> {
-    match decode_transport_frame(body_aes_key, data) {
-        Err(FrameDecodeError::Invalid(AppError::AesDecrypt(_)))
-            if data.len() >= 4
-                && u16::from_be_bytes([data[2], data[3]]) == SERVER_ERROR_MESSAGE_ID =>
-        {
-            decode_transport_frame(PRE_SESSION_AES_KEY, data)
-        }
-        result => result,
-    }
 }
 
 /// 在 32 MiB 输出上限内解压 gzip 正文。

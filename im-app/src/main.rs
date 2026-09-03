@@ -22,7 +22,9 @@ async fn main() {
     tauri::Builder::default()
         .setup(|app| {
             let app_handle = app.app_handle();
-            let config = im_common::config::AppConfig::default();
+            // 真实服务参数来自构建时环境快照；缺项或格式错误时拒绝启动，避免安装包
+            // 静默连接测试环境或使用历史密钥。
+            let config = im_common::config::AppConfig::from_build_env()?;
             // 数据库默认位于 ~/.im-monitor/im_monitor.db；无法取得 HOME 时退回当前目录。
             // setup 先创建父目录，再按 SqliteStore 契约打开数据库：文件缺失时可创建，随后依次
             // 建表、迁移旧版 groups 表并建立索引。文件系统步骤和这些 SQL 未组成整体事务；

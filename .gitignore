@@ -6,8 +6,13 @@
 
 # Node
 /node_modules/
+/im-app/node_modules/
 /im-app/ui/node_modules/
 /im-app/ui/dist/
+
+# Local environment configuration
+/config/.env.test
+/config/.env.production
 
 # Tauri
 /src-tauri/target/

@@ -396,7 +396,7 @@ mod tests {
         let client = ImBizClient::new(
             reqwest::Client::new(),
             format!("http://{address}"),
-            "97b1f52761ffc7f8".to_string(),
+            "0123456789abcdef".to_string(),
             header_manager,
         )
         .unwrap();

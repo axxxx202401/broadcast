@@ -14,7 +14,7 @@ use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn};
 
 use crate::frame::{
-    decode_server_frame, encode_frame_with_header, FrameDecodeError, MAX_DECOMPRESSED_BODY_SIZE,
+    decode_transport_frame, encode_frame_with_header, FrameDecodeError, MAX_DECOMPRESSED_BODY_SIZE,
 };
 
 const TCP_GZIP_THRESHOLD: usize = 128;
@@ -518,7 +518,7 @@ impl ReadTask {
                 buffered_len = self.leftover.len(),
                 "Received TCP frame header"
             );
-            match decode_server_frame(&self.body_aes_key, &self.leftover) {
+            match decode_transport_frame(&self.body_aes_key, &self.leftover) {
                 Ok(frame) => {
                     self.leftover.drain(..frame.wire_len);
                     if frame.message_id == SERVER_ERROR_MESSAGE_ID {

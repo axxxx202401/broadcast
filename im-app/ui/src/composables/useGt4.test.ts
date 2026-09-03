@@ -5,7 +5,6 @@ import { defineComponent, h } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  DEFAULT_GT4_CAPTCHA_ID,
   loadGt4Script,
   useGt4,
   type Gt4Instance,
@@ -51,8 +50,23 @@ function fakeGt4() {
 describe('useGt4', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('使用服务端配置的 Android 640+ captchaId', () => {
-    expect(DEFAULT_GT4_CAPTCHA_ID).toBe('d7b9e5c52c8d9d8b214bc7a4c6db1f4f')
+  it('缺少 captchaId 时不加载 SDK 并返回配置错误', async () => {
+    const loadScript = vi.fn()
+    let gt4!: ReturnType<typeof useGt4>
+    const wrapper = mount(defineComponent({
+      setup() {
+        gt4 = useGt4({ captchaId: ' ', loadScript })
+        return () => h('div')
+      },
+    }))
+
+    await flushPromises()
+
+    expect(loadScript).not.toHaveBeenCalled()
+    expect(gt4.loading.value).toBe(false)
+    expect(gt4.ready.value).toBe(false)
+    expect(gt4.error.value).toContain('VITE_GT4_CAPTCHA_ID')
+    wrapper.unmount()
   })
 
   it('本地脚本失败后回退 CDN，并在全部失败后清缓存以允许重试', async () => {
