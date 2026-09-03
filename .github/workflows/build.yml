@@ -38,19 +38,19 @@ jobs:
             target: x86_64-unknown-linux-gnu
 
     env:
-      IM_OPENCHAT_USER_URL: ${{ vars.IM_OPENCHAT_USER_URL }}
-      IM_BIZ_URL: ${{ vars.IM_BIZ_URL }}
-      IM_CHAT_HOST: ${{ vars.IM_CHAT_HOST }}
-      IM_CHAT_PORT: ${{ vars.IM_CHAT_PORT }}
+      IM_OPENCHAT_USER_URL: ${{ secrets.IM_OPENCHAT_USER_URL }}
+      IM_BIZ_URL: ${{ secrets.IM_BIZ_URL }}
+      IM_CHAT_HOST: ${{ secrets.IM_CHAT_HOST }}
+      IM_CHAT_PORT: ${{ secrets.IM_CHAT_PORT }}
       IM_VERSION_SECRET_NAME: ${{ secrets.IM_VERSION_SECRET_NAME }}
       IM_BODY_AES_KEY: ${{ secrets.IM_BODY_AES_KEY }}
       IM_HEADER_AES_KEY: ${{ secrets.IM_HEADER_AES_KEY }}
-      IM_APP_VER: ${{ vars.IM_APP_VER }}
-      IM_PACKAGE_CODE: ${{ vars.IM_PACKAGE_CODE }}
-      IM_PLAT: ${{ vars.IM_PLAT }}
-      IM_LANGUAGE: ${{ vars.IM_LANGUAGE }}
-      IM_SYS_MODEL: ${{ vars.IM_SYS_MODEL }}
-      VITE_GT4_CAPTCHA_ID: ${{ vars.VITE_GT4_CAPTCHA_ID }}
+      IM_APP_VER: ${{ secrets.IM_APP_VER }}
+      IM_PACKAGE_CODE: ${{ secrets.IM_PACKAGE_CODE }}
+      IM_PLAT: ${{ secrets.IM_PLAT }}
+      IM_LANGUAGE: ${{ secrets.IM_LANGUAGE }}
+      IM_SYS_MODEL: ${{ secrets.IM_SYS_MODEL }}
+      VITE_GT4_CAPTCHA_ID: ${{ secrets.VITE_GT4_CAPTCHA_ID }}
 
     steps:
       - name: Check out source
