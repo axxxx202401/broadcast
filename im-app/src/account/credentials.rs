@@ -50,6 +50,15 @@ pub struct MemoryCredentialStore {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UnavailableCredentialStore;
 
+/// 读写走内存、删除 Token/密码始终失败的测试替身。
+///
+/// 用于验证退出或移除在凭据删除失败后仍更新索引，且错误文本不含密钥。
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct FailingDeleteCredentialStore {
+    inner: MemoryCredentialStore,
+}
+
 /// 基于平台系统凭据库的生产实现。
 ///
 /// Token 使用 service `im-monitor.token`，密码使用 `im-monitor.password`；
@@ -189,6 +198,36 @@ impl CredentialStore for MemoryCredentialStore {
         require_positive_uid(uid)?;
         self.passwords.lock().await.remove(&uid);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl CredentialStore for FailingDeleteCredentialStore {
+    async fn token(&self, uid: i64) -> Result<Option<String>, AccountError> {
+        self.inner.token(uid).await
+    }
+
+    async fn set_token(&self, uid: i64, value: &str) -> Result<(), AccountError> {
+        self.inner.set_token(uid, value).await
+    }
+
+    async fn delete_token(&self, uid: i64) -> Result<(), AccountError> {
+        require_positive_uid(uid)?;
+        Err(unavailable())
+    }
+
+    async fn password(&self, uid: i64) -> Result<Option<String>, AccountError> {
+        self.inner.password(uid).await
+    }
+
+    async fn set_password(&self, uid: i64, value: &str) -> Result<(), AccountError> {
+        self.inner.set_password(uid, value).await
+    }
+
+    async fn delete_password(&self, uid: i64) -> Result<(), AccountError> {
+        require_positive_uid(uid)?;
+        Err(unavailable())
     }
 }
 

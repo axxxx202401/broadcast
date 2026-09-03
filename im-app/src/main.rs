@@ -86,6 +86,11 @@ async fn main() {
             commands::auth::issue_validation_token,
             commands::auth::verify_validations,
             commands::auth::list_pending_validations,
+            // 多账号恢复、列表、切换与移除（4 项）。
+            commands::accounts::restore_session,
+            commands::accounts::list_accounts,
+            commands::accounts::switch_account,
+            commands::accounts::remove_account,
             // 群组查询与监控配置（3 项）。
             commands::groups::fetch_group_list,
             commands::groups::refresh_group_list,

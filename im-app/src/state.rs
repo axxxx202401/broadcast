@@ -733,6 +733,11 @@ impl ConnectionCoordinator {
         self.state.lock().await.generation == generation
     }
 
+    /// 返回协调器当前认可的认证/连接代际。
+    pub async fn current_generation(&self) -> u64 {
+        self.state.lock().await.generation
+    }
+
     /// 若代际仍当前，将已有认证会话重新标记到该代际。
     ///
     /// 没有会话或代际已变化时不做修改，也不返回错误；常用于显式断开后保留登录态供后续连接。

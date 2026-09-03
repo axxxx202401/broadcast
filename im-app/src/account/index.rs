@@ -162,6 +162,21 @@ impl AccountIndexStore {
         .await
     }
 
+    /// 将指定账号标为最后使用，并刷新 `last_used_at`。
+    ///
+    /// 只改时间戳和 `last_used_uid`，保留展示字段与 `has_saved_password` / `has_token`。
+    /// 未知 UID 不修改索引。恢复成功路径必须使用本方法，不得再次
+    /// [`Self::upsert`] 一条 [`AccountRecord::new`]，以免把已保存密码标志清成默认值。
+    pub async fn touch_last_used(&self, uid: i64) -> Result<(), AccountError> {
+        self.mutate(|index| {
+            if let Some(record) = index.accounts.iter_mut().find(|item| item.uid == uid) {
+                record.last_used_at = chrono::Utc::now().timestamp_millis();
+                index.last_used_uid = Some(uid);
+            }
+        })
+        .await
+    }
+
     /// 从索引中删除指定账号。
     ///
     /// 不删除该 UID 的 SQLite 文件。若删除的是 `last_used_uid`，则改选剩余账号中
@@ -381,5 +396,35 @@ mod tests {
         assert!(!record.has_token);
         assert_eq!(record.display_account, "a@example.com");
         assert_eq!(snapshot.last_used_uid, Some(42));
+    }
+
+    /// 更新最后使用账号时只改时间戳和 `last_used_uid`，不得清掉已保存密码或 Token 标志。
+    #[tokio::test]
+    async fn touch_last_used_updates_timestamp_without_wiping_secret_flags() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = AccountIndexStore::new(temp.path().join("accounts.json"));
+        store
+            .upsert(AccountRecord::new(42, "a@example.com", 4, 100))
+            .await
+            .unwrap();
+        store.set_secret_flags(42, true, true).await.unwrap();
+        store
+            .upsert(AccountRecord::new(84, "b@example.com", 4, 200))
+            .await
+            .unwrap();
+
+        store.touch_last_used(42).await.unwrap();
+
+        let snapshot = store.load().await.unwrap();
+        assert_eq!(snapshot.last_used_uid, Some(42));
+        let record = snapshot
+            .accounts
+            .iter()
+            .find(|item| item.uid == 42)
+            .unwrap();
+        assert!(record.has_saved_password);
+        assert!(record.has_token);
+        assert!(record.last_used_at > 100);
+        assert_eq!(record.display_account, "a@example.com");
     }
 }

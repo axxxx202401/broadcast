@@ -1,0 +1,415 @@
+//! 账号列表、启动恢复、切换和移除等 Tauri 命令。
+//!
+//! 这些命令只返回账号摘要与恢复结果，不得把 Token 或密码送出 IPC。
+//! 切换与移除当前账号时复用认证代际推进，避免旧连接或旧数据库污染新账号。
+
+use tauri::State;
+
+use crate::account::session::{
+    restore_session as restore_session_inner, restore_uid, RestoreSessionDto,
+};
+use crate::commands::auth::{
+    begin_auth_transition, AccountSummaryDto, AuthCommandError, CREDENTIAL_CLEAR_WARNING,
+};
+use crate::commands::parse_i64_id;
+use crate::state::AppState;
+
+/// 移除账号后返回给前端的结果。
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveAccountResultDto {
+    /// 非阻塞提示；凭据删除失败时只放普通用户文案。
+    pub warnings: Vec<String>,
+}
+
+/// 启动时恢复最后使用且仍持有 Token 的账号。
+///
+/// 没有账号返回 [`RestoreSessionDto::NoAccount`]；已退出账号返回
+/// [`RestoreSessionDto::NeedsLogin`] 且不会校验残留 Token。
+#[tauri::command]
+pub async fn restore_session(
+    state: State<'_, AppState>,
+) -> Result<RestoreSessionDto, AuthCommandError> {
+    restore_session_inner(&state).await
+}
+
+/// 返回全部已保存账号的非密钥摘要。
+///
+/// `isCurrent` 仅当已发布会话的 UID 与该记录一致时为 `true`。响应不得包含 Token 或密码。
+#[tauri::command]
+pub async fn list_accounts(
+    state: State<'_, AppState>,
+) -> Result<Vec<AccountSummaryDto>, AuthCommandError> {
+    list_accounts_inner(&state).await
+}
+
+/// 切换到指定 UID：先推进认证代际并清理旧运行时，再恢复目标账号。
+///
+/// `uid` 为十进制字符串。切换会清空消息密钥、待登录缓存并关闭旧账号库，
+/// 随后按当前代际发布目标会话。
+#[tauri::command]
+pub async fn switch_account(
+    state: State<'_, AppState>,
+    uid: String,
+) -> Result<RestoreSessionDto, AuthCommandError> {
+    let uid = parse_i64_id(&uid, "uid")?;
+    switch_account_inner(&state, uid).await
+}
+
+/// 移除指定账号的索引与凭据，但保留该 UID 的 SQLite 文件。
+///
+/// 若移除的是当前会话账号，会先按退出方式清理运行时。凭据删除失败只返回 warning，
+/// 索引仍会删除，因此后续启动不会再列出该账号。
+#[tauri::command]
+pub async fn remove_account(
+    state: State<'_, AppState>,
+    uid: String,
+) -> Result<RemoveAccountResultDto, AuthCommandError> {
+    let uid = parse_i64_id(&uid, "uid")?;
+    remove_account_inner(&state, uid).await
+}
+
+/// 读取账号索引并标注当前会话。
+pub(crate) async fn list_accounts_inner(
+    state: &AppState,
+) -> Result<Vec<AccountSummaryDto>, AuthCommandError> {
+    let current_uid = state
+        .auth_session
+        .read()
+        .await
+        .as_ref()
+        .map(|session| session.uid);
+    let index = state.account_index.load().await?;
+    Ok(index
+        .accounts
+        .into_iter()
+        .map(|record| AccountSummaryDto {
+            uid: record.uid.to_string(),
+            display_account: record.display_account,
+            login_type: record.login_type,
+            has_saved_password: record.has_saved_password,
+            is_current: current_uid == Some(record.uid),
+        })
+        .collect())
+}
+
+/// 推进代际、清理旧运行时后恢复目标 UID。
+pub(crate) async fn switch_account_inner(
+    state: &AppState,
+    uid: i64,
+) -> Result<RestoreSessionDto, AuthCommandError> {
+    prepare_account_switch(state).await?;
+    restore_uid(state, uid).await
+}
+
+/// 开始账号切换：推进 generation，清空消息密钥和待登录缓存，并关闭旧库。
+pub(crate) async fn prepare_account_switch(state: &AppState) -> Result<u64, AuthCommandError> {
+    let generation = begin_auth_transition(
+        &state.connection_coordinator,
+        &state.chat_client,
+        &state.auth_session,
+        &state.monitoring_groups,
+        &state.connected,
+        state.app_handle.as_ref(),
+    )
+    .await?;
+    state.message_crypto.clear().await;
+    state.pending_login.clear().await;
+    state.account_db.close().await;
+    Ok(generation)
+}
+
+/// 删除账号索引与凭据；若该 UID 是当前会话则先清理运行时。
+pub(crate) async fn remove_account_inner(
+    state: &AppState,
+    uid: i64,
+) -> Result<RemoveAccountResultDto, AuthCommandError> {
+    let current_uid = state
+        .auth_session
+        .read()
+        .await
+        .as_ref()
+        .map(|session| session.uid);
+    if current_uid == Some(uid) {
+        prepare_account_switch(state).await?;
+    }
+
+    let mut warnings = Vec::new();
+    if let Err(error) = state.credentials.delete_token(uid).await {
+        tracing::warn!(error = %error, uid, "failed to delete account token");
+        warnings.push(CREDENTIAL_CLEAR_WARNING.to_string());
+    }
+    if let Err(error) = state.credentials.delete_password(uid).await {
+        tracing::warn!(error = %error, uid, "failed to delete account password");
+        if !warnings.iter().any(|item| item == CREDENTIAL_CLEAR_WARNING) {
+            warnings.push(CREDENTIAL_CLEAR_WARNING.to_string());
+        }
+    }
+    state.account_index.remove(uid).await?;
+    Ok(RemoveAccountResultDto { warnings })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{list_accounts_inner, prepare_account_switch, remove_account_inner};
+    use crate::account::session::{
+        restore_uid_with_user_detail, RestoreSessionDto, UserDetailOutcome,
+    };
+    use crate::commands::auth::logout_inner;
+    use crate::state::AuthSession;
+
+    /// 写入一条账号记录及对应凭据，供列表、切换和移除测试复用。
+    async fn seed_account(
+        state: &crate::state::AppState,
+        uid: i64,
+        display_account: &str,
+        login_type: i32,
+        has_saved_password: bool,
+        token: Option<&str>,
+    ) {
+        state
+            .account_index
+            .upsert(crate::account::index::AccountRecord::new(
+                uid,
+                display_account,
+                login_type,
+                uid,
+            ))
+            .await
+            .unwrap();
+        state
+            .account_index
+            .set_secret_flags(uid, has_saved_password, token.is_some())
+            .await
+            .unwrap();
+        if let Some(token) = token {
+            state.credentials.set_token(uid, token).await.unwrap();
+        }
+        if has_saved_password {
+            state
+                .credentials
+                .set_password(uid, "saved-secret")
+                .await
+                .unwrap();
+        }
+    }
+
+    /// 使用注入的用户详情恢复指定 UID，避免真实 HTTP。
+    async fn restore_for_test(
+        state: &crate::state::AppState,
+        uid: i64,
+        outcome: UserDetailOutcome,
+    ) -> RestoreSessionDto {
+        restore_uid_with_user_detail(
+            state,
+            uid,
+            move |_token| async move { outcome.into_result() },
+            Some(Vec::new()),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// 列表只返回摘要，并用当前会话标注 `isCurrent`，序列化结果不得出现密钥。
+    #[tokio::test]
+    async fn list_accounts_marks_current_session_without_secrets() {
+        let (state, _temp) = crate::state::test_state_with_account_foundation().await;
+        seed_account(&state, 42, "a@example.com", 4, true, Some("token-42")).await;
+        seed_account(&state, 84, "13800138000", 3, false, Some("token-84")).await;
+        *state.auth_session.write().await = Some(AuthSession {
+            uid: 42,
+            token: "token-42".into(),
+            generation: 0,
+        });
+
+        let accounts = list_accounts_inner(&state).await.unwrap();
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0].uid, "42");
+        assert!(accounts[0].is_current);
+        assert!(accounts[0].has_saved_password);
+        assert_eq!(accounts[1].uid, "84");
+        assert!(!accounts[1].is_current);
+        assert!(!accounts[1].has_saved_password);
+
+        let body = serde_json::to_string(&accounts).unwrap();
+        assert!(!body.contains("token-42"));
+        assert!(!body.contains("token-84"));
+        assert!(!body.contains("saved-secret"));
+    }
+
+    /// 切换必须推进代际、清理待登录缓存和消息密钥、关闭旧库，再恢复目标 UID。
+    #[tokio::test]
+    async fn switch_account_begins_transition_then_restores_target() {
+        let (state, _temp) = crate::state::test_state_with_account_foundation().await;
+        seed_account(&state, 42, "a@example.com", 4, true, Some("token-42")).await;
+        seed_account(&state, 84, "b@example.com", 4, false, Some("token-84")).await;
+        restore_for_test(&state, 42, UserDetailOutcome::Success).await;
+        state
+            .pending_login
+            .insert(
+                "issued",
+                crate::account::pending_login::PendingLogin {
+                    display_account: "a@example.com".into(),
+                    primary_login_type: 4,
+                    password: Some(zeroize::Zeroizing::new("secret".into())),
+                    password_reused: false,
+                },
+            )
+            .await;
+        state
+            .message_crypto
+            .install_own_private_key("old-private-key".into())
+            .await;
+        let old_generation = state.connection_coordinator.current_generation().await;
+        state
+            .account_db
+            .require(42)
+            .await
+            .expect("切换前应打开当前账号数据库");
+
+        let generation = prepare_account_switch(&state).await.unwrap();
+        assert!(generation > old_generation);
+        assert!(state.pending_login.take("issued").await.is_none());
+        assert!(!state.message_crypto.has_own_private_key().await);
+        let error = match state.account_db.active().await {
+            Err(error) => error,
+            Ok(_) => panic!("切换开始后必须关闭旧账号数据库"),
+        };
+        assert!(matches!(
+            error,
+            crate::account::AccountError::NoActiveDatabase
+        ));
+
+        let result = restore_for_test(&state, 84, UserDetailOutcome::Success).await;
+        assert!(matches!(
+            result,
+            RestoreSessionDto::Success { ref account, .. } if account.uid == "84"
+        ));
+        state
+            .account_db
+            .require(84)
+            .await
+            .expect("切换成功后必须打开目标 UID 数据库");
+        assert_eq!(
+            state
+                .auth_session
+                .read()
+                .await
+                .as_ref()
+                .map(|session| session.uid),
+            Some(84)
+        );
+    }
+
+    /// 移除账号必须删除索引、Token 和密码，但保留该 UID 的 SQLite 文件。
+    #[tokio::test]
+    async fn remove_account_deletes_index_and_secrets_but_keeps_sqlite() {
+        let (state, _temp) = crate::state::test_state_with_account_foundation().await;
+        seed_account(&state, 42, "a@example.com", 4, true, Some("token-42")).await;
+        let db_path = state.account_db.database_path(42).unwrap();
+        state.account_db.open(42, 0).await.unwrap();
+        assert!(db_path.exists(), "打开账号库后测试必须能观察到 SQLite 文件");
+        *state.auth_session.write().await = Some(AuthSession {
+            uid: 42,
+            token: "token-42".into(),
+            generation: 0,
+        });
+
+        let result = remove_account_inner(&state, 42).await.unwrap();
+        assert!(result.warnings.is_empty());
+        assert!(state
+            .account_index
+            .load()
+            .await
+            .unwrap()
+            .accounts
+            .is_empty());
+        assert_eq!(state.credentials.token(42).await.unwrap(), None);
+        assert_eq!(state.credentials.password(42).await.unwrap(), None);
+        assert!(db_path.exists(), "移除账号不得删除 SQLite 文件或账号目录");
+        assert!(state.auth_session.read().await.is_none());
+    }
+
+    /// 凭据删除失败时仍移除索引，并返回不含密钥的 warning。
+    #[tokio::test]
+    async fn remove_account_warns_when_credential_delete_fails() {
+        let store = std::sync::Arc::new(
+            crate::account::credentials::FailingDeleteCredentialStore::default(),
+        );
+        let (state, _temp) = crate::state::test_state_with_credentials(store).await;
+        seed_account(&state, 42, "a@example.com", 4, true, Some("token-42")).await;
+
+        let result = remove_account_inner(&state, 42).await.unwrap();
+        assert_eq!(
+            result.warnings,
+            vec!["本次无法完全清除登录信息".to_string()]
+        );
+        assert!(state
+            .account_index
+            .load()
+            .await
+            .unwrap()
+            .accounts
+            .is_empty());
+        assert!(
+            state.credentials.token(42).await.unwrap().is_some(),
+            "删除失败时 Token 仍可能残留，但索引已移除"
+        );
+        let body = serde_json::to_string(&result).unwrap();
+        assert!(!body.contains("token-42"));
+        assert!(!body.contains("saved-secret"));
+    }
+
+    /// 退出必须先标记索引已退出并保留密码；删除 Token 失败时不得再被启动恢复自动使用。
+    #[tokio::test]
+    async fn logout_keeps_password_and_blocks_restore_when_token_delete_fails() {
+        let store = std::sync::Arc::new(
+            crate::account::credentials::FailingDeleteCredentialStore::default(),
+        );
+        let (state, _temp) = crate::state::test_state_with_credentials(store).await;
+        seed_account(&state, 42, "a@example.com", 4, true, Some("token-42")).await;
+        *state.auth_session.write().await = Some(AuthSession {
+            uid: 42,
+            token: "token-42".into(),
+            generation: 0,
+        });
+        state
+            .pending_login
+            .insert(
+                "issued",
+                crate::account::pending_login::PendingLogin {
+                    display_account: "a@example.com".into(),
+                    primary_login_type: 4,
+                    password: Some(zeroize::Zeroizing::new("secret".into())),
+                    password_reused: false,
+                },
+            )
+            .await;
+
+        let result = logout_inner(&state).await.unwrap();
+        assert_eq!(
+            result.warnings,
+            vec!["本次无法完全清除登录信息".to_string()]
+        );
+        assert_eq!(
+            state.credentials.password(42).await.unwrap().as_deref(),
+            Some("saved-secret")
+        );
+        assert!(state.credentials.token(42).await.unwrap().is_some());
+        let index = state.account_index.load().await.unwrap();
+        assert_eq!(index.last_used_uid, Some(42));
+        let record = index.accounts.iter().find(|item| item.uid == 42).unwrap();
+        assert!(!record.has_token);
+        assert!(record.has_saved_password);
+        assert!(state.pending_login.take("issued").await.is_none());
+        assert!(state.auth_session.read().await.is_none());
+
+        let restored = crate::account::session::restore_session(&state)
+            .await
+            .unwrap();
+        assert!(
+            matches!(restored, RestoreSessionDto::NeedsLogin { ref uid, .. } if uid == "42"),
+            "索引已退出后即使残留 Token 也不得自动进入主界面"
+        );
+    }
+}

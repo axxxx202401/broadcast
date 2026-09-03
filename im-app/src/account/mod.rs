@@ -22,6 +22,9 @@ pub mod migration;
 /// 尚未完成二次验证的短期登录秘密缓存。
 pub mod pending_login;
 
+/// Token 恢复、会话发布以及启动时的最后账号路由。
+pub mod session;
+
 pub use credentials::{CredentialStore, KeyringCredentialStore};
 pub use database::AccountDatabaseManager;
 pub use index::AccountIndexStore;

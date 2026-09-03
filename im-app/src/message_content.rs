@@ -352,6 +352,12 @@ impl MessageCryptoState {
         self.group_rel_keys.clear().await;
     }
 
+    /// 测试辅助：当前是否仍持有用户私钥。
+    #[cfg(test)]
+    pub(crate) async fn has_own_private_key(&self) -> bool {
+        self.own_private_key.read().await.is_some()
+    }
+
     /// 解密一条群消息并解析五种受支持正文，同时返回附件本体密钥。
     ///
     /// `version == 0` 时正文和附件密钥按明文协议处理；其他版本按群 ID 与版本缓存

@@ -75,10 +75,7 @@ impl PendingLoginCache {
     #[cfg(test)]
     pub async fn insert_at(&self, token: &str, login: PendingLogin, created_at: Instant) {
         let mut entries = self.lock_live().await;
-        entries.insert(
-            token.to_string(),
-            TimedPendingLogin { login, created_at },
-        );
+        entries.insert(token.to_string(), TimedPendingLogin { login, created_at });
     }
 
     /// 查看指定 token 是否仍有未过期条目；不移除记录，也不克隆密码以外的秘密用途。

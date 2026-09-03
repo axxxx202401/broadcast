@@ -179,7 +179,18 @@ impl RemoteLogin {
 }
 
 /// 凭据或账号索引无法安全写入时返回给前端的普通文案。
-const CREDENTIAL_SAVE_WARNING: &str = "本次无法安全保存登录信息";
+pub(crate) const CREDENTIAL_SAVE_WARNING: &str = "本次无法安全保存登录信息";
+
+/// 凭据删除失败时返回给前端的普通文案；不得包含 Token 或密码。
+pub(crate) const CREDENTIAL_CLEAR_WARNING: &str = "本次无法完全清除登录信息";
+
+/// 退出登录命令返回给前端的结果。
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogoutResultDto {
+    /// 非阻塞提示；删除 Token 失败时只放普通用户文案。
+    pub warnings: Vec<String>,
+}
 
 /// 统一登录收尾完成后的内部结果。
 struct LoginCompletion {
@@ -1113,7 +1124,7 @@ where
 /// 打开成功后若群组同步或会话发布失败，调用方不得留下“无会话却占用活动库”的状态。
 /// 仅当活动 UID 与 generation 仍属于本次打开时才关闭数据库，避免并发登录、切换
 /// 或同账号重入已经打开更新代际后被误关。
-async fn finish_login_after_opening_account<T, F>(
+pub(crate) async fn finish_login_after_opening_account<T, F>(
     state: &AppState,
     generation: u64,
     uid: i64,
@@ -1144,11 +1155,33 @@ where
 
 /// 登出当前会话。
 ///
-/// 该命令推进 generation、取消进行中的连接、断开现有 TCP 客户端，并清空认证会话、
-/// 监控群组和连接状态，随后关闭活动账号数据库，并在 generation 仍有效时发布断开
-/// 事件。断开失败会作为字符串错误返回；清理发生在本地，不调用远程登出接口。
+/// 若存在已发布会话，先把对应账号索引标记为已退出（`has_token = false`，保留
+/// `has_saved_password` 与 `last_used_uid`），再清理运行时会话、连接、消息密钥、
+/// 待登录缓存和活动数据库，最后删除系统凭据库中的 Token。删除 Token 失败只返回
+/// 非敏感 warning：索引已经退出，后续 [`crate::account::session::restore_session`]
+/// 不得自动使用残留 Token。没有当前会话时仍清理运行时状态，但不改索引或凭据。
+/// 清理发生在本地，不调用远程登出接口。
 #[tauri::command]
-pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn logout(state: State<'_, AppState>) -> Result<LogoutResultDto, String> {
+    logout_inner(&state).await
+}
+
+/// 执行退出语义，供 Tauri 命令与测试复用。
+pub(crate) async fn logout_inner(state: &AppState) -> Result<LogoutResultDto, String> {
+    let uid = state
+        .auth_session
+        .read()
+        .await
+        .as_ref()
+        .map(|session| session.uid);
+    let mut warnings = Vec::new();
+    if let Some(uid) = uid {
+        if let Err(error) = state.account_index.mark_logged_out(uid).await {
+            tracing::warn!(error = %error, uid, "failed to mark account logged out");
+            warnings.push(CREDENTIAL_SAVE_WARNING.to_string());
+        }
+    }
+
     let generation = clear_session_state(
         state.connection_coordinator.as_ref(),
         state.chat_client.as_ref(),
@@ -1158,16 +1191,25 @@ pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     )
     .await?;
     state.message_crypto.clear().await;
+    state.pending_login.clear().await;
     // 连接取消并等待旧任务后，才关闭活动账号库，避免后台写入落到已关闭连接池。
     state.account_db.close().await;
+
+    if let Some(uid) = uid {
+        if let Err(error) = state.credentials.delete_token(uid).await {
+            tracing::warn!(error = %error, uid, "failed to delete login token");
+            warnings.push(CREDENTIAL_CLEAR_WARNING.to_string());
+        }
+    }
+
     publish_disconnected_status_if_current(
         &state.connection_coordinator,
         generation,
-        Some(state.app_handle()),
+        state.app_handle.as_ref(),
         &state.connected,
     )
     .await;
-    Ok(())
+    Ok(LogoutResultDto { warnings })
 }
 
 /// 清空会话、监控和连接状态，供登出流程与测试复用。
@@ -1194,7 +1236,7 @@ pub(crate) async fn clear_session_state(
 /// 先取消认证相关连接并清除认证会话，再清空内存监控集合、发布断开状态，最后传播实际
 /// 断开结果。generation 用于让晚到的旧登录或旧连接结果失效；函数不承诺这些步骤对
 /// 外部观察者表现为单一原子操作。
-async fn begin_auth_transition(
+pub(crate) async fn begin_auth_transition(
     connection_coordinator: &crate::state::ConnectionCoordinator,
     chat_client: &crate::state::ClientSlot,
     auth_session: &tokio::sync::RwLock<Option<AuthSession>>,
@@ -1233,7 +1275,7 @@ mod tests {
     use super::{
         begin_auth_transition, classify_remote_login, clear_session_state, complete_account_login,
         complete_account_login_after_publish, finish_login_after_opening_account,
-        finish_login_after_sync, hash_verify_passwords, verify_validations_inner,
+        finish_login_after_sync, hash_verify_passwords, logout_inner, verify_validations_inner,
         verify_validations_inner_with_http, AccountSummaryDto, AuthCommandError, LoginResultDto,
         LoginStateRefs, PendingValidationInputDto, RemoteLogin, VerifyValidationsDto,
     };
@@ -2415,5 +2457,53 @@ mod tests {
         assert_eq!(*auth_session.read().await, None);
         assert!(monitoring_groups.read().await.is_empty());
         assert!(!*connected.read().await);
+    }
+
+    /// 退出先把索引标为已退出并保留密码，再删除 Token、清空待登录缓存。
+    #[tokio::test]
+    async fn logout_keeps_password_marks_logged_out_and_clears_pending_login() {
+        let (state, _temp) = crate::state::test_state_with_account_foundation().await;
+        state
+            .account_index
+            .upsert(crate::account::index::AccountRecord::new(
+                42,
+                "a@example.com",
+                4,
+                100,
+            ))
+            .await
+            .unwrap();
+        state
+            .account_index
+            .set_secret_flags(42, true, true)
+            .await
+            .unwrap();
+        state.credentials.set_token(42, "token-42").await.unwrap();
+        state
+            .credentials
+            .set_password(42, "saved-secret")
+            .await
+            .unwrap();
+        *state.auth_session.write().await = Some(AuthSession {
+            uid: 42,
+            token: "token-42".into(),
+            generation: 0,
+        });
+        seed_pending_password(&state, "issued", "a@example.com", 4, "secret").await;
+
+        let result = logout_inner(&state).await.unwrap();
+        assert!(result.warnings.is_empty());
+        assert_eq!(
+            state.credentials.password(42).await.unwrap().as_deref(),
+            Some("saved-secret")
+        );
+        assert_eq!(state.credentials.token(42).await.unwrap(), None);
+        let index = state.account_index.load().await.unwrap();
+        assert_eq!(index.last_used_uid, Some(42));
+        let record = index.accounts.iter().find(|item| item.uid == 42).unwrap();
+        assert!(!record.has_token);
+        assert!(record.has_saved_password);
+        assert!(state.pending_login.take("issued").await.is_none());
+        assert!(state.auth_session.read().await.is_none());
     }
 }
