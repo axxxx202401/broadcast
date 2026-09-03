@@ -182,6 +182,7 @@ describe('useAuth', () => {
       })
       .mockResolvedValueOnce({ status: 'success', uid: '42', groups: [] })
     backend.listPendingValidations.mockResolvedValueOnce(pending)
+    auth.loginMethod.value = 1
     auth.account.value = '13800138000'
     auth.validateValue.value = '123456'
 

@@ -2,6 +2,7 @@
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ref } from 'vue'
 
 import type { AccountSummary, RestoreSessionResult } from './types/im'
 
@@ -64,6 +65,7 @@ vi.mock('./composables/useAuth', () => ({
       selectSavedAccount: mocks.selectSavedAccount,
       resetAuthForm: mocks.resetAuthForm,
       destroyGt4: vi.fn(),
+      selectedAccountUid: ref<string | null>(null),
     }
   },
 }))

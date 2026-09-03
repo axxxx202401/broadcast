@@ -4,7 +4,7 @@ import { mount } from '@vue/test-utils'
 import { computed, ref } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { PendingValidation, ValidateType } from '../types/im'
+import type { PendingValidation } from '../types/im'
 import LoginPanel from './LoginPanel.vue'
 
 function authStub(withChallenge = false) {
@@ -16,7 +16,7 @@ function authStub(withChallenge = false) {
     { countryCode: 86, account: '138****8000', accountType: 1, validateType: 18 as const },
     { account: 'op***@example.com', accountType: 2, validateType: 23 as const },
   ] : [])
-  const selectedChallengeType = ref<ValidateType | null>(18)
+  const selectedChallengeType = ref<number | null>(18)
   const toggleOtherMethods = () => {
     otherMethodsOpen.value = !otherMethodsOpen.value
   }
@@ -69,7 +69,7 @@ describe('LoginPanel', () => {
     })
 
     expect(auth.loginMethod.value).toBe(4)
-    expect(wrapper.get('input[type="email"]').exists()).toBe(true)
+    expect(wrapper.find('input[type="email"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('其他登录方式')
     expect(wrapper.text()).not.toContain('手机号验证码')
   })

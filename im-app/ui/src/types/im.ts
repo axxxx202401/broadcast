@@ -192,8 +192,6 @@ export interface VerifyRequest {
   validateToken: string
   /** JSON 字段名固定为 `pendingValidateDTOS` 的待验证材料。 */
   pendingValidateDTOS: PendingValidationDto[]
-  /** 随整批材料提交的可选补充值；客户端不解释其内容。 */
-  secondMac?: string
 }
 
 /** 服务端返回的一项业务处理结果；前端不自行解释业务码。 */

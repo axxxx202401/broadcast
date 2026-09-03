@@ -2,7 +2,7 @@
 import { computed, onUnmounted } from 'vue'
 
 import type { useAuth } from '../composables/useAuth'
-import type { AccountSummary, PrimaryLoginType, ValidateType } from '../types/im'
+import type { AccountSummary, PrimaryLoginType } from '../types/im'
 
 // 认证组合式对象由父组件注入，面板只负责呈现状态并转发用户操作。
 const props = defineProps<{
@@ -15,10 +15,10 @@ const props = defineProps<{
 onUnmounted(props.auth.destroyGt4)
 
 // 服务端验证类型决定字段文案；密码类验证还决定输入框的遮蔽与自动填充语义。
-const isPasswordValidation = (type?: ValidateType) =>
+const isPasswordValidation = (type?: number) =>
   type === 18 || type === 20 || type === 21
 
-const validateTypeLabels: Partial<Record<ValidateType, string>> = {
+const validateTypeLabels: Partial<Record<number, string>> = {
   16: '邮箱验证码',
   17: '手机验证码',
   18: '交易密码',
@@ -211,7 +211,7 @@ const canSubmitPrimary = computed(() => {
             <span>
               {{
                 isPasswordValidation(auth.selectedChallenge.value?.validateType)
-                  ? validateTypeLabels[auth.selectedChallenge.value!.validateType]
+                  ? (validateTypeLabels[auth.selectedChallenge.value?.validateType as number] ?? '验证值')
                   : '验证值'
               }}
             </span>
@@ -254,7 +254,7 @@ const canSubmitPrimary = computed(() => {
       <p class="eyebrow">OPERATIONS TERMINAL / 01</p>
       <h1 id="product-title">IM 实时监控<br />控制台</h1>
       <p class="intro-copy">验证操作员身份，建立只读群消息采集会话。</p>
-      <ol class="protocol-track" aria-label="登录协议步骤">
+      <ol class="protocol-track" aria-label="登录流程">
         <li><b>01</b><span>选择登录验证方式</span></li>
         <li><b>02</b><span>GT4 与验证码发送</span></li>
         <li><b>03</b><span>issued / verify 链路</span></li>
@@ -265,10 +265,10 @@ const canSubmitPrimary = computed(() => {
     <form class="login-console" @submit.prevent="auth.submitLogin">
       <header class="console-heading">
         <div>
-          <p class="eyebrow">AUTH SEQUENCE</p>
+          <p class="eyebrow">认证流程</p>
           <h2>操作员验证</h2>
         </div>
-        <span class="secure-mark">LOCAL IPC</span>
+        <span class="secure-mark">本地验证</span>
       </header>
 
       <!-- 没有二次挑战时收集主登录方式、账号及首次验证值。 -->
@@ -313,7 +313,7 @@ const canSubmitPrimary = computed(() => {
             role="status"
             aria-live="polite"
           >
-            GT4 {{ auth.gt4Error.value ? 'ERROR' : auth.gt4Ready.value ? 'READY' : auth.gt4Loading.value ? 'LOADING' : 'IDLE' }}
+            GT4 {{ auth.gt4Error.value ? 'ERROR' : auth.gt4Ready.value ? '就绪' : auth.gt4Loading.value ? '处理中' : '待机' }}
             · 验证成功后自动发送验证码
           </p>
           <button
@@ -355,14 +355,8 @@ const canSubmitPrimary = computed(() => {
       >
         <h3 id="challenge-heading"><span>CHALLENGE</span> 服务端二次验证</h3>
         <label>
-          <span>validateToken</span>
-          <input
-            data-test="validate-token"
-            type="password"
-            :value="auth.validateToken.value"
-            readonly
-            autocomplete="off"
-          />
+          <span>令牌</span>
+          <input data-test="challenge-token" type="password" :value="''" readonly autocomplete="off" />
         </label>
         <div class="pending-list" aria-label="服务端待验证项">
           <label
@@ -377,7 +371,7 @@ const canSubmitPrimary = computed(() => {
               :value="item.validateType"
             />
             <span>
-              <b>ValidateType {{ item.validateType }}</b>
+              <b>验证类型 {{ item.validateType }}</b>
               {{ validateTypeLabels[item.validateType] ?? '通用验证值' }}
               · {{ item.account ?? '服务端未提供账号' }}
               <small>countryCode={{ item.countryCode ?? '—' }} / accountType={{ item.accountType ?? '—' }}</small>
@@ -386,7 +380,7 @@ const canSubmitPrimary = computed(() => {
         </div>
         <div v-if="auth.isChallengeCode.value">
           <p class="field-note" role="status" aria-live="polite">
-            GT4 {{ auth.gt4Error.value ? 'ERROR' : auth.gt4Ready.value ? 'READY' : auth.gt4Loading.value ? 'LOADING' : 'IDLE' }}
+            GT4 {{ auth.gt4Error.value ? 'ERROR' : auth.gt4Ready.value ? '就绪' : auth.gt4Loading.value ? '处理中' : '待机' }}
             · 通过滑块后发送二次验证验证码
           </p>
           <button
@@ -409,7 +403,7 @@ const canSubmitPrimary = computed(() => {
         <label>
           <span>
             {{ isPasswordValidation(auth.selectedChallenge.value?.validateType)
-              ? validateTypeLabels[auth.selectedChallenge.value!.validateType]
+              ? (validateTypeLabels[auth.selectedChallenge.value?.validateType as number] ?? 'validateValue')
               : 'validateValue' }}
           </span>
           <input
@@ -427,7 +421,7 @@ const canSubmitPrimary = computed(() => {
           请输入原始密码，客户端会按服务端规则自动加密后发送。
         </p>
         <p
-          v-if="auth.selectedChallenge.value && auth.selectedChallenge.value.validateType >= 23"
+          v-if="(auth.selectedChallenge.value?.validateType ?? 0) >= 23"
           class="warning-note"
         >
           此类型的独立 loginType 暂不支持；完成服务端 pending verify 后仅重试原登录请求，不猜测映射。
