@@ -819,15 +819,15 @@ impl AppState {
 #[cfg(test)]
 /// 构造仅具备账号基础设施、尚未打开业务库的测试用 [`AppState`]。
 ///
-/// 数据根目录使用独立临时目录；凭据走内存替身。该状态不注入 Tauri 句柄，
-/// 也不预置认证会话或监控群组，用于断言未登录时不得持有活动数据库。
-pub(crate) async fn test_state_with_account_foundation() -> AppState {
+/// 返回的 [`tempfile::TempDir`] 必须由调用方持有到测试结束，避免数据根目录被提前删除。
+/// 凭据走内存替身；该状态不注入 Tauri 句柄，也不预置认证会话或监控群组。
+pub(crate) async fn test_state_with_account_foundation() -> (AppState, tempfile::TempDir) {
     use crate::account::{
         credentials::MemoryCredentialStore, AccountDatabaseManager, AccountIndexStore, AppPaths,
         LegacyDatabaseMigrator,
     };
 
-    let temp = Box::leak(Box::new(tempfile::tempdir().expect("创建账号测试临时目录")));
+    let temp = tempfile::tempdir().expect("创建账号测试临时目录");
     let paths = AppPaths::new(temp.path().to_path_buf());
     let config = AppConfig::default();
     let http = Arc::new(
@@ -835,7 +835,7 @@ pub(crate) async fn test_state_with_account_foundation() -> AppState {
             .expect("测试 HTTP 客户端应能用默认配置创建"),
     );
 
-    AppState {
+    let state = AppState {
         config: Arc::new(tokio::sync::RwLock::new(config)),
         paths: paths.clone(),
         account_index: Arc::new(AccountIndexStore::new(paths.index_file())),
@@ -853,7 +853,8 @@ pub(crate) async fn test_state_with_account_foundation() -> AppState {
         connected: Arc::new(tokio::sync::RwLock::new(false)),
         shutdown: CancellationToken::new(),
         app_handle: None,
-    }
+    };
+    (state, temp)
 }
 
 #[cfg(test)]
@@ -872,7 +873,7 @@ mod tests {
     /// 未登录时不得打开业务 SQLite，内存监控集合也必须为空。
     #[tokio::test]
     async fn app_state_has_no_business_database_before_login() {
-        let state = test_state_with_account_foundation().await;
+        let (state, _temp) = test_state_with_account_foundation().await;
         let error = match state.account_db.active().await {
             Err(error) => error,
             Ok(_) => panic!("未登录时不应持有活动账号数据库"),

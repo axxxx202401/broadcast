@@ -388,19 +388,11 @@ pub async fn login(
         .map_err(|error| error.to_string())?;
 
     // 在发布新认证会话前写入远程群组快照，并恢复数据库中保留的监控选择。
-    let groups = finish_login_after_sync(
-        LoginStateRefs {
-            group_ops: &state.group_ops,
-            connection_coordinator: &state.connection_coordinator,
-            auth_session: &state.auth_session,
-            monitoring_groups: &state.monitoring_groups,
-        },
-        generation,
-        uid,
-        token.clone(),
-        async { crate::commands::groups::apply_remote_groups(&db, &remote_groups).await },
-    )
-    .await?;
+    let groups =
+        finish_login_after_opening_account(&state, generation, uid, token.clone(), async {
+            crate::commands::groups::apply_remote_groups(&db, &remote_groups).await
+        })
+        .await?;
 
     // HTTP 登录保持成功返回；TCP 连接及重试在后台继续。
     crate::commands::chat::start_automatic_connection(&state, generation);
@@ -451,6 +443,39 @@ where
         )
         .await?;
     Ok(result)
+}
+
+/// 在已打开的账号库上同步群组并发布会话；失败时关闭活动库。
+///
+/// 打开成功后若群组同步或会话发布失败，调用方不得留下“无会话却占用活动库”的状态。
+/// 此函数在返回错误前关闭 [`crate::account::AccountDatabaseManager`]。
+async fn finish_login_after_opening_account<T, F>(
+    state: &AppState,
+    generation: u64,
+    uid: i64,
+    token: String,
+    prepare: F,
+) -> Result<T, String>
+where
+    F: Future<Output = Result<(T, HashSet<i64>), String>>,
+{
+    let result = finish_login_after_sync(
+        LoginStateRefs {
+            group_ops: &state.group_ops,
+            connection_coordinator: &state.connection_coordinator,
+            auth_session: &state.auth_session,
+            monitoring_groups: &state.monitoring_groups,
+        },
+        generation,
+        uid,
+        token,
+        prepare,
+    )
+    .await;
+    if result.is_err() {
+        state.account_db.close().await;
+    }
+    result
 }
 
 /// 登出当前会话。
@@ -542,8 +567,9 @@ mod tests {
     };
 
     use super::{
-        begin_auth_transition, classify_remote_login, clear_session_state, finish_login_after_sync,
-        hash_verify_passwords, AuthCommandError, LoginResultDto, LoginStateRefs, RemoteLogin,
+        begin_auth_transition, classify_remote_login, clear_session_state,
+        finish_login_after_opening_account, finish_login_after_sync, hash_verify_passwords,
+        AuthCommandError, LoginResultDto, LoginStateRefs, RemoteLogin,
     };
 
     #[test]
@@ -869,6 +895,30 @@ mod tests {
         assert_eq!(result.unwrap_err(), "group sync failed");
         assert_eq!(*auth_session.read().await, None);
         assert!(monitoring_groups.read().await.is_empty());
+    }
+
+    /// 账号库已打开但群组同步失败时，必须关闭活动库且不得发布会话。
+    #[tokio::test]
+    async fn failed_group_sync_after_open_closes_account_database() {
+        let (state, _temp) = crate::state::test_state_with_account_foundation().await;
+        state.account_db.open(42).await.unwrap();
+
+        let result: Result<(), String> =
+            finish_login_after_opening_account(&state, 0, 42, "session-token".to_string(), async {
+                Err("group sync failed".to_string())
+            })
+            .await;
+
+        assert_eq!(result.unwrap_err(), "group sync failed");
+        assert_eq!(*state.auth_session.read().await, None);
+        let error = match state.account_db.active().await {
+            Err(error) => error,
+            Ok(_) => panic!("群组同步失败后不得留下活动账号数据库"),
+        };
+        assert!(matches!(
+            error,
+            crate::account::AccountError::NoActiveDatabase
+        ));
     }
 
     #[tokio::test]
