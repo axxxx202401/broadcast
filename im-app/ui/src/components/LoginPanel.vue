@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 
 import type { useAuth } from '../composables/useAuth'
 import type { AccountSummary, PrimaryLoginType } from '../types/im'
@@ -49,13 +49,18 @@ const challengeMethodLabel = computed(() => {
 
 const showChallengeSecretInput = computed(() => {
   const type = props.auth.selectedChallenge.value?.validateType
-  if (type === 20 || type === 21) return props.auth.passwordReuseFailed.value
+  if (type === 20 || type === 21) {
+    return props.auth.passwordReuseAttempted.value || props.auth.passwordReuseFailed.value
+  }
   return true
 })
 
-const needsSupplementedTarget = computed(() => {
-  const account = props.auth.selectedChallenge.value?.account ?? ''
-  return props.auth.isChallengeCode.value && account.includes('*')
+const needsSupplementedTarget = computed(() => props.auth.needsSupplementedTarget.value)
+
+const challengeValueAutocomplete = computed(() => {
+  const type = props.auth.selectedChallenge.value?.validateType
+  if (type === 20 || type === 21) return 'current-password'
+  return 'off'
 })
 
 const challengeTotalKnown = computed(() => {
@@ -63,6 +68,10 @@ const challengeTotalKnown = computed(() => {
   const remaining = props.auth.challengePending.value.length
   // 仅当已经完成过至少一项且当前仍有待办时，才能把“已完成 + 当前待办”视为已知总数。
   return completed > 0 && remaining > 0 ? completed + remaining : null
+})
+
+watch(() => props.auth.challengePending.value.length, (length) => {
+  if (length === 0) choosingOtherMethods.value = false
 })
 
 /** 从已保存账号列表回填或清空为「添加账号」。 */
@@ -276,7 +285,7 @@ const canSubmitPrimary = computed(() => {
               v-model.trim="auth.challengeValue.value"
               data-test="challenge-value"
               :type="isPasswordValidation(auth.selectedChallenge.value?.validateType) ? 'password' : 'text'"
-              :autocomplete="isPasswordValidation(auth.selectedChallenge.value?.validateType) ? 'current-password' : 'one-time-code'"
+              :autocomplete="challengeValueAutocomplete"
               required
             />
           </label>

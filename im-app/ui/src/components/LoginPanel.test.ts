@@ -69,6 +69,8 @@ function authStub(withChallenge = false) {
     completedChallengeKeys: ref<string[]>([]),
     supplementedTarget: ref(''),
     passwordReuseFailed: ref(false),
+    passwordReuseAttempted: ref(false),
+    needsSupplementedTarget: computed(() => false),
     businessProcessing: ref([
       { businessCode: 9001, businessMsg: '设备已变更' },
     ]),
@@ -300,6 +302,85 @@ describe('LoginPanel', () => {
 
     host.unmount()
     await vi.advanceTimersByTimeAsync(5_000)
+  })
+
+  it('提交失败时卡片不展示业务码', async () => {
+    const backend = {
+      sendSmsCode: vi.fn(),
+      sendEmailCode: vi.fn(),
+      issueValidationToken: vi.fn().mockRejectedValue({
+        kind: 'business',
+        code: 3110002,
+        msg: '验证码错误',
+        title: '认证失败',
+      }),
+      verifyValidations: vi.fn(),
+      listPendingValidations: vi.fn(),
+      login: vi.fn(),
+    }
+    const gt4 = {
+      loading: ref(false),
+      ready: ref(true),
+      error: ref(''),
+      initialize: vi.fn(async () => true),
+      show: vi.fn(() => true),
+      reset: vi.fn(),
+      destroy: vi.fn(),
+    }
+    let auth!: ReturnType<typeof useAuth>
+    const host = mount(defineComponent({
+      setup() {
+        auth = useAuth(() => {}, { api: backend, gt4 })
+        return () => h(LoginPanel, {
+          auth,
+          accounts: [],
+          selectedAccountUid: null,
+        })
+      },
+    }))
+    auth.account.value = 'operator@example.com'
+    auth.validateValue.value = 'plain-password'
+    await auth.submitLogin()
+    await flushPromises()
+    const wrapper = host.findComponent(LoginPanel)
+    expect(wrapper.text()).toContain('验证码错误')
+    expect(wrapper.text()).not.toContain('3110002')
+    host.unmount()
+  })
+
+  it('主账号已完整时不展示补全输入', async () => {
+    const { auth, wrapper, host } = await enterEmailCodeChallenge()
+    expect(auth.needsSupplementedTarget.value).toBe(false)
+    expect(wrapper.find('[data-test="challenge-supplement"]').exists()).toBe(false)
+    host.unmount()
+  })
+
+  it('登录密码在已尝试复用后即使未标记失败也展示输入框', async () => {
+    const auth = authStub()
+    auth.challengePending.value = [{
+      account: 'op***@example.com',
+      accountType: 7,
+      validateType: 21,
+    }]
+    auth.selectedChallengeType.value = 21
+    auth.challengeStep.value = 1
+    const wrapper = mountPanel(auth)
+    expect(wrapper.find('[data-test="challenge-value"]').exists()).toBe(false)
+
+    auth.passwordReuseAttempted.value = true
+    auth.passwordReuseFailed.value = false
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-test="challenge-value"]').attributes('type')).toBe('password')
+    expect(wrapper.get('[data-test="challenge-value"]').attributes('autocomplete')).toBe('current-password')
+  })
+
+  it('非登录密码验证使用 autocomplete=off', async () => {
+    const auth = authStub()
+    auth.challengePending.value = [{ validateType: 19, account: 'masked' }]
+    auth.selectedChallengeType.value = 19
+    auth.challengeStep.value = 1
+    const wrapper = mountPanel(auth)
+    expect(wrapper.get('[data-test="challenge-value"]').attributes('autocomplete')).toBe('off')
   })
 
   it('登录密码挑战在复用失败后才展示密码框', async () => {

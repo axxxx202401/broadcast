@@ -53,3 +53,36 @@ export function errorMessage(error: unknown): string {
   }
   return '操作失败，请查看后端日志'
 }
+
+/**
+ * 给登录/二次验证界面用的错误文案：只保留标题与消息，去掉业务码和诊断 JSON。
+ * 完整诊断仍写入 `console.debug`，便于对照 `errorMessage`。
+ * 普通字符串（如 challenge notice）同样剥离 `311xxxx` 业务码。
+ */
+export function userFacingError(error: unknown): string {
+  // 普通提示字符串不刷 debug；结构化错误才留下完整诊断。
+  if (typeof error !== 'string' && typeof console !== 'undefined' && typeof console.debug === 'function') {
+    console.debug('[auth-error]', errorMessage(error), error)
+  }
+  let text = ''
+  if (error && typeof error === 'object' && !(error instanceof Error)) {
+    const commandError = error as Record<string, unknown>
+    if (commandError.kind === 'business') {
+      text = [commandError.title, commandError.msg]
+        .filter((part) => typeof part === 'string' && part.trim())
+        .join(' · ')
+    } else if (commandError.kind === 'other' && typeof commandError.message === 'string') {
+      text = commandError.message
+    }
+  } else if (error instanceof Error) {
+    text = error.message
+  } else if (typeof error === 'string') {
+    text = error
+  }
+  text = text
+    .replace(/\b311\d+\b/g, '')
+    .replace(/\s*·\s*/g, ' · ')
+    .replace(/^(?: · )+|(?: · )+$/g, '')
+    .trim()
+  return text || '验证失败，请重试'
+}

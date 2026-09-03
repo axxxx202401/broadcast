@@ -12,7 +12,7 @@ import type {
   PrimaryLoginType,
   ValidateType,
 } from '../types/im'
-import { errorMessage } from '../utils/protocol'
+import { errorMessage, userFacingError } from '../utils/protocol'
 import { useGt4 } from './useGt4'
 
 /** 认证流程实际使用的后端能力子集。 */
@@ -142,13 +142,18 @@ export function useAuth(
   const supplementedTarget = ref('')
   /** 登录密码自动复用已失败，界面应展示密码输入。 */
   const passwordReuseFailed = ref(false)
+  /** 本轮是否已发起过一次 reuseLoginPassword；发起后 20/21 必须保持可输入。 */
+  const passwordReuseAttempted = ref(false)
   const businessProcessing = ref<BusinessProcessing[]>([])
   const busy = ref<string | null>(null)
   const error = ref('')
   const notice = ref('')
   let lastLoginRequest: LoginRequest | null = null
-  /** 本轮挑战是否已发起过一次 reuseLoginPassword，禁止自动重试。 */
-  let passwordReuseAttempted = false
+  /**
+   * 二次验证世代：resetChallenge 时递增。
+   * 自动复用响应必须与发起时的世代一致，否则丢弃。
+   */
+  let challengeGeneration = 0
   /** 重发倒计时的唯一 interval；卸载或 resetChallenge 时必须清除。 */
   let resendTimer: ReturnType<typeof setInterval> | null = null
 
@@ -169,6 +174,31 @@ export function useAuth(
     || selectedChallenge.value?.validateType === 17,
   )
 
+  /**
+   * 主登录账号是否已是当前验证码类型所需的完整、且与脱敏前后缀一致的目标。
+   * 满足时不必再展示补全面板。
+   */
+  function hasCompletePrimaryChallengeTarget(pending: PendingValidation): boolean {
+    const wantsPhone = pending.validateType === 17
+    const wantsEmail = pending.validateType === 16
+    if (!wantsPhone && !wantsEmail) return false
+    const primaryMatches = contract.value.account === (wantsPhone ? 'phone' : 'email')
+    const primary = account.value.trim()
+    if (!primaryMatches || !primary || primary.includes('*')) return false
+    const masked = (pending.account ?? '').trim()
+    if (masked.includes('*') && !matchesMaskedTarget(primary, masked)) return false
+    return true
+  }
+
+  /** 仅当发送验证码缺少完整目标时，才要求用户补充脱敏邮箱或手机号。 */
+  const needsSupplementedTarget = computed(() => {
+    const pending = selectedChallenge.value
+    if (!pending || !isChallengeCode.value) return false
+    if (hasCompletePrimaryChallengeTarget(pending)) return false
+    const pendingAccount = (pending.account ?? '').trim()
+    return !pendingAccount || pendingAccount.includes('*')
+  })
+
   /** 串行化当前实例内的用户操作，并统一折叠本地可观察错误；不提供跨调用事务保证。 */
   async function run(step: string, operation: () => Promise<void>) {
     if (busy.value) return
@@ -178,7 +208,7 @@ export function useAuth(
     try {
       await operation()
     } catch (reason) {
-      error.value = errorMessage(reason)
+      error.value = userFacingError(reason)
     } finally {
       busy.value = null
     }
@@ -236,7 +266,7 @@ export function useAuth(
         notice.value = '验证码已发送'
         gt4.destroy()
       } catch (reason) {
-        error.value = errorMessage(reason)
+        error.value = userFacingError(reason)
         gt4.reset()
       } finally {
         busy.value = null
@@ -323,6 +353,7 @@ export function useAuth(
    * 不删除已保存账号，也不改写主登录表单中的账号与密码模式。
    */
   const resetChallenge = () => {
+    challengeGeneration += 1
     clearResendTimer()
     validateToken.value = ''
     challengePending.value = []
@@ -333,7 +364,7 @@ export function useAuth(
     completedChallengeKeys.value = []
     supplementedTarget.value = ''
     passwordReuseFailed.value = false
-    passwordReuseAttempted = false
+    passwordReuseAttempted.value = false
     lastLoginRequest = null
     businessProcessing.value = []
     notice.value = ''
@@ -430,9 +461,10 @@ export function useAuth(
   async function maybeReuseLoginPassword() {
     const pending = selectedChallenge.value
     if (!pending || (pending.validateType !== 20 && pending.validateType !== 21)) return
-    if (passwordReuseAttempted) return
+    if (passwordReuseAttempted.value) return
     if (!validateToken.value.trim()) return
-    passwordReuseAttempted = true
+    passwordReuseAttempted.value = true
+    const generation = challengeGeneration
     try {
       const verifyResponse = await backend.verifyValidations({
         validateToken: validateToken.value.trim(),
@@ -441,15 +473,17 @@ export function useAuth(
           reuseLoginPassword: true,
         }],
       })
+      if (generation !== challengeGeneration) return
       if (applyVerifyResponse(verifyResponse)) {
         challengeValue.value = ''
         return
       }
       await retryLoginAfterChallenge(pending)
     } catch (reason) {
+      if (generation !== challengeGeneration) return
       passwordReuseFailed.value = true
       if (isPasswordAlreadyReused(reason)) return
-      error.value = errorMessage(reason)
+      error.value = userFacingError(reason)
     }
   }
 
@@ -519,11 +553,12 @@ export function useAuth(
     if (result.status === 'success') {
       challengePending.value = []
       selectedChallengeType.value = null
+      challengeValue.value = ''
       challengeStep.value = 0
       completedChallengeKeys.value = []
       supplementedTarget.value = ''
       passwordReuseFailed.value = false
-      passwordReuseAttempted = false
+      passwordReuseAttempted.value = false
       clearResendTimer()
       resendSeconds.value = 0
       onLogin({
@@ -534,7 +569,7 @@ export function useAuth(
       return
     }
     validateToken.value = result.validateToken
-    notice.value = result.message
+    notice.value = userFacingError(result.message)
     const fromLoginPending = result.pending ?? []
     const alreadyChallenging = challengePending.value.length > 0
     try {
@@ -544,7 +579,7 @@ export function useAuth(
       activateChallenge(mergePending(fromLoginPending, listed), alreadyChallenging)
     } catch (reason) {
       activateChallenge(fromLoginPending, alreadyChallenging)
-      error.value = errorMessage(reason)
+      error.value = userFacingError(reason)
     }
     await maybeReuseLoginPassword()
   }
@@ -684,13 +719,17 @@ export function useAuth(
     const wantsPhone = pending.validateType === 17
     const primaryMatches = contract.value.account === (wantsPhone ? 'phone' : 'email')
     const primaryAccount = account.value.trim()
-    const masked = (pending.account ?? '').includes('*')
+    const maskedAccount = (pending.account ?? '').trim()
+    const masked = maskedAccount.includes('*')
     let targetAccount = ''
     if (primaryMatches && primaryAccount && !primaryAccount.includes('*')) {
-      targetAccount = primaryAccount
+      // 主账号可用时也必须通过脱敏前后缀校验，不能跳过。
+      if (!masked || matchesMaskedTarget(primaryAccount, maskedAccount)) {
+        targetAccount = primaryAccount
+      }
     } else if (supplementedTarget.value.trim()) {
       const supplemented = supplementedTarget.value.trim()
-      if (masked && pending.account && !matchesMaskedTarget(supplemented, pending.account)) {
+      if (masked && !matchesMaskedTarget(supplemented, maskedAccount)) {
         error.value = wantsPhone
           ? '补充的手机号与脱敏前后缀不一致'
           : '补充的邮箱与脱敏前后缀不一致'
@@ -698,7 +737,7 @@ export function useAuth(
       }
       targetAccount = supplemented
     } else {
-      targetAccount = (pending.account ?? '').trim()
+      targetAccount = maskedAccount
     }
 
     if (!targetAccount || targetAccount.includes('*')) {
@@ -749,7 +788,7 @@ export function useAuth(
         startResendCountdown()
         gt4.destroy()
       } catch (reason) {
-        error.value = errorMessage(reason)
+        error.value = userFacingError(reason)
         gt4.reset()
       } finally {
         busy.value = null
@@ -761,9 +800,16 @@ export function useAuth(
     }
   }
 
-  watch(selectedChallengeType, () => {
+  watch(selectedChallengeType, (next, prev) => {
+    // 切换验证方式时不得沿用上一方式的倒计时与临时输入。
+    if (prev != null && next != null && prev !== next) {
+      clearResendTimer()
+      resendSeconds.value = 0
+      challengeValue.value = ''
+      supplementedTarget.value = ''
+    }
     void maybeReuseLoginPassword()
-  })
+  }, { flush: 'sync' })
 
   watch(gt4.error, (gt4Error) => {
     if (gt4Error && (busy.value === 'captcha' || busy.value === 'challenge-captcha')) {
@@ -803,6 +849,8 @@ export function useAuth(
     completedChallengeKeys,
     supplementedTarget,
     passwordReuseFailed,
+    passwordReuseAttempted,
+    needsSupplementedTarget,
     businessProcessing,
     /** busy 非空时主要 actions 会拒绝重入；error/notice 由新动作开始时重置。 */
     busy,

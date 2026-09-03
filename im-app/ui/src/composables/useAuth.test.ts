@@ -422,8 +422,8 @@ describe('useAuth', () => {
     expect(backend.listPendingValidations).toHaveBeenCalledWith({
       validateToken: 'issued-token',
     })
-    expect(auth.error.value).toContain('3114169')
     expect(auth.error.value).toContain('该场景下验证项缺失')
+    expect(auth.error.value).not.toMatch(/311\d+/)
     wrapper.unmount()
   })
 
@@ -528,7 +528,7 @@ describe('useAuth', () => {
     wrapper.unmount()
   })
 
-  it('完整呈现结构化 IPC 业务错误字段', async () => {
+  it('认证界面错误只展示用户可读文案，不包含业务码', async () => {
     const { auth, backend, wrapper } = setupAuth()
     backend.issueValidationToken.mockRejectedValueOnce({
       kind: 'business',
@@ -543,11 +543,9 @@ describe('useAuth', () => {
 
     await auth.submitLogin()
 
-    expect(auth.error.value).toContain('3110002')
     expect(auth.error.value).toContain('验证码错误')
-    expect(auth.error.value).toContain('认证失败')
-    expect(auth.error.value).toContain('2')
-    expect(auth.error.value).toContain('remaining')
+    expect(auth.error.value).not.toMatch(/311\d+/)
+    expect(auth.error.value).not.toContain('remaining')
     wrapper.unmount()
   })
 
@@ -991,6 +989,157 @@ describe('useAuth', () => {
     expect(auth.challengeStep.value).toBe(2)
     expect(auth.challengePending.value).toEqual(remaining)
     expect(auth.completedChallengeKeys.value.length).toBeGreaterThan(0)
+    wrapper.unmount()
+  })
+
+  it('resetChallenge 之后忽略过期的自动复用响应', async () => {
+    const { auth, backend, wrapper } = setupAuth()
+    let finishReuse: ((value: {
+      validateModelVOS: PendingValidation[]
+      businessProcessing: unknown[]
+    }) => void) | undefined
+    backend.verifyValidations.mockImplementation(async (request: {
+      pendingValidateDTOS: Array<{ reuseLoginPassword?: boolean }>
+    }) => {
+      if (request.pendingValidateDTOS.some((item) => item.reuseLoginPassword)) {
+        return new Promise((resolve) => {
+          finishReuse = resolve
+        })
+      }
+      return { validateModelVOS: [], businessProcessing: [] }
+    })
+    const pending: PendingValidation = {
+      account: 'op***@example.com',
+      accountType: 7,
+      validateType: 21,
+    }
+    backend.login.mockResolvedValueOnce({
+      status: 'challenge',
+      code: 3114179,
+      validateToken: 'challenge-token',
+      message: '需要邮箱登录密码',
+      pending: [pending],
+    })
+    backend.listPendingValidations.mockResolvedValueOnce([pending])
+    auth.loginMethod.value = 4
+    auth.account.value = 'operator@example.com'
+    auth.validateValue.value = 'plain-password'
+    const loginPromise = auth.submitLogin()
+    await flushPromises()
+    expect(auth.challengePending.value).toEqual([pending])
+
+    auth.resetChallenge()
+    expect(auth.challengePending.value).toEqual([])
+    expect(auth.validateToken.value).toBe('')
+
+    finishReuse?.({
+      validateModelVOS: [{ validateType: 19, account: 'stale' }],
+      businessProcessing: [],
+    })
+    await loginPromise
+    await flushPromises()
+
+    expect(auth.challengePending.value).toEqual([])
+    expect(auth.validateToken.value).toBe('')
+    expect(auth.selectedChallengeType.value).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('主账号已是完整邮箱时不要求补全，但仍校验脱敏前后缀', async () => {
+    const { auth, backend, succeedGt4, wrapper } = setupAuth()
+    const pending: PendingValidation = {
+      account: 'op***@example.com',
+      accountType: 7,
+      validateType: 16,
+    }
+    backend.login.mockResolvedValueOnce({
+      status: 'challenge',
+      code: 3114179,
+      validateToken: 'challenge-token',
+      message: '需要邮箱验证码',
+      pending: [pending],
+    })
+    backend.listPendingValidations.mockResolvedValueOnce([pending])
+    auth.loginMethod.value = 4
+    auth.account.value = 'operator@example.com'
+    auth.validateValue.value = 'plain-password'
+    await auth.submitLogin()
+
+    expect(auth.needsSupplementedTarget.value).toBe(false)
+    await auth.sendChallengeCode()
+    await succeedGt4()
+    await flushPromises()
+    expect(backend.sendEmailCode).toHaveBeenCalledWith({
+      email: 'operator@example.com',
+      codeType: 1,
+      gt4DTO: gt4Fields,
+    })
+    wrapper.unmount()
+  })
+
+  it('主账号与脱敏前后缀不一致时不得直接发送', async () => {
+    const { auth, backend, wrapper } = setupAuth()
+    const pending: PendingValidation = {
+      account: 'op***@example.com',
+      accountType: 7,
+      validateType: 16,
+    }
+    backend.login.mockResolvedValueOnce({
+      status: 'challenge',
+      code: 3114179,
+      validateToken: 'challenge-token',
+      message: '需要邮箱验证码',
+      pending: [pending],
+    })
+    backend.listPendingValidations.mockResolvedValueOnce([pending])
+    auth.loginMethod.value = 4
+    auth.account.value = 'wrong@other.com'
+    auth.validateValue.value = 'plain-password'
+    await auth.submitLogin()
+
+    expect(auth.needsSupplementedTarget.value).toBe(true)
+    await auth.sendChallengeCode()
+    expect(backend.sendEmailCode).not.toHaveBeenCalled()
+    expect(auth.error.value).toContain('完整')
+    wrapper.unmount()
+  })
+
+  it('切换二次验证方式会清空倒计时和临时输入', async () => {
+    vi.useFakeTimers()
+    const { auth, backend, succeedGt4, wrapper } = setupAuth()
+    const emailCode: PendingValidation = {
+      account: 'op***@example.com',
+      accountType: 7,
+      validateType: 16,
+    }
+    const google: PendingValidation = {
+      account: 'op***@example.com',
+      accountType: 7,
+      validateType: 19,
+    }
+    backend.login.mockResolvedValueOnce({
+      status: 'challenge',
+      code: 3114179,
+      validateToken: 'challenge-token',
+      message: '需要二次验证',
+      pending: [emailCode, google],
+    })
+    backend.listPendingValidations.mockResolvedValueOnce([emailCode, google])
+    auth.loginMethod.value = 4
+    auth.account.value = 'operator@example.com'
+    auth.validateValue.value = 'plain-password'
+    await auth.submitLogin()
+    await auth.sendChallengeCode()
+    await succeedGt4()
+    await flushPromises()
+    auth.challengeValue.value = '654321'
+    auth.supplementedTarget.value = 'operator@example.com'
+    expect(auth.resendSeconds.value).toBe(60)
+
+    auth.selectedChallengeType.value = 19
+    expect(auth.resendSeconds.value).toBe(0)
+    expect(auth.challengeValue.value).toBe('')
+    expect(auth.supplementedTarget.value).toBe('')
     wrapper.unmount()
   })
 
