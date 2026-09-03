@@ -93,6 +93,18 @@ export function useAuth(
    * - manual：用户编辑了密码输入框，提交时带 validateValue
    */
   const passwordMode = ref<'empty' | 'saved' | 'manual'>('empty')
+  /**
+   * 已选保存账号的身份快照；仅当当前表单仍与该快照一致时才允许 saved 模式。
+   * 不包含密码明文。
+   */
+  let selectedSavedIdentity: {
+    uid: string
+    loginType: PrimaryLoginType
+    displayAccount: string
+    hasSavedPassword: boolean
+  } | null = null
+  /** 回填保存账号时跳过身份对账，避免中间赋值误清哨兵。 */
+  let applyingSavedAccount = false
   /** “其他登录方式”折叠面板是否展开。 */
   const otherMethodsOpen = ref(false)
   const validateToken = ref('')
@@ -241,6 +253,29 @@ export function useAuth(
     if (value.trim().length) passwordMode.value = 'manual'
   }, { flush: 'sync' })
 
+  /** 当前表单是否仍指向已选保存账号的登录方式与展示账号。 */
+  function savedIdentityMatches() {
+    const saved = selectedSavedIdentity
+    return !!saved
+      && selectedAccountUid.value === saved.uid
+      && loginMethod.value === saved.loginType
+      && account.value.trim() === saved.displayAccount.trim()
+  }
+
+  /**
+   * 登录方式或账号与已选保存账号不一致时退出 saved，并丢掉 uid。
+   * 用户已改写密码的 manual 模式保留，仅撤销 savedPasswordUid 资格。
+   */
+  function syncSavedPasswordEligibility() {
+    if (applyingSavedAccount) return
+    if (savedIdentityMatches()) return
+    selectedAccountUid.value = null
+    selectedSavedIdentity = null
+    if (passwordMode.value === 'saved') passwordMode.value = 'empty'
+  }
+
+  watch([loginMethod, account], syncSavedPasswordEligibility, { flush: 'sync' })
+
   const applyVerifyResponse = (
     response: Awaited<ReturnType<AuthApi['verifyValidations']>>,
   ) => {
@@ -268,13 +303,24 @@ export function useAuth(
    */
   function selectSavedAccount(saved: AccountSummary) {
     // 切换账号后必须清理上一会话的瞬态状态，避免挑战/错误信息残留。
-    resetAuthForm({ preserveSelectedAccount: true })
-    selectedAccountUid.value = saved.uid
-    loginMethod.value = saved.loginType
-    account.value = saved.displayAccount
-    validateValue.value = ''
-    passwordMode.value = saved.hasSavedPassword ? 'saved' : 'empty'
-    otherMethodsOpen.value = false
+    applyingSavedAccount = true
+    try {
+      resetAuthForm({ preserveSelectedAccount: true })
+      selectedSavedIdentity = {
+        uid: saved.uid,
+        loginType: saved.loginType,
+        displayAccount: saved.displayAccount,
+        hasSavedPassword: saved.hasSavedPassword,
+      }
+      selectedAccountUid.value = saved.uid
+      loginMethod.value = saved.loginType
+      account.value = saved.displayAccount
+      validateValue.value = ''
+      passwordMode.value = saved.hasSavedPassword ? 'saved' : 'empty'
+      otherMethodsOpen.value = false
+    } finally {
+      applyingSavedAccount = false
+    }
   }
 
   /**
@@ -307,6 +353,7 @@ export function useAuth(
 
     if (!preserveSelectedAccount) {
       selectedAccountUid.value = null
+      selectedSavedIdentity = null
       account.value = ''
       loginMethod.value = 4
       countryCode.value = 86
@@ -379,7 +426,7 @@ export function useAuth(
       if (!accountReady.value) throw new Error('请填写有效登录账号')
       if (isCodeMode.value) {
         if (!validateValue.value.trim()) throw new Error('请输入验证码')
-      } else if (passwordMode.value === 'saved') {
+      } else if (passwordMode.value === 'saved' && savedIdentityMatches() && selectedSavedIdentity?.hasSavedPassword) {
         if (!selectedAccountUid.value) throw new Error('缺少已保存账号信息')
       } else {
         if (!validateValue.value.trim()) throw new Error('请输入登录密码')
@@ -404,10 +451,13 @@ export function useAuth(
           validateValue: validateValue.value.trim(),
         }]
         : passwordMode.value === 'saved'
+          && savedIdentityMatches()
+          && selectedSavedIdentity?.hasSavedPassword
+          && selectedAccountUid.value
           ? [{
             ...pendingAccountFields(),
             validateType: contract.value.validateType,
-            savedPasswordUid: selectedAccountUid.value!,
+            savedPasswordUid: selectedAccountUid.value,
           }]
           : [{
             ...pendingAccountFields(),

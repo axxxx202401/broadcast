@@ -39,10 +39,6 @@ const isPhoneMethod = computed(() =>
   props.auth.loginMethod.value === 1 || props.auth.loginMethod.value === 3,
 )
 
-const selectedAccount = computed(() =>
-  props.accounts.find((acc) => acc.uid === props.auth.selectedAccountUid.value) ?? null,
-)
-
 /** 从已保存账号列表回填或清空为「添加账号」。 */
 function onAccountChange(event: Event) {
   const uid = (event.target as HTMLSelectElement).value
@@ -54,17 +50,11 @@ function onAccountChange(event: Event) {
   if (account) props.auth.selectSavedAccount(account)
 }
 
-/** 展开区选中一种登录方式后收起面板，并按是否已保存密码设置哨兵。 */
+/** 展开区选中一种登录方式后收起面板；身份对账由 useAuth 负责，此处不得恢复 saved。 */
 function chooseLoginMethod(method: PrimaryLoginType) {
   props.auth.loginMethod.value = method
   props.auth.validateValue.value = ''
   props.auth.otherMethodsOpen.value = false
-
-  if (method === 3 || method === 4) {
-    props.auth.passwordMode.value = selectedAccount.value?.hasSavedPassword ? 'saved' : 'empty'
-  } else {
-    props.auth.passwordMode.value = 'empty'
-  }
 }
 
 const canSubmitPrimary = computed(() => {

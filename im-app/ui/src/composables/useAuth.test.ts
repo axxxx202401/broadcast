@@ -717,4 +717,55 @@ describe('useAuth', () => {
     expect(dto).not.toHaveProperty('savedPasswordUid')
     wrapper.unmount()
   })
+
+  it('切换登录方式后不再使用已保存密码', async () => {
+    const { auth, backend, wrapper } = setupAuth()
+    auth.selectSavedAccount({
+      uid: '42',
+      displayAccount: 'a@example.com',
+      loginType: 4,
+      hasSavedPassword: true,
+      isCurrent: false,
+    })
+    expect(auth.passwordMode.value).toBe('saved')
+
+    auth.loginMethod.value = 3
+    expect(auth.passwordMode.value).not.toBe('saved')
+    expect(auth.selectedAccountUid.value).toBeNull()
+
+    auth.account.value = '13800138000'
+    auth.validateValue.value = 'phone-password'
+    await auth.submitLogin()
+
+    expect(backend.verifyValidations).toHaveBeenCalled()
+    const dto = backend.verifyValidations.mock.calls[0]?.[0].pendingValidateDTOS[0]
+    expect(dto).not.toHaveProperty('savedPasswordUid')
+    expect(dto).toEqual(expect.objectContaining({ validateValue: 'phone-password' }))
+    wrapper.unmount()
+  })
+
+  it('修改账号后不再使用已保存密码', async () => {
+    const { auth, backend, wrapper } = setupAuth()
+    auth.selectSavedAccount({
+      uid: '42',
+      displayAccount: 'a@example.com',
+      loginType: 4,
+      hasSavedPassword: true,
+      isCurrent: false,
+    })
+    expect(auth.passwordMode.value).toBe('saved')
+
+    auth.account.value = 'other@example.com'
+    expect(auth.passwordMode.value).not.toBe('saved')
+    expect(auth.selectedAccountUid.value).toBeNull()
+
+    auth.validateValue.value = 'typed-password'
+    await auth.submitLogin()
+
+    expect(backend.verifyValidations).toHaveBeenCalled()
+    const dto = backend.verifyValidations.mock.calls[0]?.[0].pendingValidateDTOS[0]
+    expect(dto).not.toHaveProperty('savedPasswordUid')
+    expect(dto).toEqual(expect.objectContaining({ validateValue: 'typed-password' }))
+    wrapper.unmount()
+  })
 })

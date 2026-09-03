@@ -101,6 +101,20 @@ describe('LoginPanel', () => {
     expect(wrapper.find('.challenge-step').exists()).toBe(false)
   })
 
+  it('仅 saved 模式展示已保存密码哨兵', async () => {
+    const auth = authStub()
+    const wrapper = mountPanel(auth)
+    expect(wrapper.find('.password-sentinel').exists()).toBe(false)
+
+    auth.passwordMode.value = 'saved'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('.password-sentinel').text()).toBe('已保存密码')
+
+    auth.passwordMode.value = 'empty'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.password-sentinel').exists()).toBe(false)
+  })
+
   it('shows server pending validation details and submits the selected value', async () => {
     const auth = authStub(true)
     const wrapper = mountPanel(auth)
