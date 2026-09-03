@@ -84,6 +84,37 @@ describe('认证 IPC 契约', () => {
       onMessage: channel,
     })
   })
+
+  it('只发送已保存密码标志，不发送密码明文', async () => {
+    mocks.invoke.mockResolvedValueOnce({
+      validateModelVOS: [],
+      businessProcessing: [],
+    })
+
+    await api.verifyValidations({
+      validateToken: 'issued',
+      pendingValidateDTOS: [{
+        account: 'a@example.com',
+        validateType: 21,
+        savedPasswordUid: '42',
+      }],
+    })
+
+    expect(mocks.invoke).toHaveBeenCalledWith('verify_validations', {
+      request: expect.objectContaining({
+        pendingValidateDTOS: [expect.not.objectContaining({ validateValue: expect.anything() })],
+      }),
+    })
+    const payload = mocks.invoke.mock.calls[0]?.[1] as {
+      request: { pendingValidateDTOS: Array<Record<string, unknown>> }
+    }
+    expect(payload.request.pendingValidateDTOS[0]).toEqual({
+      account: 'a@example.com',
+      validateType: 21,
+      savedPasswordUid: '42',
+    })
+    expect(JSON.stringify(payload)).not.toContain('saved-secret')
+  })
 })
 
 describe('消息分页 IPC 契约', () => {

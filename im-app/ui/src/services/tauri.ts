@@ -47,7 +47,8 @@ export const api = {
     invoke<IssuedResponse>('issue_validation_token', { request }),
   /**
    * 调用 `verify_validations`，以 `{ request }` 包装参数并返回远程验证结果。
-   * 后端会改写密码类材料后请求远程验证；失败为结构化认证错误，但不证明远程状态未改变。
+   * 每项可选手输 `validateValue`、已保存密码 UID 或复用本次登录密码；Rust 解析后再做密码摘要。
+   * 失败为结构化认证错误，但不证明远程状态未改变。
    */
   verifyValidations: (request: VerifyRequest) =>
     invoke<VerifyResponse>('verify_validations', { request }),

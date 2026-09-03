@@ -90,6 +90,14 @@ impl From<&str> for AuthCommandError {
     }
 }
 
+impl From<crate::account::AccountError> for AuthCommandError {
+    fn from(error: crate::account::AccountError) -> Self {
+        Self::Other {
+            message: error.to_string(),
+        }
+    }
+}
+
 /// 登录命令返回给前端的结果。
 #[derive(Debug, serde::Serialize)]
 #[serde(
@@ -244,23 +252,312 @@ pub async fn issue_validation_token(
         .map_err(AuthCommandError::from)
 }
 
+/// 前端提交给 `verify_validations` 的应用级校验请求。
+///
+/// 与 [`im_http::openchat_user::VerifyReq`] 分离，以便在进入协议层之前解析已保存密码
+/// 或复用本次登录密码。JSON 字段名与既有前端契约一致：`pendingValidateDTOS`。
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyValidationsDto {
+    /// 标识本轮校验流程的令牌，同时作为待登录缓存的键。
+    pub validate_token: String,
+    /// 至少一项待验证材料；JSON 名固定为 `pendingValidateDTOS`。
+    #[serde(rename = "pendingValidateDTOS")]
+    pub pending_validate_dtos: Vec<PendingValidationInputDto>,
+}
+
+/// 单项校验材料，必须且只能选择一种秘密来源。
+///
+/// 三种来源为：手输 `validateValue`、按 UID 读取的 `savedPasswordUid`、以及从
+/// [`crate::account::PendingLoginCache`] 复用一次的 `reuseLoginPassword`。
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingValidationInputDto {
+    /// 手机流程携带的可选国家或地区代码。
+    pub country_code: Option<i32>,
+    /// 与本项关联的账号；首次主验证用它缓存完整显示账号。
+    pub account: Option<String>,
+    /// 服务端用于区分账号类别的可选整数。
+    pub account_type: Option<i32>,
+    /// 指明服务端应如何解释解析后的 `validateValue`。
+    pub validate_type: im_http::openchat_user::ValidateType,
+    /// 用户本次输入的验证码或密码；与另外两种秘密来源互斥。
+    pub validate_value: Option<String>,
+    /// 从系统凭据库读取已保存登录密码的 UID 十进制字符串。
+    pub saved_password_uid: Option<String>,
+    /// 为 `true` 时从待登录缓存复用一次本次登录密码。
+    #[serde(default)]
+    pub reuse_login_password: bool,
+}
+
+impl VerifyValidationsDto {
+    /// 构造仅携带已保存密码 UID 的测试请求。
+    #[cfg(test)]
+    pub fn saved_password(
+        validate_token: impl Into<String>,
+        uid: i64,
+        account: impl Into<String>,
+        validate_type: i32,
+    ) -> Self {
+        Self {
+            validate_token: validate_token.into(),
+            pending_validate_dtos: vec![PendingValidationInputDto {
+                country_code: None,
+                account: Some(account.into()),
+                account_type: None,
+                validate_type: test_validate_type(validate_type),
+                validate_value: None,
+                saved_password_uid: Some(uid.to_string()),
+                reuse_login_password: false,
+            }],
+        }
+    }
+
+    /// 构造复用本次已缓存登录密码的测试请求。
+    #[cfg(test)]
+    pub fn reuse_login_password(
+        validate_token: impl Into<String>,
+        account: impl Into<String>,
+        validate_type: i32,
+    ) -> Self {
+        Self {
+            validate_token: validate_token.into(),
+            pending_validate_dtos: vec![PendingValidationInputDto {
+                country_code: None,
+                account: Some(account.into()),
+                account_type: None,
+                validate_type: test_validate_type(validate_type),
+                validate_value: None,
+                saved_password_uid: None,
+                reuse_login_password: true,
+            }],
+        }
+    }
+}
+
+/// 将测试中的整数 `validateType` 转为协议枚举；未知值直接 panic，避免掩盖错误用例。
+#[cfg(test)]
+fn test_validate_type(value: i32) -> im_http::openchat_user::ValidateType {
+    serde_json::from_value(serde_json::Value::from(value))
+        .unwrap_or_else(|error| panic!("测试不支持的 validateType {value}: {error}"))
+}
+
+/// 解析秘密后得到的协议请求，以及首次主验证成功后才写入的待登录上下文。
+pub(crate) struct ResolvedVerifySecrets {
+    /// 已填入明文验证值、尚未做协议摘要的 `VerifyReq`。
+    pub request: im_http::openchat_user::VerifyReq,
+    /// 仅在该 token 尚无缓存且本次包含主登录校验时存在。
+    pub first_primary: Option<crate::account::pending_login::PendingLogin>,
+}
+
 /// 提交一组待验证项并返回服务端验证结果。
 ///
-/// 命令会先按照 [`hash_verify_passwords`] 的兼容规则改写请求中的密码类验证值，再发起
-/// 远程验证，该请求可能推进服务端校验流程。验证码等非密码验证值保持不变；错误以
-/// [`AuthCommandError`] 返回，但请求发出后的错误不证明服务端校验状态未改变。
+/// 命令先按应用级 DTO 解析手输值、已保存密码或一次复用密码，转换成协议
+/// [`im_http::openchat_user::VerifyReq`] 后再按 [`hash_verify_passwords`] 改写密码类验证值，
+/// 最后发起远程验证。验证码等非密码验证值保持不变。首次主验证成功后会把显示账号和
+/// 可选明文密码写入待登录缓存；响应和日志不得回传密码。错误以 [`AuthCommandError`]
+/// 返回，但请求发出后的错误不证明服务端校验状态未改变。
 #[tauri::command]
 pub async fn verify_validations(
     state: State<'_, AppState>,
-    mut request: im_http::openchat_user::VerifyReq,
+    request: VerifyValidationsDto,
 ) -> Result<im_http::openchat_user::VerifyResp, AuthCommandError> {
+    verify_validations_inner(&state, request).await
+}
+
+/// 解析秘密、在测试中跳过真实 HTTP，并在验证成功后写入待登录缓存。
+///
+/// 单元测试不得访问真实网络：`cfg(test)` 下视为远程验证成功并返回空响应。
+/// 生产路径在解析成功后调用 `openchat_user.verify`；HTTP 失败时不写入首次主验证缓存。
+pub(crate) async fn verify_validations_inner(
+    state: &AppState,
+    dto: VerifyValidationsDto,
+) -> Result<im_http::openchat_user::VerifyResp, AuthCommandError> {
+    let resolved = resolve_verify_secrets(state, dto).await?;
+    let token = resolved.request.validate_token.clone();
+    let mut request = resolved.request;
     hash_verify_passwords(&mut request);
-    state
-        .http
-        .openchat_user
-        .verify(&request)
-        .await
-        .map_err(AuthCommandError::from)
+
+    let response = verify_resolved_request(state, &request).await?;
+    record_pending_login_after_verify(state, &token, resolved.first_primary).await;
+    Ok(response)
+}
+
+/// 将已摘要的协议请求交给远程校验，或在测试中返回空成功响应。
+async fn verify_resolved_request(
+    state: &AppState,
+    request: &im_http::openchat_user::VerifyReq,
+) -> Result<im_http::openchat_user::VerifyResp, AuthCommandError> {
+    #[cfg(test)]
+    {
+        let _ = (state, request);
+        return Ok(im_http::openchat_user::VerifyResp {
+            validate_model_vos: Vec::new(),
+            business_processing: Vec::new(),
+        });
+    }
+    #[cfg(not(test))]
+    {
+        state
+            .http
+            .openchat_user
+            .verify(request)
+            .await
+            .map_err(AuthCommandError::from)
+    }
+}
+
+/// 解析每项恰好一种秘密来源，并决定是否准备首次主验证缓存。
+///
+/// 已保存密码和复用登录密码仅允许 `LoginPassword` / `EmailPassword`。
+/// 若该 `validateToken` 已有待登录上下文，则不再用本次账号覆盖最初的完整显示账号。
+/// 本函数不发起 HTTP，也不在解析阶段写入缓存。
+pub(crate) async fn resolve_verify_secrets(
+    state: &AppState,
+    dto: VerifyValidationsDto,
+) -> Result<ResolvedVerifySecrets, AuthCommandError> {
+    use im_http::openchat_user::PendingValidateDto;
+
+    let existing = state.pending_login.get(&dto.validate_token).await;
+    let mut first_primary = None;
+    let mut pending_validate_dtos = Vec::with_capacity(dto.pending_validate_dtos.len());
+
+    for item in &dto.pending_validate_dtos {
+        let secret = resolve_one_secret(state, &dto.validate_token, item).await?;
+        if existing.is_none()
+            && first_primary.is_none()
+            && is_primary_login_validate(item.validate_type)
+        {
+            let password = if is_login_password_validate(item.validate_type) {
+                Some(zeroize::Zeroizing::new(secret.clone()))
+            } else {
+                None
+            };
+            first_primary = Some(crate::account::pending_login::PendingLogin {
+                display_account: item.account.clone().unwrap_or_default(),
+                primary_login_type: login_type_from_validate(item.validate_type),
+                password,
+                password_reused: false,
+            });
+        }
+        pending_validate_dtos.push(PendingValidateDto {
+            country_code: item.country_code,
+            account: item.account.clone(),
+            account_type: item.account_type,
+            validate_type: item.validate_type,
+            validate_value: secret,
+        });
+    }
+
+    Ok(ResolvedVerifySecrets {
+        request: im_http::openchat_user::VerifyReq {
+            validate_token: dto.validate_token,
+            pending_validate_dtos,
+            second_mac: None,
+        },
+        first_primary,
+    })
+}
+
+/// 远程验证成功后写入首次主验证上下文；后续 challenge 不会传入 `first_primary`。
+async fn record_pending_login_after_verify(
+    state: &AppState,
+    token: &str,
+    first_primary: Option<crate::account::pending_login::PendingLogin>,
+) {
+    if let Some(login) = first_primary {
+        state.pending_login.insert(token, login).await;
+    }
+}
+
+/// 解析单项秘密：手输值、凭据库密码或一次复用密码。
+async fn resolve_one_secret(
+    state: &AppState,
+    token: &str,
+    item: &PendingValidationInputDto,
+) -> Result<String, AuthCommandError> {
+    let typed = item
+        .validate_value
+        .as_ref()
+        .is_some_and(|value| !value.is_empty());
+    let saved = item
+        .saved_password_uid
+        .as_ref()
+        .is_some_and(|value| !value.is_empty());
+    let reuse = item.reuse_login_password;
+
+    match (typed, saved, reuse) {
+        (true, false, false) => Ok(item.validate_value.clone().unwrap_or_default()),
+        (false, true, false) => {
+            ensure_login_password_type(item.validate_type)?;
+            let uid = crate::commands::parse_i64_id(
+                item.saved_password_uid.as_deref().unwrap_or_default(),
+                "savedPasswordUid",
+            )?;
+            state
+                .credentials
+                .password(uid)
+                .await?
+                .ok_or_else(|| AuthCommandError::from("未找到该账号已保存的登录密码"))
+        }
+        (false, false, true) => {
+            ensure_login_password_type(item.validate_type)?;
+            Ok(state
+                .pending_login
+                .reuse_password_once(token)
+                .await?
+                .to_string())
+        }
+        _ => Err(AuthCommandError::from(
+            "每个待验证项必须且只能选择 validateValue、savedPasswordUid 或 reuseLoginPassword 之一",
+        )),
+    }
+}
+
+/// 已保存密码和复用登录密码只允许登录密码或邮箱密码校验。
+fn ensure_login_password_type(
+    validate_type: im_http::openchat_user::ValidateType,
+) -> Result<(), AuthCommandError> {
+    if is_login_password_validate(validate_type) {
+        Ok(())
+    } else {
+        Err(AuthCommandError::from(
+            "已保存密码和复用登录密码仅可用于 LoginPassword 或 EmailPassword",
+        ))
+    }
+}
+
+/// 主登录校验：邮箱/手机验证码以及两类登录密码。
+fn is_primary_login_validate(validate_type: im_http::openchat_user::ValidateType) -> bool {
+    use im_http::openchat_user::ValidateType;
+    matches!(
+        validate_type,
+        ValidateType::EmailCode
+            | ValidateType::PhoneCode
+            | ValidateType::LoginPassword
+            | ValidateType::EmailPassword
+    )
+}
+
+/// 可从凭据库或待登录缓存读取的登录密码校验类型。
+fn is_login_password_validate(validate_type: im_http::openchat_user::ValidateType) -> bool {
+    use im_http::openchat_user::ValidateType;
+    matches!(
+        validate_type,
+        ValidateType::LoginPassword | ValidateType::EmailPassword
+    )
+}
+
+/// 将主校验类型映射为登录命令使用的 `loginType` 整数。
+fn login_type_from_validate(validate_type: im_http::openchat_user::ValidateType) -> i32 {
+    use im_http::openchat_user::ValidateType;
+    match validate_type {
+        ValidateType::PhoneCode => 1,
+        ValidateType::EmailCode => 2,
+        ValidateType::LoginPassword => 3,
+        ValidateType::EmailPassword => 4,
+        other => other as i32,
+    }
 }
 
 /// 按验证类型应用与既有客户端一致的密码摘要格式。
@@ -569,8 +866,117 @@ mod tests {
     use super::{
         begin_auth_transition, classify_remote_login, clear_session_state,
         finish_login_after_opening_account, finish_login_after_sync, hash_verify_passwords,
-        AuthCommandError, LoginResultDto, LoginStateRefs, RemoteLogin,
+        verify_validations_inner, AuthCommandError, LoginResultDto, LoginStateRefs,
+        PendingValidationInputDto, RemoteLogin, VerifyValidationsDto,
     };
+
+    /// 构造已向内存凭据库写入登录密码的测试状态。
+    ///
+    /// 调用方必须持有返回的临时目录，直到测试结束，避免账号数据根被提前删除。
+    async fn test_state_with_password(
+        uid: i64,
+        password: &str,
+    ) -> (crate::state::AppState, tempfile::TempDir) {
+        let (state, temp) = crate::state::test_state_with_account_foundation().await;
+        state.credentials.set_password(uid, password).await.unwrap();
+        (state, temp)
+    }
+
+    /// 已保存密码必须在 Rust 侧解析并写入待登录缓存，且验证响应不得回传密码。
+    #[tokio::test]
+    async fn saved_password_is_resolved_in_rust_and_never_returned() {
+        let (state, _temp) = test_state_with_password(42, "saved-secret").await;
+        let request = VerifyValidationsDto::saved_password(
+            "issued-token",
+            42,
+            "a@example.com",
+            21,
+        );
+        let response = verify_validations_inner(&state, request).await.unwrap();
+        let pending = state.pending_login.take("issued-token").await.unwrap();
+        assert_eq!(pending.display_account, "a@example.com");
+        assert!(pending.password.is_some());
+        let body = serde_json::to_string(&response).unwrap();
+        assert!(
+            !body.contains("saved-secret"),
+            "验证响应不得返回已保存密码"
+        );
+    }
+
+    /// 同一待验证项不得同时携带手输密码和已保存密码 UID。
+    #[tokio::test]
+    async fn verify_validations_rejects_typed_value_and_saved_password_together() {
+        let (state, _temp) = test_state_with_password(42, "saved-secret").await;
+        let request = VerifyValidationsDto {
+            validate_token: "issued-token".into(),
+            pending_validate_dtos: vec![PendingValidationInputDto {
+                country_code: None,
+                account: Some("a@example.com".into()),
+                account_type: None,
+                validate_type: im_http::openchat_user::ValidateType::EmailPassword,
+                validate_value: Some("typed-secret".into()),
+                saved_password_uid: Some("42".into()),
+                reuse_login_password: false,
+            }],
+        };
+        assert!(verify_validations_inner(&state, request).await.is_err());
+        assert!(state.pending_login.take("issued-token").await.is_none());
+    }
+
+    /// 验证码、交易密码和谷歌验证等非登录密码类型不得读取已保存密码。
+    #[tokio::test]
+    async fn saved_password_rejected_for_non_password_validate_types() {
+        let (state, _temp) = test_state_with_password(42, "saved-secret").await;
+        for validate_type in [16, 17, 18, 19] {
+            let request = VerifyValidationsDto::saved_password(
+                "issued-token",
+                42,
+                "a@example.com",
+                validate_type,
+            );
+            assert!(
+                verify_validations_inner(&state, request).await.is_err(),
+                "validateType {validate_type} 不得使用已保存密码"
+            );
+        }
+        assert!(state.pending_login.take("issued-token").await.is_none());
+    }
+
+    /// `reuseLoginPassword` 只能成功消费一次，第二次必须返回已复用错误。
+    #[tokio::test]
+    async fn verify_validations_reuse_login_password_succeeds_once() {
+        let (state, _temp) = crate::state::test_state_with_account_foundation().await;
+        state
+            .pending_login
+            .insert(
+                "issued-token",
+                crate::account::pending_login::PendingLogin {
+                    display_account: "a@example.com".into(),
+                    primary_login_type: 4,
+                    password: Some(zeroize::Zeroizing::new("cached-secret".into())),
+                    password_reused: false,
+                },
+            )
+            .await;
+        let request = VerifyValidationsDto::reuse_login_password(
+            "issued-token",
+            "a***@example.com",
+            21,
+        );
+        verify_validations_inner(&state, request.clone()).await.unwrap();
+        let error = verify_validations_inner(&state, request).await.unwrap_err();
+        assert!(
+            matches!(
+                error,
+                AuthCommandError::Other { ref message }
+                    if message.contains("禁止重复消费")
+            ),
+            "第二次复用必须映射为 PasswordAlreadyReused"
+        );
+        let pending = state.pending_login.take("issued-token").await.unwrap();
+        assert_eq!(pending.display_account, "a@example.com");
+        assert!(pending.password_reused);
+    }
 
     #[test]
     fn verify_password_values_follow_java_pwd_util_contract() {

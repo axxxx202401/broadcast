@@ -172,10 +172,14 @@ export interface PendingValidation {
   validateType: ValidateType
 }
 
-/** 提交给服务端的单项校验材料。 */
+/** 提交给 Rust 校验命令的单项材料；三种秘密来源必须且只能选一种。 */
 export interface PendingValidationDto extends PendingValidation {
-  /** 验证码、密码摘要或其他材料；密码类值会由后端 IPC 命令按协议规则改写。 */
-  validateValue: string
+  /** 用户本次输入的验证码或密码；与 savedPasswordUid、reuseLoginPassword 互斥。 */
+  validateValue?: string
+  /** 由 Rust 按 UID 从系统凭据库读取已保存登录密码，前端不得填写明文。 */
+  savedPasswordUid?: string
+  /** 复用本次登录流程已缓存的登录密码，最多成功一次。 */
+  reuseLoginPassword?: boolean
 }
 
 /** 向一轮校验流程提交一组校验材料。 */
