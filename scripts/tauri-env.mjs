@@ -270,17 +270,18 @@ async function run() {
   validateEnvironment(environment)
   await ensureNodeDependencies(appDirectory)
 
-  const executable = process.platform === 'win32'
-    ? path.join(appDirectory, 'node_modules', '.bin', 'tauri.cmd')
-    : path.join(appDirectory, 'node_modules', '.bin', 'tauri')
   const tauriCommand = command === 'build-run' ? 'build' : command
+  const tauriArgs = [tauriCommand, ...process.argv.slice(4)]
   console.log(`正在使用 ${profile} 环境执行 Tauri ${tauriCommand}`)
-  await runCommand(
-    executable,
-    [tauriCommand, ...process.argv.slice(4)],
-    appDirectory,
-    environment,
-  )
+
+  if (process.platform === 'win32') {
+    // Windows 上通过 cmd.exe 调用 .cmd 批处理文件，避免 spawn EINVAL
+    const tauriCmd = path.join(appDirectory, 'node_modules', '.bin', 'tauri.cmd')
+    await runCommand('cmd.exe', ['/c', tauriCmd, ...tauriArgs], appDirectory, environment)
+  } else {
+    const executable = path.join(appDirectory, 'node_modules', '.bin', 'tauri')
+    await runCommand(executable, tauriArgs, appDirectory, environment)
+  }
 
   if (command === 'build-run') {
     const application = packagedExecutablePath(repositoryRoot)
