@@ -46,8 +46,6 @@ jobs:
           - label: linux-x86_64
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-        exclude: ${{ fromJSON(format('{"excludes":[{0}]}', inputs.platform == 'all' && '[]' || inputs.platform == 'windows' && '[{"label":"windows-x86_64"}]' || inputs.platform == 'macos' && '[{"label":"macos-x86_64"},{"label":"macos-arm64"}]' || inputs.platform == 'linux' && '[{"label":"linux-x86_64"}]'))}.excludes}}
-    # env vars available to all steps
     env:
       IM_OPENCHAT_USER_URL: ${{ secrets.IM_OPENCHAT_USER_URL }}
       IM_BIZ_URL: ${{ secrets.IM_BIZ_URL }}
@@ -64,6 +62,19 @@ jobs:
       VITE_GT4_CAPTCHA_ID: ${{ secrets.VITE_GT4_CAPTCHA_ID }}
 
     steps:
+      - name: Skip non-selected platform
+        run: |
+          platform="${{ inputs.platform }}"
+          label="${{ matrix.label }}"
+          if [ "$platform" = "all" ]; then
+            exit 0
+          fi
+          case "$label" in
+            windows*) [ "$platform" = "windows" ] || exit 1 ;;
+            macos*)   [ "$platform" = "macos" ]     || exit 1 ;;
+            linux*)   [ "$platform" = "linux" ]     || exit 1 ;;
+          esac
+
       - name: Check out source
         uses: actions/checkout@v4
 
