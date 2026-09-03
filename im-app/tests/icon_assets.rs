@@ -41,6 +41,183 @@ fn png_dimensions(bytes: &[u8]) -> (u32, u32) {
     (width, height)
 }
 
+/// 从指定偏移读取四字节大端无符号整数，并把字段截断统一转换为结构错误。
+fn read_u32_be(bytes: &[u8], start: usize, error: &'static str) -> Result<u32, &'static str> {
+    let end = start.checked_add(4).ok_or(error)?;
+    let field = bytes.get(start..end).ok_or(error)?;
+    Ok(u32::from_be_bytes([field[0], field[1], field[2], field[3]]))
+}
+
+/// 从指定偏移读取两字节小端无符号整数，用于解析 ICO 文件头。
+fn read_u16_le(bytes: &[u8], start: usize, error: &'static str) -> Result<u16, &'static str> {
+    let end = start.checked_add(2).ok_or(error)?;
+    let field = bytes.get(start..end).ok_or(error)?;
+    Ok(u16::from_le_bytes([field[0], field[1]]))
+}
+
+/// 从指定偏移读取四字节小端无符号整数，用于解析 ICO 目录条目。
+fn read_u32_le(bytes: &[u8], start: usize, error: &'static str) -> Result<u32, &'static str> {
+    let end = start.checked_add(4).ok_or(error)?;
+    let field = bytes.get(start..end).ok_or(error)?;
+    Ok(u32::from_le_bytes([field[0], field[1], field[2], field[3]]))
+}
+
+/// 校验 PNG 的 chunk 边界、首块 IHDR 约束以及唯一文件结尾位置。
+///
+/// 每个 chunk 由四字节长度、四字节类型、变长数据和四字节 CRC 组成。这里不复算
+/// CRC，但会把 CRC 纳入边界计算，避免数据被截断后仍仅凭签名和尺寸通过测试。
+fn validate_png(bytes: &[u8]) -> Result<(), &'static str> {
+    if bytes.get(..8) != Some(b"\x89PNG\r\n\x1a\n") {
+        return Err("PNG 签名无效或文件头被截断");
+    }
+
+    let mut offset = 8_usize;
+    let mut is_first_chunk = true;
+    loop {
+        let chunk_length = usize::try_from(read_u32_be(bytes, offset, "PNG chunk 长度字段被截断")?)
+            .map_err(|_| "PNG chunk 长度无法转换为平台 usize")?;
+        let type_start = offset.checked_add(4).ok_or("PNG chunk 类型偏移溢出")?;
+        let type_end = type_start
+            .checked_add(4)
+            .ok_or("PNG chunk 类型末尾偏移溢出")?;
+        let chunk_type = bytes
+            .get(type_start..type_end)
+            .ok_or("PNG chunk 类型字段被截断")?;
+
+        if is_first_chunk && (chunk_type != b"IHDR" || chunk_length != 13) {
+            return Err("PNG 首个 chunk 必须是长度为 13 的 IHDR");
+        }
+
+        // 声明长度仅覆盖数据；完整边界还必须容纳头部后的四字节 CRC。
+        let data_start = type_end;
+        let data_end = data_start
+            .checked_add(chunk_length)
+            .ok_or("PNG chunk 数据末尾偏移溢出")?;
+        let chunk_end = data_end
+            .checked_add(4)
+            .ok_or("PNG chunk CRC 末尾偏移溢出")?;
+        if chunk_end > bytes.len() {
+            return Err("PNG chunk 数据或 CRC 超出文件末尾");
+        }
+
+        if chunk_type == b"IEND" {
+            if chunk_length != 0 {
+                return Err("PNG IEND chunk 的数据长度必须为零");
+            }
+            if chunk_end != bytes.len() {
+                return Err("PNG IEND 后不允许存在额外字节");
+            }
+            return Ok(());
+        }
+
+        offset = chunk_end;
+        is_first_chunk = false;
+        if offset == bytes.len() {
+            return Err("PNG 缺少 IEND chunk");
+        }
+    }
+}
+
+/// 校验 ICNS 总长度及每个条目的声明边界。
+///
+/// ICNS 文件头和条目头均为八字节；条目长度包含自身头部，因此小于八字节会导致
+/// 解析无法前进。最终偏移必须精确等于文件总长，不能接受截断或尾随数据。
+fn validate_icns(bytes: &[u8]) -> Result<(), &'static str> {
+    if bytes.get(..4) != Some(b"icns") {
+        return Err("ICNS magic 无效或文件头被截断");
+    }
+
+    let declared_length = usize::try_from(read_u32_be(bytes, 4, "ICNS 总长度字段被截断")?)
+        .map_err(|_| "ICNS 总长度无法转换为平台 usize")?;
+    if declared_length != bytes.len() {
+        return Err("ICNS 声明总长度与实际文件长度不一致");
+    }
+
+    let mut offset = 8_usize;
+    while offset < bytes.len() {
+        let length_offset = offset.checked_add(4).ok_or("ICNS 条目长度偏移溢出")?;
+        let entry_length = usize::try_from(read_u32_be(bytes, length_offset, "ICNS 条目头被截断")?)
+            .map_err(|_| "ICNS 条目长度无法转换为平台 usize")?;
+        if entry_length < 8 {
+            return Err("ICNS 条目长度不能小于八字节头部");
+        }
+
+        let entry_end = offset
+            .checked_add(entry_length)
+            .ok_or("ICNS 条目末尾偏移溢出")?;
+        if entry_end > bytes.len() {
+            return Err("ICNS 条目声明范围超出文件末尾");
+        }
+        offset = entry_end;
+    }
+
+    if offset != bytes.len() {
+        return Err("ICNS 条目未精确结束于文件末尾");
+    }
+    Ok(())
+}
+
+/// 校验 ICO 文件头、目录范围以及每个图像资源的偏移和长度。
+///
+/// ICO 目录从六字节文件头后开始，每项固定十六字节。资源偏移不得落入目录，
+/// 且 `offset + size` 必须使用受检加法，防止恶意大值绕过文件末尾判断。
+fn validate_ico(bytes: &[u8]) -> Result<(), &'static str> {
+    if read_u16_le(bytes, 0, "ICO reserved 字段被截断")? != 0 {
+        return Err("ICO reserved 必须为零");
+    }
+    if read_u16_le(bytes, 2, "ICO type 字段被截断")? != 1 {
+        return Err("ICO type 必须为图标类型 1");
+    }
+
+    let count = usize::from(read_u16_le(bytes, 4, "ICO count 字段被截断")?);
+    if count == 0 {
+        return Err("ICO 至少需要一个目录条目");
+    }
+    let directory_size = count.checked_mul(16).ok_or("ICO 目录长度计算溢出")?;
+    let directory_end = 6_usize
+        .checked_add(directory_size)
+        .ok_or("ICO 目录末尾偏移溢出")?;
+    if directory_end > bytes.len() {
+        return Err("ICO 目录超出文件末尾");
+    }
+
+    for index in 0..count {
+        let entry_offset = 6_usize
+            .checked_add(index.checked_mul(16).ok_or("ICO 条目偏移计算溢出")?)
+            .ok_or("ICO 条目起始偏移溢出")?;
+        let size = usize::try_from(read_u32_le(
+            bytes,
+            entry_offset
+                .checked_add(8)
+                .ok_or("ICO 资源长度字段偏移溢出")?,
+            "ICO 资源长度字段被截断",
+        )?)
+        .map_err(|_| "ICO 资源长度无法转换为平台 usize")?;
+        let image_offset = usize::try_from(read_u32_le(
+            bytes,
+            entry_offset
+                .checked_add(12)
+                .ok_or("ICO 资源偏移字段位置溢出")?,
+            "ICO 资源偏移字段被截断",
+        )?)
+        .map_err(|_| "ICO 资源偏移无法转换为平台 usize")?;
+
+        if size == 0 {
+            return Err("ICO 资源长度必须大于零");
+        }
+        if image_offset < directory_end {
+            return Err("ICO 资源偏移不得指向目录内部");
+        }
+        let image_end = image_offset
+            .checked_add(size)
+            .ok_or("ICO 资源末尾偏移溢出")?;
+        if image_end > bytes.len() {
+            return Err("ICO 资源声明范围超出文件末尾");
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn primary_icon_matches_b1_design_contract() {
     let required_elements = [
@@ -94,11 +271,38 @@ fn web_icon_is_byte_identical_to_primary_icon() {
 /// 验证 Tauri CLI 生成的桌面图标具有打包工具要求的格式标识与像素尺寸。
 #[test]
 fn generated_desktop_icons_have_expected_formats_and_sizes() {
+    validate_png(PNG_32).expect("32×32 PNG 容器结构必须有效");
+    validate_png(PNG_128).expect("128×128 PNG 容器结构必须有效");
+    validate_png(PNG_256).expect("256×256 PNG 容器结构必须有效");
+    validate_icns(ICNS).expect("ICNS 容器结构必须有效");
+    validate_ico(ICO).expect("ICO 容器结构必须有效");
+
     assert_eq!(png_dimensions(PNG_32), (32, 32));
     assert_eq!(png_dimensions(PNG_128), (128, 128));
     assert_eq!(png_dimensions(PNG_256), (256, 256));
     assert_eq!(&ICNS[..4], b"icns");
     assert_eq!(&ICO[..4], &[0, 0, 1, 0]);
+}
+
+/// 证明容器校验器会拒绝边界不完整或声明范围越过文件末尾的图标资源。
+#[test]
+fn malformed_icon_containers_are_rejected() {
+    // 截到 IHDR 数据末尾，故意移除该块 CRC 以及后续所有块。
+    let truncated_png = &PNG_32[..29];
+    assert!(validate_png(truncated_png).is_err());
+
+    let mut wrong_length_icns = ICNS.to_vec();
+    let declared_length = u32::try_from(ICNS.len() + 1).expect("测试资源长度可由 u32 表示");
+    wrong_length_icns[4..8].copy_from_slice(&declared_length.to_be_bytes());
+    assert!(validate_icns(&wrong_length_icns).is_err());
+
+    // 单条 ICO 目录占 22 字节；资源偏移 22 指向文件末尾，配合 size=1 必然越界。
+    let mut external_entry_ico = vec![0_u8; 22];
+    external_entry_ico[2..4].copy_from_slice(&1_u16.to_le_bytes());
+    external_entry_ico[4..6].copy_from_slice(&1_u16.to_le_bytes());
+    external_entry_ico[14..18].copy_from_slice(&1_u32.to_le_bytes());
+    external_entry_ico[18..22].copy_from_slice(&22_u32.to_le_bytes());
+    assert!(validate_ico(&external_entry_ico).is_err());
 }
 
 /// 验证打包配置完整且按稳定顺序引用全部桌面平台图标。
