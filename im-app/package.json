@@ -6,8 +6,12 @@
     "build": "npm --prefix ui run build",
     "dev:test": "node ../scripts/tauri-env.mjs dev test",
     "dev:production": "node ../scripts/tauri-env.mjs dev production",
+    "start:test": "node ../scripts/tauri-env.mjs dev test",
+    "start:production": "node ../scripts/tauri-env.mjs dev production",
     "build:test": "node ../scripts/tauri-env.mjs build test",
     "build:production": "node ../scripts/tauri-env.mjs build production",
+    "build-run:test": "node ../scripts/tauri-env.mjs build-run test",
+    "build-run:production": "node ../scripts/tauri-env.mjs build-run production",
     "test:scripts": "node --test ../scripts/tauri-env.test.mjs"
   },
   "devDependencies": {

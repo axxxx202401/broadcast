@@ -16,9 +16,10 @@ pub mod schema;
 mod tests;
 
 use schema::SCHEMA_SQL;
-use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
 use sqlx::SqlitePool;
 use std::str::FromStr;
+use std::time::Duration;
 
 use crate::group::GroupStore;
 use crate::key_pair::UserKeyPairStore;
@@ -54,7 +55,11 @@ impl SqliteStore {
     /// 旧数据库若被多个调用方并发首次初始化，它们可能同时判断缺列，随后重复执行
     /// `ALTER TABLE`，其中一个初始化因列已存在而报错。调用方应串行完成旧库的首次初始化。
     pub async fn new(dsn: &str) -> Result<Self, sqlx::Error> {
-        let options = SqliteConnectOptions::from_str(dsn)?.create_if_missing(true);
+        let options = SqliteConnectOptions::from_str(dsn)?
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .busy_timeout(Duration::from_secs(5));
         let pool = SqlitePool::connect_with(options).await?;
         sqlx::query(SCHEMA_SQL).execute(&pool).await?;
         migrate_groups_available(&pool).await?;

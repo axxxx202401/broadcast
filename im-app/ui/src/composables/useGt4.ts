@@ -63,6 +63,25 @@ declare global {
 // 全模块共享加载 Promise，避免多个组件重复插入同一个 GT4 脚本。
 let scriptPromise: Promise<Gt4Init> | null = null
 
+/**
+ * 提取 GT4 SDK 错误事件中的公开诊断字段。
+ *
+ * SDK 不保证事件结构，因此只读取常见的 code/msg 字段并限制长度；账号、验证结果等
+ * 其他字段不会拼入界面错误，避免意外暴露验证材料。
+ */
+function gt4ErrorDetail(event: unknown): string {
+  if (!event || typeof event !== 'object') return ''
+  const record = event as Record<string, unknown>
+  const values = [
+    record.code ?? record.error_code,
+    record.msg ?? record.error_message ?? record.desc,
+  ]
+    .filter((value): value is string | number =>
+      typeof value === 'string' || typeof value === 'number')
+    .map(value => String(value).slice(0, 160))
+  return values.length > 0 ? `（${values.join('：')}）` : ''
+}
+
 /** 插入单个脚本，并把脚本事件转换为 Promise；失败时移除对应节点。 */
 function appendGt4Script(src: string): Promise<Gt4Init> {
   return new Promise<Gt4Init>((resolve, reject) => {
@@ -225,9 +244,9 @@ export function useGt4(options: UseGt4Options = {}) {
                   if (currentGeneration !== generation) return
                   error.value = 'GT4 验证失败，请重试'
                 })
-                .onError(() => {
+                .onError((event) => {
                   if (currentGeneration !== generation) return
-                  error.value = 'GT4 验证异常，请稍后重试'
+                  error.value = `GT4 验证异常，请稍后重试${gt4ErrorDetail(event)}`
                   settleInitialization?.(false)
                 })
                 .onClose(() => {

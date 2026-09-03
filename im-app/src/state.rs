@@ -770,7 +770,7 @@ pub struct AppState {
     pub http: Arc<AppHttpClients>,
     /// 仅驻留内存的用户私钥与派生群消息密钥。
     pub message_crypto: Arc<crate::message_content::MessageCryptoState>,
-    /// 当前监控页面登记的实时消息 Channel；页面重载会替换旧接收端。
+    /// 当前监控页面登记的实时消息批量 Channel；页面重载会替换旧接收端。
     pub message_channel: Arc<crate::commands::chat::MessageChannelSlot>,
     /// 保护供命令和前端状态通知读取的连接布尔快照。
     pub connected: Arc<tokio::sync::RwLock<bool>>,

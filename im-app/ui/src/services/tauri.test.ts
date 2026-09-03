@@ -85,3 +85,37 @@ describe('认证 IPC 契约', () => {
     })
   })
 })
+
+describe('消息分页 IPC 契约', () => {
+  beforeEach(() => mocks.invoke.mockReset())
+
+  it('默认请求最近 200 条且不发送游标字段', async () => {
+    const page = { messages: [], nextCursor: null, hasMore: false }
+    mocks.invoke.mockResolvedValueOnce(page)
+
+    await expect(api.getMessages('7')).resolves.toEqual(page)
+    expect(mocks.invoke).toHaveBeenCalledWith('get_messages', {
+      groupId: '7',
+      limit: 200,
+      beforeSendTime: undefined,
+      beforeMsgId: undefined,
+    })
+  })
+
+  it('把复合游标拆成 camelCase 参数并保留字符串消息 ID', async () => {
+    mocks.invoke.mockResolvedValueOnce({ messages: [], nextCursor: null, hasMore: false })
+
+    await api.getMessages(
+      undefined,
+      { sendTime: 100, msgId: '9007199254740993' },
+      50,
+    )
+
+    expect(mocks.invoke).toHaveBeenCalledWith('get_messages', {
+      groupId: undefined,
+      limit: 50,
+      beforeSendTime: 100,
+      beforeMsgId: '9007199254740993',
+    })
+  })
+})

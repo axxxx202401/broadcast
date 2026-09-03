@@ -1,15 +1,15 @@
 // @vitest-environment jsdom
 
 import { flushPromises, mount } from '@vue/test-utils'
-import { defineComponent, h } from 'vue'
+import { defineComponent, h, watch } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { GroupDto, MessageDto } from '../types/im'
+import type { GroupDto, MessageDto, MessagePage } from '../types/im'
 import { useMonitor } from './useMonitor'
 
 const mocks = vi.hoisted(() => ({
   listen: vi.fn(),
-  channelHandlers: [] as Array<(message: MessageDto) => void>,
+  channelHandlers: [] as Array<(messages: MessageDto[]) => void>,
   registerMessageChannel: vi.fn(),
   getMessages: vi.fn(),
   fetchGroups: vi.fn(),
@@ -27,7 +27,7 @@ vi.mock('@tauri-apps/api/webviewWindow', () => ({
 }))
 vi.mock('@tauri-apps/api/core', () => ({
   Channel: class {
-    set onmessage(handler: (message: MessageDto) => void) {
+    set onmessage(handler: (messages: MessageDto[]) => void) {
       mocks.channelHandlers.push(handler)
     }
   },
@@ -71,6 +71,13 @@ const message = (id: string, groupId: string, sendTime: number): MessageDto => (
   stored_at: null,
 })
 
+/** 构造后端消息页，默认表示已经到达最早记录。 */
+const page = (
+  messages: MessageDto[],
+  nextCursor: MessagePage['nextCursor'] = null,
+  hasMore = nextCursor !== null,
+): MessagePage => ({ messages, nextCursor, hasMore })
+
 /** 创建可控 Promise，以精确安排历史消息响应的先后顺序。 */
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -95,6 +102,13 @@ function mountMonitor() {
   return { monitor, wrapper }
 }
 
+/** 模拟 MessagePanel 在锚点恢复后回传当前历史轮次 token。 */
+function settleOlder(monitor: ReturnType<typeof useMonitor>) {
+  const token = monitor.olderRequestToken.value
+  expect(token).not.toBeNull()
+  monitor.handleOlderSettled(token!)
+}
+
 describe('useMonitor', () => {
   const eventHandlers = new Map<string, (event: { payload: unknown }) => void>()
   const statusUnlisten = vi.fn()
@@ -106,7 +120,7 @@ describe('useMonitor', () => {
     mocks.channelHandlers.length = 0
     mocks.registerMessageChannel.mockResolvedValue(undefined)
     mocks.getConnectionStatus.mockResolvedValue('disconnected')
-    mocks.getMessages.mockResolvedValue([])
+    mocks.getMessages.mockResolvedValue(page([]))
     mocks.listen.mockImplementation(
       (event: string, handler: (event: { payload: unknown }) => void) => {
         eventHandlers.set(event, handler)
@@ -128,18 +142,21 @@ describe('useMonitor', () => {
   })
 
   it('登录后默认加载全部消息并接收任意监控群实时消息', async () => {
-    mocks.getMessages.mockResolvedValueOnce([message('70', '7', 10)])
+    mocks.getMessages.mockResolvedValueOnce(page([message('70', '7', 10)]))
     const { monitor, wrapper } = mountMonitor()
     await flushPromises()
 
     monitor.acceptLogin([group('7'), group('8')], '42')
     await flushPromises()
-    mocks.channelHandlers[0]?.(message('80', '8', 20))
+    mocks.channelHandlers[0]?.([
+      message('80', '8', 20),
+      message('81', '7', 21),
+    ])
 
-    expect(mocks.getMessages).toHaveBeenCalledWith(undefined)
+    expect(mocks.getMessages).toHaveBeenCalledWith(undefined, undefined, 200)
     expect(mocks.registerMessageChannel).toHaveBeenCalledOnce()
     expect(monitor.selectedGroup.value).toBeNull()
-    expect(monitor.messages.value.map(({ msg_id }) => msg_id)).toEqual(['70', '80'])
+    expect(monitor.messages.value.map(({ msg_id }) => msg_id)).toEqual(['70', '80', '81'])
     wrapper.unmount()
   })
 
@@ -152,7 +169,7 @@ describe('useMonitor', () => {
     await monitor.selectGroup('7')
 
     expect(monitor.selectedGroup.value).toBeNull()
-    expect(mocks.getMessages).toHaveBeenLastCalledWith(undefined)
+    expect(mocks.getMessages).toHaveBeenLastCalledWith(undefined, undefined, 200)
     wrapper.unmount()
   })
 
@@ -177,7 +194,7 @@ describe('useMonitor', () => {
     eventHandlers.get('connection_status')?.({ payload: 'connected' })
     await flushPromises()
 
-    expect(mocks.getMessages).toHaveBeenCalledWith(undefined)
+    expect(mocks.getMessages).toHaveBeenCalledWith(undefined, undefined, 200)
     wrapper.unmount()
   })
 
@@ -190,15 +207,15 @@ describe('useMonitor', () => {
     eventHandlers.get('message_keys_ready')?.({ payload: null })
     await flushPromises()
 
-    expect(mocks.getMessages).toHaveBeenCalledWith(undefined)
+    expect(mocks.getMessages).toHaveBeenCalledWith(undefined, undefined, 200)
     wrapper.unmount()
   })
 
   it('忽略陈旧历史响应，并合并当前历史与实时消息', async () => {
-    const first = deferred<MessageDto[]>()
-    const second = deferred<MessageDto[]>()
+    const first = deferred<MessagePage>()
+    const second = deferred<MessagePage>()
     mocks.getMessages
-      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(page([]))
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise)
     const { monitor, wrapper } = mountMonitor()
@@ -207,15 +224,119 @@ describe('useMonitor', () => {
 
     const staleRequest = monitor.selectGroup('7')
     const currentRequest = monitor.selectGroup('8')
-    first.resolve([message('70', '7', 10)])
+    first.resolve(page([message('70', '7', 10)]))
     await staleRequest
     expect(monitor.messages.value).toEqual([])
 
-    mocks.channelHandlers[0]?.(message('82', '8', 20))
-    second.resolve([message('81', '8', 10)])
+    mocks.channelHandlers[0]?.([message('82', '8', 20)])
+    second.resolve(page([message('81', '8', 10)]))
     await currentRequest
 
     expect(monitor.messages.value.map(({ msg_id }) => msg_id)).toEqual(['81', '82'])
+    wrapper.unmount()
+  })
+
+  it('10000条实时Channel批次过滤去重裁剪后只提交一次消息状态', async () => {
+    const { monitor, wrapper } = mountMonitor()
+    await flushPromises()
+    const commits: MessageDto[][] = []
+    const stop = watch(monitor.messages, (value) => commits.push(value), { flush: 'sync' })
+    const sort = vi.spyOn(Array.prototype, 'sort')
+
+    mocks.channelHandlers[0]?.(
+      Array.from({ length: 10_000 }, (_, index) =>
+        message(String(10_000 - index), '7', 10_000 - index),
+      ),
+    )
+
+    expect(commits).toHaveLength(1)
+    expect(commits[0]).toHaveLength(1000)
+    expect(commits[0]?.[0]?.msg_id).toBe('9001')
+    expect(commits[0]?.at(-1)?.msg_id).toBe('10000')
+    expect(new Set(commits[0]?.map(({ msg_id }) => msg_id)).size).toBe(1000)
+    expect(monitor.hasOlder.value).toBe(true)
+    expect(monitor.nextMessageCursor.value).toEqual({ sendTime: 9001, msgId: '9001' })
+    expect(sort).not.toHaveBeenCalled()
+    sort.mockRestore()
+    stop()
+
+    mocks.getMessages.mockResolvedValueOnce(page(
+      Array.from({ length: 200 }, (_, index) =>
+        message(String(8801 + index), '7', 8801 + index),
+      ),
+    ))
+    await monitor.loadOlderMessages()
+    expect(mocks.getMessages).toHaveBeenLastCalledWith(
+      undefined,
+      { sendTime: 9001, msgId: '9001' },
+      200,
+    )
+    expect(monitor.messages.value[0]?.msg_id).toBe('8801')
+    expect(monitor.messages.value).toHaveLength(1000)
+    settleOlder(monitor)
+    wrapper.unmount()
+  })
+
+  it('跨实时批次保留首次到达顺序而不重建索引', async () => {
+    const { monitor, wrapper } = mountMonitor()
+    await flushPromises()
+
+    mocks.channelHandlers[0]?.([
+      message('first', '7', 10),
+      message('second', '7', 20),
+    ])
+    mocks.channelHandlers[0]?.([message('first', '7', 30)])
+    mocks.channelHandlers[0]?.([message('first', '7', 20)])
+
+    expect(monitor.messages.value.map(({ msg_id }) => msg_id)).toEqual(['first', 'second'])
+    wrapper.unmount()
+  })
+
+  it('历史批次与期间到达的实时消息合并后只提交一次历史结果', async () => {
+    const history = deferred<MessagePage>()
+    mocks.getMessages.mockReturnValueOnce(history.promise)
+    const { monitor, wrapper } = mountMonitor()
+    await flushPromises()
+    const commits: MessageDto[][] = []
+    const stop = watch(monitor.messages, (value) => commits.push(value), { flush: 'sync' })
+
+    const request = monitor.selectGroup('7')
+    commits.length = 0
+    mocks.channelHandlers[0]?.([message('72', '7', 20)])
+    commits.length = 0
+    history.resolve(page([message('71', '7', 10)]))
+    await request
+
+    expect(commits).toHaveLength(1)
+    expect(commits[0]?.map(({ msg_id }) => msg_id)).toEqual(['71', '72'])
+    stop()
+    wrapper.unmount()
+  })
+
+  it('切换群组时立即清空旧范围索引且迟到历史不污染新范围', async () => {
+    const first = deferred<MessagePage>()
+    const second = deferred<MessagePage>()
+    mocks.getMessages
+      .mockResolvedValueOnce(page([message('all', '8', 1)]))
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const { monitor, wrapper } = mountMonitor()
+    monitor.acceptLogin([group('7'), group('8')], '42')
+    await flushPromises()
+    expect(monitor.messages.value.map(({ msg_id }) => msg_id)).toEqual(['all'])
+
+    const firstRequest = monitor.selectGroup('7')
+    expect(monitor.messages.value).toEqual([])
+    const secondRequest = monitor.selectGroup('8')
+    mocks.channelHandlers[0]?.([message('live-8', '8', 20)])
+    first.resolve(page([message('history-7', '7', 10)]))
+    second.resolve(page([message('history-8', '8', 10)]))
+    await Promise.all([firstRequest, secondRequest])
+
+    expect(monitor.messages.value.map(({ msg_id }) => msg_id)).toEqual([
+      'history-8',
+      'live-8',
+    ])
     wrapper.unmount()
   })
 
@@ -237,6 +358,318 @@ describe('useMonitor', () => {
 
     expect(monitor.error.value).toBe('database unavailable')
     expect(monitor.messagesLoading.value).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('按当前游标加载更早消息并与期间实时消息去重合并', async () => {
+    const older = deferred<MessagePage>()
+    mocks.getMessages
+      .mockResolvedValueOnce(page(
+        [message('3', '7', 30), message('2', '7', 20)],
+        { sendTime: 20, msgId: '2' },
+      ))
+      .mockReturnValueOnce(older.promise)
+    const { monitor, wrapper } = mountMonitor()
+    monitor.acceptLogin([group('7')], '42')
+    await flushPromises()
+
+    const request = monitor.loadOlderMessages()
+    const duplicate = message('2', '7', 20)
+    mocks.channelHandlers[0]?.([duplicate, message('4', '7', 40)])
+    older.resolve(page([message('1', '7', 10), duplicate]))
+    await request
+    settleOlder(monitor)
+
+    expect(mocks.getMessages).toHaveBeenLastCalledWith(
+      undefined,
+      { sendTime: 20, msgId: '2' },
+      200,
+    )
+    expect(monitor.messages.value.map(({ msg_id }) => msg_id)).toEqual(['1', '2', '3', '4'])
+    expect(monitor.hasOlder.value).toBe(false)
+    expect(monitor.loadingOlder.value).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('加载旧页期间缓冲实时批次且仅在当前轮握手后单次发布', async () => {
+    const older = deferred<MessagePage>()
+    mocks.getMessages
+      .mockResolvedValueOnce(page(
+        [message('2', '7', 20), message('3', '7', 30)],
+        { sendTime: 20, msgId: '2' },
+      ))
+      .mockReturnValueOnce(older.promise)
+    const { monitor, wrapper } = mountMonitor()
+    monitor.acceptLogin([group('7')], '42')
+    await flushPromises()
+    const commits: string[][] = []
+    const stop = watch(
+      monitor.messages,
+      (value) => commits.push(value.map(({ msg_id }) => msg_id)),
+      { flush: 'sync' },
+    )
+
+    const request = monitor.loadOlderMessages()
+    mocks.channelHandlers[0]?.([message('4', '7', 40)])
+    expect(commits).toEqual([])
+    expect(monitor.messages.value.map(({ msg_id }) => msg_id)).toEqual(['2', '3'])
+
+    older.resolve(page([message('1', '7', 10)]))
+    await request
+
+    expect(commits).toEqual([['1', '2', '3']])
+    settleOlder(monitor)
+    expect(commits).toEqual([['1', '2', '3'], ['1', '2', '3', '4']])
+    stop()
+    wrapper.unmount()
+  })
+
+  it('陈旧的历史完成握手不能发布已切换范围的实时缓冲', async () => {
+    const older = deferred<MessagePage>()
+    mocks.getMessages
+      .mockResolvedValueOnce(page(
+        [message('7', '7', 70)],
+        { sendTime: 70, msgId: '7' },
+      ))
+      .mockReturnValueOnce(older.promise)
+      .mockResolvedValueOnce(page([message('8', '8', 80)]))
+    const { monitor, wrapper } = mountMonitor()
+    monitor.acceptLogin([group('7'), group('8')], '42')
+    await flushPromises()
+
+    const request = monitor.loadOlderMessages()
+    const staleToken = monitor.olderRequestToken.value!
+    mocks.channelHandlers[0]?.([message('live-7', '7', 90)])
+    older.resolve(page([message('6', '7', 60)]))
+    await request
+    await monitor.selectGroup('8')
+    monitor.handleOlderSettled(staleToken)
+
+    expect(monitor.messages.value.map(({ msg_id }) => msg_id)).toEqual(['8'])
+    wrapper.unmount()
+  })
+
+  it('实时缓冲最多保留1000条去重消息', async () => {
+    const older = deferred<MessagePage>()
+    mocks.getMessages
+      .mockResolvedValueOnce(page(
+        [message('1', '7', 1)],
+        { sendTime: 1, msgId: '1' },
+      ))
+      .mockReturnValueOnce(older.promise)
+    const { monitor, wrapper } = mountMonitor()
+    monitor.acceptLogin([group('7')], '42')
+    await flushPromises()
+
+    const request = monitor.loadOlderMessages()
+    const realtime = Array.from({ length: 1200 }, (_, index) =>
+      message(String(index + 100), '7', index + 100),
+    )
+    mocks.channelHandlers[0]?.([...realtime, ...realtime])
+    older.resolve(page([]))
+    await request
+    settleOlder(monitor)
+
+    expect(monitor.messages.value).toHaveLength(1000)
+    expect(new Set(monitor.messages.value.map(({ msg_id }) => msg_id)).size).toBe(1000)
+    expect(monitor.messages.value[0]?.msg_id).toBe('300')
+    expect(monitor.messages.value.at(-1)?.msg_id).toBe('1299')
+    wrapper.unmount()
+  })
+
+  it('实时裁掉旧页边界后把游标重置为当前可见最老消息以避免缺口', async () => {
+    const older = deferred<MessagePage>()
+    const initialCursor = { sendTime: 200, msgId: '200' }
+    mocks.getMessages
+      .mockResolvedValueOnce(page(
+        Array.from({ length: 1000 }, (_, index) =>
+          message(String(index + 200), '7', index + 200),
+        ),
+        initialCursor,
+      ))
+      .mockReturnValueOnce(older.promise)
+      .mockResolvedValueOnce(page([]))
+    const { monitor, wrapper } = mountMonitor()
+    monitor.acceptLogin([group('7')], '42')
+    await flushPromises()
+
+    const request = monitor.loadOlderMessages()
+    mocks.channelHandlers[0]?.(
+      Array.from({ length: 200 }, (_, index) =>
+        message(String(index + 1200), '7', index + 1200),
+      ),
+    )
+    older.resolve(page(
+      Array.from({ length: 200 }, (_, index) => message(String(index), '7', index)),
+      { sendTime: 0, msgId: '0' },
+    ))
+    await request
+    settleOlder(monitor)
+    await monitor.loadOlderMessages()
+
+    expect(monitor.messages.value[0]?.msg_id).toBe('200')
+    expect(mocks.getMessages).toHaveBeenLastCalledWith(
+      undefined,
+      { sendTime: 200, msgId: '200' },
+      200,
+    )
+    wrapper.unmount()
+  })
+
+  it('非历史加载期间实时裁剪也同步可见最老游标', async () => {
+    mocks.getMessages
+      .mockResolvedValueOnce(page(
+        Array.from({ length: 1000 }, (_, index) =>
+          message(String(index), '7', index),
+        ),
+        { sendTime: 0, msgId: '0' },
+      ))
+      .mockResolvedValueOnce(page([]))
+    const { monitor, wrapper } = mountMonitor()
+    monitor.acceptLogin([group('7')], '42')
+    await flushPromises()
+
+    mocks.channelHandlers[0]?.([message('1000', '7', 1000)])
+    await monitor.loadOlderMessages()
+
+    expect(mocks.getMessages).toHaveBeenLastCalledWith(
+      undefined,
+      { sendTime: 1, msgId: '1' },
+      200,
+    )
+    wrapper.unmount()
+  })
+
+  it('末页满1000条收到实时消息裁剪后重新开启历史并回退游标', async () => {
+    mocks.getMessages
+      .mockResolvedValueOnce(page(
+        Array.from({ length: 1000 }, (_, index) =>
+          message(String(index), '7', index),
+        ),
+        null,
+        false,
+      ))
+      .mockResolvedValueOnce(page([]))
+    const { monitor, wrapper } = mountMonitor()
+    monitor.acceptLogin([group('7')], '42')
+    await flushPromises()
+
+    mocks.channelHandlers[0]?.([message('1000', '7', 1000)])
+
+    expect(monitor.hasOlder.value).toBe(true)
+    expect(monitor.messages.value[0]?.msg_id).toBe('1')
+    await monitor.loadOlderMessages()
+    expect(mocks.getMessages).toHaveBeenLastCalledWith(
+      undefined,
+      { sendTime: 1, msgId: '1' },
+      200,
+    )
+    wrapper.unmount()
+  })
+
+  it('满1000条时加载更早页保留旧窗口并推进下一游标', async () => {
+    const initialCursor = { sendTime: 200, msgId: '200' }
+    const nextCursor = { sendTime: 0, msgId: '0' }
+    mocks.getMessages
+      .mockResolvedValueOnce(page(
+        Array.from({ length: 1000 }, (_, index) =>
+          message(String(index + 200), '7', index + 200),
+        ),
+        initialCursor,
+      ))
+      .mockResolvedValueOnce(page(
+        Array.from({ length: 200 }, (_, index) => message(String(index), '7', index)),
+        nextCursor,
+      ))
+      .mockResolvedValueOnce(page([]))
+    const { monitor, wrapper } = mountMonitor()
+    monitor.acceptLogin([group('7')], '42')
+    await flushPromises()
+
+    await monitor.loadOlderMessages()
+    settleOlder(monitor)
+
+    expect(monitor.messages.value).toHaveLength(1000)
+    expect(monitor.messages.value[0]?.msg_id).toBe('0')
+    expect(monitor.messages.value.at(-1)?.msg_id).toBe('999')
+    expect(new Set(monitor.messages.value.map(({ msg_id }) => msg_id)).size).toBe(1000)
+
+    await monitor.loadOlderMessages()
+    expect(mocks.getMessages).toHaveBeenLastCalledWith(undefined, nextCursor, 200)
+    wrapper.unmount()
+  })
+
+  it('更早页请求防重入且到达末页后不再请求', async () => {
+    const older = deferred<MessagePage>()
+    mocks.getMessages
+      .mockResolvedValueOnce(page([message('2', '7', 20)], { sendTime: 20, msgId: '2' }))
+      .mockReturnValueOnce(older.promise)
+    const { monitor, wrapper } = mountMonitor()
+    monitor.acceptLogin([group('7')], '42')
+    await flushPromises()
+
+    const first = monitor.loadOlderMessages()
+    const duplicate = monitor.loadOlderMessages()
+    expect(mocks.getMessages).toHaveBeenCalledTimes(2)
+    older.resolve(page([message('1', '7', 10)]))
+    await Promise.all([first, duplicate])
+    settleOlder(monitor)
+    await monitor.loadOlderMessages()
+
+    expect(mocks.getMessages).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('更早页失败时保留现有消息和游标以允许重试', async () => {
+    const cursor = { sendTime: 20, msgId: '2' }
+    mocks.getMessages
+      .mockResolvedValueOnce(page([message('2', '7', 20)], cursor))
+      .mockRejectedValueOnce(new Error('older unavailable'))
+      .mockResolvedValueOnce(page([message('1', '7', 10)]))
+    const { monitor, wrapper } = mountMonitor()
+    monitor.acceptLogin([group('7')], '42')
+    await flushPromises()
+
+    await monitor.loadOlderMessages()
+    expect(monitor.messages.value.map(({ msg_id }) => msg_id)).toEqual(['2'])
+    expect(monitor.hasOlder.value).toBe(true)
+    expect(monitor.error.value).toBe('older unavailable')
+
+    settleOlder(monitor)
+    await monitor.loadOlderMessages()
+    settleOlder(monitor)
+    expect(mocks.getMessages).toHaveBeenLastCalledWith(undefined, cursor, 200)
+    expect(monitor.messages.value.map(({ msg_id }) => msg_id)).toEqual(['1', '2'])
+    wrapper.unmount()
+  })
+
+  it('切群后旧范围的更早页响应不得修改消息、游标或 hasOlder', async () => {
+    const staleOlder = deferred<MessagePage>()
+    mocks.getMessages
+      .mockResolvedValueOnce(page([message('7', '7', 70)], { sendTime: 70, msgId: '7' }))
+      .mockReturnValueOnce(staleOlder.promise)
+      .mockResolvedValueOnce(page(
+        [message('8', '8', 80)],
+        { sendTime: 80, msgId: '8' },
+      ))
+    const { monitor, wrapper } = mountMonitor()
+    monitor.acceptLogin([group('7'), group('8')], '42')
+    await flushPromises()
+
+    const oldRequest = monitor.loadOlderMessages()
+    mocks.channelHandlers[0]?.([message('live-7', '7', 90)])
+    await monitor.selectGroup('8')
+    staleOlder.resolve(page([], null, false))
+    await oldRequest
+
+    expect(monitor.messages.value.map(({ msg_id }) => msg_id)).toEqual(['8'])
+    expect(monitor.hasOlder.value).toBe(true)
+    await monitor.loadOlderMessages()
+    expect(mocks.getMessages).toHaveBeenLastCalledWith(
+      '8',
+      { sendTime: 80, msgId: '8' },
+      200,
+    )
     wrapper.unmount()
   })
 

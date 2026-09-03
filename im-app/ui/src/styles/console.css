@@ -749,12 +749,29 @@
 }
 
 .message-viewport {
+  position: relative;
   min-height: 0;
   flex: 1;
   overflow-y: auto;
   background:
     linear-gradient(90deg, transparent 49.9%, rgba(255, 255, 255, 0.013) 50%, transparent 50.1%),
     var(--ink-900);
+}
+
+/* 历史分页状态悬浮在视口顶缘，不占用虚拟列表的滚动高度或行索引。 */
+.history-status {
+  position: sticky;
+  z-index: 2;
+  top: 8px;
+  width: fit-content;
+  margin: 8px auto -24px;
+  padding: 4px 10px;
+  color: var(--text-500);
+  background: rgba(17, 23, 24, 0.88);
+  border: 1px solid var(--ink-600);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9px;
+  pointer-events: none;
 }
 
 .panel-empty {
@@ -804,14 +821,21 @@
 .loader-grid i:nth-child(3) { animation-delay: 400ms; }
 .loader-grid i:nth-child(4) { animation-delay: 600ms; }
 
+/* 虚拟消息列表：占位容器提供总滚动高度，行由 TanStack Virtual 绝对定位并动态测量。 */
 .message-log {
+  --message-log-inline: 20px;
+
+  position: relative;
   margin: 0;
-  padding: 16px 20px 36px;
+  padding: 0 var(--message-log-inline);
   list-style: none;
 }
 
 .message-log li {
-  position: relative;
+  position: absolute;
+  top: 0;
+  right: var(--message-log-inline);
+  left: var(--message-log-inline);
   display: grid;
   grid-template-columns: 124px 90px minmax(0, 1fr);
   align-items: start;
@@ -1010,7 +1034,7 @@
   }
 
   .message-log {
-    padding-inline: 14px;
+    --message-log-inline: 14px;
   }
 
   .message-log li {

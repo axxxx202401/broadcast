@@ -24,6 +24,10 @@ describe('Vite 开发环境 CSP', () => {
     expect(DEV_CSP_HEADER).toContain("script-src 'self' https://static.geetest.com")
     expect(DEV_CSP_HEADER).toContain('https://gcaptcha4.geetest.com')
     expect(DEV_CSP_HEADER).toContain('https://monitor.geetest.com')
+    expect(DEV_CSP_HEADER).toContain('https://gcaptcha4.geevisit.com')
+    expect(DEV_CSP_HEADER).toContain('https://gcaptcha4.gsensebot.com')
+    expect(DEV_CSP_HEADER).toContain('https://static.geevisit.com')
+    expect(DEV_CSP_HEADER).toContain('https://dn-staticdown.qbox.me')
     expect(DEV_CSP_HEADER).toContain('frame-src https://static.geetest.com')
     expect(DEV_CSP_HEADER).toContain(
       "style-src 'self' 'unsafe-inline' https://static.geetest.com",
@@ -32,5 +36,21 @@ describe('Vite 开发环境 CSP', () => {
     expect(DEV_CSP_HEADER).toContain("object-src 'none'")
     expect(DEV_CSP_HEADER).toContain("base-uri 'self'")
     expect(DEV_CSP_HEADER).toContain("frame-ancestors 'none'")
+  })
+
+  it('生产 CSP 同样允许 GT4 官方主域名和容灾域名', () => {
+    const productionCsp = serializeCsp(tauriConfig.app.security.csp)
+
+    for (const domain of [
+      'https://static.geetest.com',
+      'https://gcaptcha4.geetest.com',
+      'https://monitor.geetest.com',
+      'https://gcaptcha4.geevisit.com',
+      'https://gcaptcha4.gsensebot.com',
+      'https://static.geevisit.com',
+      'https://dn-staticdown.qbox.me',
+    ]) {
+      expect(productionCsp).toContain(domain)
+    }
   })
 })

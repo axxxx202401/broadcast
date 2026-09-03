@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict'
+import path from 'node:path'
 import test from 'node:test'
 
 import {
   buildEnvironment,
+  dependencyInstallTargets,
+  ensureNodeDependencies,
+  packagedExecutablePath,
   parseEnvironmentFile,
   validateEnvironment,
   validateInvocation,
@@ -30,8 +34,28 @@ test('只接受已声明的 Tauri 命令和构建环境', () => {
     command: 'build',
     profile: 'production',
   })
-  assert.throws(() => validateInvocation('serve', 'test'), /dev 或 build/)
+  assert.deepEqual(validateInvocation('build-run', 'test'), {
+    command: 'build-run',
+    profile: 'test',
+  })
+  assert.throws(() => validateInvocation('serve', 'test'), /dev、build 或 build-run/)
   assert.throws(() => validateInvocation('build', 'staging'), /test 或 production/)
+})
+
+test('一键构建运行始终指向当前工作区产物而非系统已安装应用', () => {
+  const root = path.resolve('/repo')
+  assert.equal(
+    packagedExecutablePath(root, 'darwin'),
+    path.join(root, 'target', 'release', 'bundle', 'macos', 'IM Monitor.app', 'Contents', 'MacOS', 'im-app'),
+  )
+  assert.equal(
+    packagedExecutablePath(root, 'win32'),
+    path.join(root, 'target', 'release', 'im-app.exe'),
+  )
+  assert.equal(
+    packagedExecutablePath(root, 'linux'),
+    path.join(root, 'target', 'release', 'im-app'),
+  )
 })
 
 test('解析注释、export、引号和包含等号的值', () => {
@@ -97,4 +121,45 @@ test('缺失和非法配置只报告变量名，不泄漏变量值', () => {
       new RegExp(name),
     )
   }
+})
+
+test('只为缺失关键包的应用目录生成依赖安装任务', () => {
+  const appDirectory = path.resolve('/repo/im-app')
+  const existing = new Set([
+    path.join(appDirectory, 'node_modules', '@tauri-apps', 'cli', 'package.json'),
+  ])
+  const targets = dependencyInstallTargets(
+    appDirectory,
+    candidate => existing.has(candidate),
+  )
+
+  assert.deepEqual(targets, [path.join(appDirectory, 'ui')])
+})
+
+test('首次运行时为 Tauri 与 UI 两个目录生成安装任务', () => {
+  const appDirectory = path.resolve('/repo/im-app')
+  assert.deepEqual(
+    dependencyInstallTargets(appDirectory, () => false),
+    [appDirectory, path.join(appDirectory, 'ui')],
+  )
+})
+
+test('依赖缺失时按目录自动执行锁文件安装', async () => {
+  const appDirectory = path.resolve('/repo/im-app')
+  const calls = []
+  const existing = new Set([
+    path.join(appDirectory, 'package-lock.json'),
+    path.join(appDirectory, 'ui', 'package-lock.json'),
+  ])
+
+  await ensureNodeDependencies(appDirectory, {
+    pathExists: candidate => existing.has(candidate),
+    platform: 'linux',
+    run: async (executable, args, cwd) => calls.push({ executable, args, cwd }),
+  })
+
+  assert.deepEqual(calls, [
+    { executable: 'npm', args: ['ci'], cwd: appDirectory },
+    { executable: 'npm', args: ['ci'], cwd: path.join(appDirectory, 'ui') },
+  ])
 })

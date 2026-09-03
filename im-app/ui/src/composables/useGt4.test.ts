@@ -12,7 +12,7 @@ import {
 
 /** 构造可手动触发 SDK 回调的实例，用于覆盖异步生命周期边界。 */
 function fakeGt4() {
-  const handlers: Record<string, () => void> = {}
+  const handlers: Record<string, (event?: unknown) => void> = {}
   const instance: Gt4Instance = {
     onReady: vi.fn((handler) => {
       handlers.ready = handler
@@ -174,8 +174,10 @@ describe('useGt4', () => {
 
     fake.handlers.fail?.()
     expect(gt4.error.value).toContain('失败')
-    fake.handlers.error?.()
+    fake.handlers.error?.({ code: 'error_21', msg: 'request blocked' })
     expect(gt4.error.value).toContain('异常')
+    expect(gt4.error.value).toContain('error_21')
+    expect(gt4.error.value).toContain('request blocked')
     fake.handlers.close?.()
     expect(gt4.error.value).toContain('关闭')
 

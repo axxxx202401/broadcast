@@ -84,6 +84,11 @@ const auth = useAuth((groups, uid) => {
         :group="monitor.selectedGroup.value"
         :messages="monitor.messages.value"
         :loading="monitor.messagesLoading.value"
+        :has-older="monitor.hasOlder.value"
+        :loading-older="monitor.loadingOlder.value"
+        :older-request-token="monitor.olderRequestToken.value"
+        @load-older="monitor.loadOlderMessages"
+        @older-settled="monitor.handleOlderSettled"
       />
     </div>
   </main>

@@ -5,7 +5,20 @@
 
 use super::*;
 use crate::group::GroupRow;
-use crate::message::MessageRecord;
+use crate::message::{MessageCursor, MessageRecord};
+
+fn batch_message(msg_id: i64, content: &str) -> MessageRecord {
+    MessageRecord {
+        msg_id,
+        group_id: 13537,
+        send_uid: 109477,
+        msg_type: 0,
+        content: content.as_bytes().to_vec(),
+        send_time: 1_788_420_000_000 + msg_id,
+        content_md5: format!("md5-{msg_id}"),
+        raw_proto: Some(vec![msg_id as u8]),
+    }
+}
 
 #[tokio::test]
 async fn test_create_tables() {
@@ -44,6 +57,128 @@ async fn test_insert_and_fetch_message() {
         .unwrap();
     assert!(row.is_some());
     assert_eq!(row.unwrap().0, 1001);
+}
+
+#[tokio::test]
+async fn message_batch_upserts_all_rows_in_one_transaction() {
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    store
+        .messages
+        .insert_batch(&[batch_message(1, "old"), batch_message(2, "second")])
+        .await
+        .unwrap();
+    store
+        .messages
+        .insert_batch(&[batch_message(1, "new")])
+        .await
+        .unwrap();
+
+    let page = store.messages.get_by_group(13537, 10, None).await.unwrap();
+    assert_eq!(page.messages.len(), 2);
+    assert_eq!(
+        page.messages
+            .iter()
+            .find(|row| row.msg_id == 1)
+            .unwrap()
+            .content,
+        b"new"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_batch_upserts_ten_thousand_rows_without_duplicate_primary_keys() {
+    const MESSAGE_COUNT: i64 = 10_000;
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    let initial = (1..=MESSAGE_COUNT)
+        .map(|msg_id| batch_message(msg_id, "initial"))
+        .collect::<Vec<_>>();
+    let replacements = (1..=MESSAGE_COUNT)
+        .rev()
+        .map(|msg_id| batch_message(msg_id, "updated"))
+        .collect::<Vec<_>>();
+    let started = std::time::Instant::now();
+
+    store.messages.insert_batch(&initial).await.unwrap();
+    store.messages.insert_batch(&replacements).await.unwrap();
+
+    let (rows, distinct_ids, updated_rows): (i64, i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COUNT(DISTINCT msg_id),
+                SUM(CASE WHEN content = CAST('updated' AS BLOB) THEN 1 ELSE 0 END)
+         FROM messages",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(rows, MESSAGE_COUNT);
+    assert_eq!(distinct_ids, MESSAGE_COUNT);
+    assert_eq!(updated_rows, MESSAGE_COUNT);
+    eprintln!(
+        "10k SQLite batch/upsert load: elapsed={:?}, rows={rows}, distinct_ids={distinct_ids}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn message_batch_rolls_back_every_row_when_one_upsert_fails() {
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    sqlx::query(
+        "CREATE TRIGGER reject_message_two BEFORE INSERT ON messages
+         WHEN NEW.msg_id = 2 BEGIN SELECT RAISE(ABORT, 'rejected'); END",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
+    let error = store
+        .messages
+        .insert_batch(&[batch_message(1, "first"), batch_message(2, "second")])
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("rejected"));
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn file_database_uses_wal_normal_sync_and_busy_timeout() {
+    let suffix = chrono::Utc::now().timestamp_nanos_opt().unwrap();
+    let path = std::env::temp_dir().join(format!(
+        "im-monitor-store-{}-{suffix}.db",
+        std::process::id()
+    ));
+    let store = SqliteStore::new(&format!("sqlite://{}", path.display()))
+        .await
+        .unwrap();
+
+    let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    let synchronous: i64 = sqlx::query_scalar("PRAGMA synchronous")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    let busy_timeout: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+
+    assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+    assert_eq!(synchronous, 1);
+    assert_eq!(busy_timeout, 5_000);
+
+    drop(store);
+    for candidate in [
+        path.clone(),
+        path.with_extension("db-wal"),
+        path.with_extension("db-shm"),
+    ] {
+        let _ = std::fs::remove_file(candidate);
+    }
 }
 
 #[tokio::test]
@@ -87,27 +222,95 @@ async fn test_get_by_group() {
         .await
         .unwrap();
 
-    let rows = store.messages.get_by_group(12345, 10, 0).await.unwrap();
-    assert_eq!(rows.len(), 3);
-    // 同一群组内按 send_time 降序返回。
-    assert_eq!(rows[0].msg_id, 2002);
-    assert_eq!(rows[1].msg_id, 2001);
-    assert_eq!(rows[2].msg_id, 2000);
+    let first = store.messages.get_by_group(12345, 2, None).await.unwrap();
+    assert_eq!(first.messages.len(), 2);
+    // 同一群组内按 (send_time, msg_id) 降序返回，并以本页最老消息作为下一页游标。
+    assert_eq!(first.messages[0].msg_id, 2002);
+    assert_eq!(first.messages[1].msg_id, 2001);
+    assert!(first.has_more);
+    assert_eq!(
+        first.next_cursor,
+        Some(MessageCursor {
+            send_time: 1725292801000,
+            msg_id: 2001,
+        })
+    );
 
-    // limit 与 offset 共同确定分页窗口。
-    let rows = store.messages.get_by_group(12345, 1, 2).await.unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].msg_id, 2000);
+    let second = store
+        .messages
+        .get_by_group(12345, 2, first.next_cursor)
+        .await
+        .unwrap();
+    assert_eq!(
+        second
+            .messages
+            .iter()
+            .map(|row| row.msg_id)
+            .collect::<Vec<_>>(),
+        [2000]
+    );
+    assert!(!second.has_more);
+    assert_eq!(second.next_cursor, None);
 
     // 不存在的群组返回空列表。
-    let rows = store.messages.get_by_group(0, 10, 0).await.unwrap();
-    assert!(rows.is_empty());
+    let page = store.messages.get_by_group(0, 10, None).await.unwrap();
+    assert!(page.messages.is_empty());
+}
+
+#[tokio::test]
+async fn message_cursor_paginates_equal_send_times_without_duplicates_or_gaps() {
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    for msg_id in 1..=5 {
+        store
+            .messages
+            .insert(&MessageRecord {
+                msg_id,
+                group_id: 7,
+                send_uid: 1,
+                msg_type: 0,
+                content: vec![],
+                send_time: 100,
+                content_md5: String::new(),
+                raw_proto: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    let first = store.messages.get_by_group(7, 2, None).await.unwrap();
+    let second = store
+        .messages
+        .get_by_group(7, 2, first.next_cursor)
+        .await
+        .unwrap();
+    let third = store
+        .messages
+        .get_by_group(7, 2, second.next_cursor)
+        .await
+        .unwrap();
+    let ids = first
+        .messages
+        .iter()
+        .chain(&second.messages)
+        .chain(&third.messages)
+        .map(|row| row.msg_id)
+        .collect::<Vec<_>>();
+
+    assert_eq!(ids, [5, 4, 3, 2, 1]);
+    assert!(first.has_more);
+    assert!(second.has_more);
+    assert!(!third.has_more);
 }
 
 #[tokio::test]
 async fn test_get_recent_returns_all_groups_with_names() {
     let store = SqliteStore::new(":memory:").await.unwrap();
-    for (group_id, name) in [(10, "研发群"), (20, "运维群")] {
+    for (group_id, name, monitored) in [
+        (10, "研发群", 1),
+        (20, "运维群", 1),
+        (30, "未监控群", 0),
+        (40, "不可用群", 1),
+    ] {
         store
             .groups
             .insert_or_update(&GroupRow {
@@ -117,7 +320,7 @@ async fn test_get_recent_returns_all_groups_with_names() {
                 host_id: None,
                 member_count: 0,
                 created_at: 0,
-                monitored: 1,
+                monitored,
                 updated_at: 0,
             })
             .await
@@ -137,15 +340,31 @@ async fn test_get_recent_returns_all_groups_with_names() {
             .await
             .unwrap();
     }
+    sqlx::query("UPDATE groups SET available = 0 WHERE group_id = 40")
+        .execute(&store.pool)
+        .await
+        .unwrap();
 
-    let rows = store.messages.get_recent(10, 0).await.unwrap();
+    let first = store.messages.get_recent(1, None).await.unwrap();
+    let second = store
+        .messages
+        .get_recent(1, first.next_cursor)
+        .await
+        .unwrap();
 
     assert_eq!(
-        rows.iter().map(|row| row.msg_id).collect::<Vec<_>>(),
+        first
+            .messages
+            .iter()
+            .chain(&second.messages)
+            .map(|row| row.msg_id)
+            .collect::<Vec<_>>(),
         [20, 10]
     );
-    assert_eq!(rows[0].group_name, "运维群");
-    assert_eq!(rows[1].group_name, "研发群");
+    assert_eq!(first.messages[0].group_name, "运维群");
+    assert_eq!(second.messages[0].group_name, "研发群");
+    assert!(first.has_more);
+    assert!(!second.has_more);
 }
 
 #[tokio::test]
@@ -432,7 +651,13 @@ async fn remote_snapshot_hides_missing_group_without_deleting_history_and_restor
             .unwrap();
     assert_eq!(retained, (0, 1));
     assert_eq!(
-        store.messages.get_by_group(2, 10, 0).await.unwrap().len(),
+        store
+            .messages
+            .get_by_group(2, 10, None)
+            .await
+            .unwrap()
+            .messages
+            .len(),
         1
     );
 
@@ -498,21 +723,12 @@ async fn legacy_groups_table_is_migrated_with_existing_rows_available() {
 }
 
 #[tokio::test]
-async fn message_store_rejects_invalid_or_overflowing_pagination() {
+async fn message_store_rejects_invalid_pagination_limit() {
     let store = SqliteStore::new(":memory:").await.unwrap();
 
-    // 覆盖零页长、超过各自 MAX 上限的页长与偏移，以及 64 位平台上的极大偏移；
-    // 这些无效输入都在 MAX 检查阶段被拒绝，不用于覆盖后续 usize 到 i64 的转换失败。
-    assert!(store.messages.get_by_group(1, 0, 0).await.is_err());
-    assert!(store.messages.get_by_group(1, 201, 0).await.is_err());
-    assert!(store.messages.get_by_group(1, 1, 1_000_001).await.is_err());
-    if usize::BITS > 63 {
-        assert!(store
-            .messages
-            .get_by_group(1, 1, (i64::MAX as usize) + 1)
-            .await
-            .is_err());
-    }
+    // 游标字段已是 i64；存储层只需拒绝零页长和超过 200 的页长。
+    assert!(store.messages.get_by_group(1, 0, None).await.is_err());
+    assert!(store.messages.get_by_group(1, 201, None).await.is_err());
 }
 
 #[tokio::test]
@@ -579,12 +795,12 @@ async fn test_message_content_and_md5() {
         .await
         .unwrap();
 
-    let rows = store.messages.get_by_group(12345, 10, 0).await.unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].content, b"binary file content");
-    assert_eq!(rows[0].content_md5, "abc123");
-    assert_eq!(rows[0].msg_type, 7);
-    assert_eq!(rows[0].raw_proto, Some(vec![0x08, 0x89, 0x27]));
+    let page = store.messages.get_by_group(12345, 10, None).await.unwrap();
+    assert_eq!(page.messages.len(), 1);
+    assert_eq!(page.messages[0].content, b"binary file content");
+    assert_eq!(page.messages[0].content_md5, "abc123");
+    assert_eq!(page.messages[0].msg_type, 7);
+    assert_eq!(page.messages[0].raw_proto, Some(vec![0x08, 0x89, 0x27]));
 }
 
 #[tokio::test]

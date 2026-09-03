@@ -7,13 +7,16 @@
 //! 可确认的终态。断线重连同样受 generation、attempt 和认证会话约束，旧连接不能
 //! 覆盖新会话。
 //!
-//! 入站回调只负责把帧送入有界队列。工作协程串行解码并处理 1201、2202 和 2205：
-//! 2202 中仅受监控群的消息写入数据库并尝试通过前端 Channel 发送 DTO，但所有成功
-//! 处理或无需持久化的消息都会按群汇总后发送 2102 回执。持久化失败的消息不回执；
-//! Channel 发送失败只记录日志，仍视为已持久化并回执。1201 解码失败会触发故障关闭
-//! （fail-closed）并取消连接；2202 解码失败则只记录警告、丢弃当前帧并继续。
-//! 取消会关闭接收端并丢弃仍排队及之后发送的帧，但不会回滚或阻止当前正在等待的
-//! SQLite/Channel 副作用，进行中的操作可能已经完成。
+//! 入站回调把帧送入有界队列；64 个帧槽约束 mpsc，32 MiB 正文字节许可继续覆盖
+//! pending、投影排队及活动投影。工作协程立即处理 1201，保留 2205 的预留行为；2202
+//! 在 Prost 完整解码前先执行常量额外内存的顶层 wire 预扫描，再按 25ms 或 100 条微批。
+//! 每个 2202 帧只读取一次监控集合；批内监控消息经单次事务落库成功后才与未监控消息
+//! 一起按群发送 2102。
+//! 回执完成后，监控批次进入容量为 8 的独立投影队列；单一投影 worker 串行取批，
+//! 每批以最多 8 路并发解密、恢复原顺序并通过一次前端 Channel 发送。数据库整批失败
+//! 时监控消息不回执，未监控消息仍回执；Channel 缺失或发送失败只记录警告。连接取消
+//! 会丢弃尚未投影的已提交批次，数据库历史仍保留。1201 解码失败会触发故障关闭并取消
+//! 连接，2202 解码失败仅丢弃当前帧。
 
 use std::{
     fmt::Display,
@@ -28,6 +31,7 @@ use std::{
 
 use crate::state::AppState;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use futures::StreamExt;
 use prost::Message;
 use tauri::{Emitter, Manager, State};
 use tokio::sync::mpsc;
@@ -43,16 +47,30 @@ const CHAT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 const CHAT_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 /// 心跳间隔为 30 秒，短于服务端 60 秒超时窗口。
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
-/// 入站帧队列最多容纳 8 项，满载时回调等待以形成背压。
-const MESSAGE_QUEUE_CAPACITY: usize = 8;
+/// 入站帧队列最多容纳 64 项，满载时回调等待以形成背压。
+const MESSAGE_QUEUE_CAPACITY: usize = 64;
+/// 所有尚未完成处理的入站帧正文合计最多占用 32 MiB。
+const MESSAGE_QUEUE_BYTE_BUDGET: usize = 32 * 1024 * 1024;
 /// 单个已解码入站帧最大为 8 MiB，超限帧令回调返回错误。
 const MAX_QUEUED_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
+/// 2202 微批从首条消息进入空批次起最多等待 25 毫秒。
+const MESSAGE_BATCH_MAX_DELAY: Duration = Duration::from_millis(25);
+/// 单个 2202 微批最多容纳 100 条群消息。
+const MESSAGE_BATCH_MAX_MESSAGES: usize = 100;
+/// 单个 2202 帧在 Prost 解码前允许的 `group_msg` 顶层字段数量上限。
+///
+/// 这是防止小字节输入膨胀为大量堆对象的结构预算，不代表业务层消息数量契约。
+const MAX_GROUP_MESSAGES_PER_PUSH: usize = 10_000;
+/// 单批监控消息正文解密最多同时执行 8 项。
+const MESSAGE_DECRYPT_CONCURRENCY: usize = 8;
+/// 主消息 worker 与投影 worker 之间最多排队 8 个已提交并已回执的消息批次。
+const MESSAGE_PROJECTION_QUEUE_CAPACITY: usize = 8;
 
 /// 暴露给前端的群消息。
 ///
 /// 64 位标识以十进制字符串表示，避免 JavaScript 数值精度损失；二进制正文统一使用
-/// 标准 Base64。2202 实时消息由 `persist_and_emit` 成功写入 SQLite 后才发送
-/// Channel 消息；实时 DTO 的 `stored_at` 为 `None`，是因为发送前没有回读或携带
+/// 标准 Base64。2202 实时消息在批量写入 SQLite 并完成 2102 回执后才进入
+/// Channel 批次；实时 DTO 的 `stored_at` 为 `None`，是因为发送前没有回读或携带
 /// INSERT 时生成的写入时间，不表示消息尚未落库。历史查询 DTO 会携带已存的写入时间。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MessageDto {
@@ -81,31 +99,56 @@ pub struct MessageDto {
     pub stored_at: Option<i64>,
 }
 
+/// 前端可安全回传的消息分页游标。
+///
+/// `msg_id` 使用十进制字符串，避免超过 JavaScript 安全整数范围时发生精度损失。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageCursorDto {
+    /// 本页最老消息的发送时间。
+    pub send_time: i64,
+    /// 本页最老消息 ID 的十进制字符串。
+    pub msg_id: String,
+}
+
+/// 历史消息分页命令返回值。
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessagePageDto {
+    /// 当前页消息；存储层降序读取，前端索引按时间升序展示。
+    pub messages: Vec<MessageDto>,
+    /// 仍有更早消息时，指向当前页最老一条消息的游标。
+    pub next_cursor: Option<MessageCursorDto>,
+    /// 是否仍可请求更早一页。
+    pub has_more: bool,
+}
+
 /// 当前前端页面登记的实时消息 Channel；页面重载后用新 Channel 原子替换旧值。
-pub type MessageChannelSlot =
-    tokio::sync::RwLock<Option<tauri::ipc::Channel<MessageDto>>>;
+pub type MessageChannelSlot = tokio::sync::RwLock<Option<tauri::ipc::Channel<Vec<MessageDto>>>>;
 
 /// 替换实时消息接收端；不向旧页面发送关闭通知。
 async fn replace_message_channel(
     slot: &MessageChannelSlot,
-    channel: tauri::ipc::Channel<MessageDto>,
+    channel: tauri::ipc::Channel<Vec<MessageDto>>,
 ) {
     *slot.write().await = Some(channel);
 }
 
-/// 向当前登记的页面发送一条已入库消息。
+/// 向当前登记的页面发送一个保持协议原顺序的已入库消息批次。
 ///
 /// 先克隆 Channel 再释放读锁，避免 WebView 执行期间阻塞页面重载后的接收端替换。
 async fn publish_realtime_message(
     slot: &MessageChannelSlot,
-    message: &MessageDto,
+    messages: &[MessageDto],
 ) -> Result<(), String> {
     let channel = slot
         .read()
         .await
         .clone()
         .ok_or_else(|| "Realtime message channel is not registered".to_string())?;
-    channel.send(message.clone()).map_err(|error| error.to_string())
+    channel
+        .send(messages.to_vec())
+        .map_err(|error| error.to_string())
 }
 
 fn stored_message_parts(
@@ -192,6 +235,132 @@ async fn enrich_message_dto(
         Ok(decoded) => dto.decoded_content = Some(decoded.content),
         Err(error) => dto.decode_error = Some(error),
     }
+}
+
+/// 以有界乱序执行 future，并按输入位置恢复输出顺序。
+async fn map_ordered_bounded<T, U, F, Fut>(items: Vec<T>, limit: usize, map: F) -> Vec<U>
+where
+    F: Fn(T) -> Fut,
+    Fut: Future<Output = U>,
+{
+    assert!(limit > 0, "bounded map concurrency must be positive");
+    let mut indexed = futures::stream::iter(items.into_iter().enumerate())
+        .map(|(index, item)| {
+            let future = map(item);
+            async move { (index, future.await) }
+        })
+        .buffer_unordered(limit)
+        .collect::<Vec<_>>()
+        .await;
+    indexed.sort_unstable_by_key(|(index, _)| *index);
+    indexed.into_iter().map(|(_, output)| output).collect()
+}
+
+/// 从当前位置读取一个不超过 `u64` 的 protobuf varint。
+fn read_protobuf_varint(input: &[u8], cursor: &mut usize) -> Result<u64, String> {
+    let mut value = 0_u64;
+    for byte_index in 0..10 {
+        let byte = *input
+            .get(*cursor)
+            .ok_or_else(|| "truncated protobuf varint".to_string())?;
+        *cursor += 1;
+        if byte_index == 9 && byte > 1 {
+            return Err("protobuf varint exceeds u64".to_string());
+        }
+        value |= u64::from(byte & 0x7f) << (byte_index * 7);
+        if byte & 0x80 == 0 {
+            return Ok(value);
+        }
+    }
+    Err("protobuf varint exceeds ten bytes".to_string())
+}
+
+/// 在 Prost 分配 `GroupMessage` 对象前扫描 2202 顶层 wire 结构。
+///
+/// 扫描只维护游标、计数器和固定深度的 group 字段栈，不解析嵌套消息，也不分配与输入
+/// 规模相关的内存。它只统计顶层 field 1 且 wire type 为 length-delimited 的出现次数；
+/// 其他字段按其 wire type 安全跳过。数量上限是客户端解码结构预算，不赋予协议字段
+/// 额外业务含义。
+fn count_group_messages_before_decode(input: &[u8]) -> Result<usize, String> {
+    const MAX_PROTOBUF_FIELD_NUMBER: u64 = (1 << 29) - 1;
+    const MAX_GROUP_NESTING: usize = 64;
+
+    let mut cursor = 0;
+    let mut group_message_count = 0_usize;
+    let mut group_fields = [0_u64; MAX_GROUP_NESTING];
+    let mut group_depth = 0_usize;
+    while cursor < input.len() {
+        let key = read_protobuf_varint(input, &mut cursor)?;
+        let field_number = key >> 3;
+        if field_number == 0 || field_number > MAX_PROTOBUF_FIELD_NUMBER {
+            return Err(format!("invalid protobuf field number {field_number}"));
+        }
+        let wire_type = key & 0x07;
+        match wire_type {
+            0 => {
+                read_protobuf_varint(input, &mut cursor)?;
+            }
+            1 => {
+                cursor = cursor
+                    .checked_add(8)
+                    .filter(|end| *end <= input.len())
+                    .ok_or_else(|| "truncated protobuf fixed64 field".to_string())?;
+            }
+            2 => {
+                let length = read_protobuf_varint(input, &mut cursor)?;
+                let length = usize::try_from(length)
+                    .map_err(|_| "protobuf length exceeds usize".to_string())?;
+                cursor = cursor
+                    .checked_add(length)
+                    .filter(|end| *end <= input.len())
+                    .ok_or_else(|| "truncated or overflowing protobuf length".to_string())?;
+                if group_depth == 0 && field_number == 1 {
+                    group_message_count = group_message_count
+                        .checked_add(1)
+                        .ok_or_else(|| "group_msg count overflow".to_string())?;
+                    if group_message_count > MAX_GROUP_MESSAGES_PER_PUSH {
+                        return Err(format!(
+                            "group_msg count {group_message_count} exceeds structural limit \
+                             {MAX_GROUP_MESSAGES_PER_PUSH}"
+                        ));
+                    }
+                }
+            }
+            3 => {
+                if group_depth == MAX_GROUP_NESTING {
+                    return Err(format!(
+                        "protobuf group nesting exceeds structural limit {MAX_GROUP_NESTING}"
+                    ));
+                }
+                group_fields[group_depth] = field_number;
+                group_depth += 1;
+            }
+            4 => {
+                if group_depth == 0 {
+                    return Err("unexpected protobuf end-group at top level".to_string());
+                }
+                group_depth -= 1;
+                if group_fields[group_depth] != field_number {
+                    return Err("mismatched protobuf end-group field number".to_string());
+                }
+            }
+            5 => {
+                cursor = cursor
+                    .checked_add(4)
+                    .filter(|end| *end <= input.len())
+                    .ok_or_else(|| "truncated protobuf fixed32 field".to_string())?;
+            }
+            invalid => {
+                return Err(format!(
+                    "invalid or unsupported protobuf wire type {invalid}"
+                ))
+            }
+        }
+    }
+    if group_depth != 0 {
+        return Err("truncated protobuf group".to_string());
+    }
+    Ok(group_message_count)
 }
 
 /// 一次连接及其后台任务所需的共享应用资源快照。
@@ -351,16 +520,20 @@ impl Drop for ConnectionAttemptGuard {
 struct IncomingFrame {
     message_id: u16,
     content: Vec<u8>,
+    /// 正文占用的端到端字节许可；2202 解码后由其派生消息共享所有权。
+    queue_byte_permit: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
 }
 
-/// 校验帧大小后送入有界队列。
+/// 校验单帧大小、取得端到端正文总字节许可后送入有界队列。
 ///
-/// 队列已满时等待容量而不丢帧；等待期间若连接取消，或 receiver 已关闭，则返回
-/// TCP 帧错误。正文超出 8 MiB 时不会进入队列。
+/// 帧槽或 32 MiB 字节预算不足时等待而不丢帧；等待期间若连接取消，或 receiver 已关闭，
+/// 则返回 TCP 帧错误。正文超出 8 MiB 时不会取得许可。2202 的许可由其派生消息及投影
+/// 批次共享，直到该帧相关处理全部完成、取消或丢弃；其他帧处理结束即自动释放。
 async fn enqueue_incoming_frame(
     sender: &mpsc::Sender<IncomingFrame>,
-    frame: IncomingFrame,
+    mut frame: IncomingFrame,
     cancellation: &CancellationToken,
+    byte_budget: &Arc<tokio::sync::Semaphore>,
 ) -> Result<(), im_common::error::AppError> {
     if frame.content.len() > MAX_QUEUED_MESSAGE_SIZE {
         return Err(im_common::error::AppError::TcpFrame(format!(
@@ -370,6 +543,25 @@ async fn enqueue_incoming_frame(
         )));
     }
     let message_id = frame.message_id;
+    let queued_bytes = u32::try_from(frame.content.len()).map_err(|_| {
+        im_common::error::AppError::TcpFrame(format!(
+            "decoded message size {} cannot be represented by queue budget",
+            frame.content.len()
+        ))
+    })?;
+    let permit = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => return Err(im_common::error::AppError::TcpFrame(format!(
+            "connection cancelled before message {} could reserve queue bytes",
+            message_id
+        ))),
+        permit = byte_budget.clone().acquire_many_owned(queued_bytes) => permit.map_err(|_| {
+            im_common::error::AppError::TcpFrame(
+                "message queue byte budget closed".to_string()
+            )
+        })?,
+    };
+    frame.queue_byte_permit = Some(Arc::new(permit));
     tokio::select! {
         biased;
         _ = cancellation.cancelled() => Err(im_common::error::AppError::TcpFrame(format!(
@@ -388,10 +580,12 @@ async fn enqueue_incoming_frame(
 #[async_trait::async_trait]
 /// 将协议分派与应用副作用隔离，便于精确验证处理顺序。
 trait MessageEffects: Send + Sync {
-    /// 查询该群在处理当前消息时是否仍处于监控集合。
-    async fn is_monitored(&self, group_id: i64) -> bool;
-    /// 先写入 SQLite，再尝试通过 Channel 发送 DTO；仅写库失败时返回 `false`。
-    async fn persist_and_emit(&self, message: im_proto::GroupMessage) -> bool;
+    /// 取得处理一个 PushGroupMessage 帧时使用的监控群组快照。
+    async fn monitoring_snapshot(&self) -> std::collections::HashSet<i64>;
+    /// 在一次事务中写入当前微批的全部监控消息；整批失败时返回 `false`。
+    async fn persist_monitored_batch(&self, messages: &[im_proto::GroupMessage]) -> bool;
+    /// 解密并向前端发送一个监控消息批次；失败只由实现记录，不改变落库或回执结果。
+    async fn publish_monitored_batch(&self, messages: Vec<im_proto::GroupMessage>);
     /// 按群发送包含完整消息 ID 列表的 2102 接收回执。
     async fn acknowledge_group_messages(
         &self,
@@ -409,51 +603,62 @@ struct ConnectionMessageEffects {
 
 #[async_trait::async_trait]
 impl MessageEffects for ConnectionMessageEffects {
-    async fn is_monitored(&self, group_id: i64) -> bool {
-        self.context
-            .monitoring_groups
-            .read()
-            .await
-            .contains(&group_id)
+    async fn monitoring_snapshot(&self) -> std::collections::HashSet<i64> {
+        self.context.monitoring_groups.read().await.clone()
     }
 
-    async fn persist_and_emit(&self, message: im_proto::GroupMessage) -> bool {
-        let (record, mut dto) = stored_message_parts(&message);
-        if let Err(error) = self.context.db.messages.insert(&record).await {
-            tracing::error!("Failed to insert message: {error}");
+    async fn persist_monitored_batch(&self, messages: &[im_proto::GroupMessage]) -> bool {
+        let records = messages
+            .iter()
+            .map(|message| stored_message_parts(message).0)
+            .collect::<Vec<_>>();
+        if let Err(error) = self.context.db.messages.insert_batch(&records).await {
+            tracing::error!(
+                message_count = records.len(),
+                "Failed to insert message batch: {error}"
+            );
             return false;
         }
-        enrich_message_dto(
-            &self.context.config,
-            &self.context.auth_session,
-            &self.context.http,
-            &self.context.message_crypto,
-            &message,
-            &mut dto,
-        )
+        true
+    }
+
+    async fn publish_monitored_batch(&self, messages: Vec<im_proto::GroupMessage>) {
+        let context = self.context.clone();
+        let messages = map_ordered_bounded(messages, MESSAGE_DECRYPT_CONCURRENCY, move |message| {
+            let context = context.clone();
+            async move {
+                let (_, mut dto) = stored_message_parts(&message);
+                enrich_message_dto(
+                    &context.config,
+                    &context.auth_session,
+                    &context.http,
+                    &context.message_crypto,
+                    &message,
+                    &mut dto,
+                )
+                .await;
+                dto
+            }
+        })
         .await;
-        match publish_realtime_message(&self.context.message_channel, &dto).await {
+        match publish_realtime_message(&self.context.message_channel, &messages).await {
             Ok(()) => {
                 #[cfg(debug_assertions)]
                 tracing::info!(
-                    msg_id = %dto.msg_id,
-                    group_id = %dto.group_id,
-                    "Persisted message sent through frontend Channel"
+                    message_count = messages.len(),
+                    "Persisted message batch sent through frontend Channel"
                 );
                 #[cfg(not(debug_assertions))]
                 tracing::debug!(
-                    msg_id = %dto.msg_id,
-                    group_id = %dto.group_id,
-                    "Persisted message sent through frontend Channel"
+                    message_count = messages.len(),
+                    "Persisted message batch sent through frontend Channel"
                 );
             }
             Err(error) => tracing::warn!(
-                msg_id = %dto.msg_id,
-                group_id = %dto.group_id,
-                "Failed to send persisted message through frontend Channel: {error}"
+                message_count = messages.len(),
+                "Failed to send persisted message batch through frontend Channel: {error}"
             ),
         }
-        true
     }
 
     async fn acknowledge_group_messages(
@@ -499,7 +704,7 @@ struct EstablishedConnection {
 /// 历史消息，调用方仍须通过 `get_messages` 完成初始快照。
 pub async fn register_message_channel(
     state: State<'_, AppState>,
-    on_message: tauri::ipc::Channel<MessageDto>,
+    on_message: tauri::ipc::Channel<Vec<MessageDto>>,
 ) -> Result<(), String> {
     replace_message_channel(&state.message_channel, on_message).await;
     tracing::info!("Frontend realtime message Channel registered");
@@ -798,7 +1003,8 @@ fn linked_cancellation(
 
 /// 建立一个尚未安装到全局槽位的聊天连接。
 ///
-/// 先创建容量为 8 的 mpsc 队列和串行消息 worker，再安装入站 handler 与断线回调。
+/// 先创建容量为 64、正文预算为 32 MiB 的 mpsc 接收缓冲和消息 worker，再安装入站
+/// handler 与断线回调。
 /// 网络阶段依次执行 connect、取得回执 sender、login，并等待 worker 解码有效 1201。
 /// 每阶段受取消和超时控制。断线回调先标记 loss 并取消本连接；仅客户端已经安装时
 /// 才进入重连处理。失败时取消 worker、尝试断开本地客户端，并最多等待 1 秒回收
@@ -814,6 +1020,7 @@ async fn establish_connection(
     let installed = Arc::new(AtomicBool::new(false));
     let connection_lost = Arc::new(AtomicBool::new(false));
     let (frame_sender, frame_receiver) = mpsc::channel(MESSAGE_QUEUE_CAPACITY);
+    let frame_byte_budget = Arc::new(tokio::sync::Semaphore::new(MESSAGE_QUEUE_BYTE_BUDGET));
     let (login_sender, login_receiver) = tokio::sync::oneshot::channel();
     let worker_cancellation = connection_cancellation.clone();
     let receipt_sender = Arc::new(tokio::sync::OnceCell::new());
@@ -838,6 +1045,7 @@ async fn establish_connection(
     chat_client.on_message(move |message_id, content| {
         let sender = frame_sender.clone();
         let cancellation = message_cancellation.clone();
+        let byte_budget = frame_byte_budget.clone();
         async move {
             if cancellation.is_cancelled() {
                 return Ok(());
@@ -847,8 +1055,10 @@ async fn establish_connection(
                 IncomingFrame {
                     message_id,
                     content,
+                    queue_byte_permit: None,
                 },
                 &cancellation,
+                &byte_budget,
             )
             .await
         }
@@ -1015,31 +1225,195 @@ async fn run_message_worker(
     run_message_worker_with_effects(receiver, effects, cancellation, login_sender).await;
 }
 
+/// 微批中一条群消息及其所在 2202 帧读取到的监控判定。
+struct PendingGroupMessage {
+    message: im_proto::GroupMessage,
+    monitored: bool,
+    /// 与来源帧共享的正文预算许可；同帧拆分到多个批次时由最后一个引用归还。
+    frame_byte_permit: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
+}
+
+/// 等待或正在执行正文解密与 Channel 发送的监控消息批次。
+struct ProjectionMessageBatch {
+    messages: Vec<im_proto::GroupMessage>,
+    /// 保持来源帧字节许可直至本批投影完成、取消或被队列丢弃。
+    frame_byte_permits: Vec<Arc<tokio::sync::OwnedSemaphorePermit>>,
+}
+
+/// 提交一个 2202 微批，并依次执行事务写入、分群回执和投影排队。
+///
+/// 未监控消息不入库但始终进入回执；监控消息仅在整批事务成功后进入回执。取消发生在
+/// 事务完成前时不会开始回执；回执全部成功后，监控消息才进入容量受限的投影队列。
+/// 队列已满时这里等待形成背压，取消或投影 worker 退出会停止当前批次排队。
+async fn flush_group_message_batch(
+    pending: &mut Vec<PendingGroupMessage>,
+    effects: &dyn MessageEffects,
+    cancellation: &CancellationToken,
+    projection_sender: &mpsc::Sender<ProjectionMessageBatch>,
+) -> bool {
+    if pending.is_empty() {
+        return true;
+    }
+    let batch = std::mem::take(pending);
+    let monitored_messages = batch
+        .iter()
+        .filter(|item| item.monitored)
+        .map(|item| item.message.clone())
+        .collect::<Vec<_>>();
+    let monitored_frame_permits = batch
+        .iter()
+        .filter(|item| item.monitored)
+        .filter_map(|item| item.frame_byte_permit.clone())
+        .collect::<Vec<_>>();
+    let monitored_persisted = if monitored_messages.is_empty() {
+        true
+    } else {
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return false,
+            persisted = effects.persist_monitored_batch(&monitored_messages) => persisted,
+        }
+    };
+
+    let mut receipts = std::collections::BTreeMap::<i64, Vec<i64>>::new();
+    for item in &batch {
+        if !item.monitored || monitored_persisted {
+            receipts
+                .entry(item.message.group_id)
+                .or_default()
+                .push(item.message.msg_id);
+        }
+    }
+    for (group_id, msg_ids) in receipts {
+        let receipt_result = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return false,
+            result = effects.acknowledge_group_messages(group_id, msg_ids) => result,
+        };
+        if let Err(error) = receipt_result {
+            tracing::error!(
+                group_id,
+                "Failed to acknowledge received group messages: {error}"
+            );
+            cancellation.cancel();
+            return false;
+        }
+    }
+    if monitored_persisted && !monitored_messages.is_empty() {
+        let projection_result = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return false,
+            result = projection_sender.send(ProjectionMessageBatch {
+                messages: monitored_messages,
+                frame_byte_permits: monitored_frame_permits,
+            }) => result,
+        };
+        if projection_result.is_err() {
+            tracing::error!("Message projection queue closed before batch could be delivered");
+            cancellation.cancel();
+            return false;
+        }
+    }
+    true
+}
+
+/// 串行消费已提交批次，并将每批交给副作用层执行有界并发解密及单次 Channel 发送。
+///
+/// 连接取消时优先停止当前投影并关闭 receiver，尚在队列中的批次随 receiver drop 丢弃；
+/// 正常输入结束时则在 sender 全部释放后处理完已有批次再返回。
+async fn run_message_projection_worker(
+    mut receiver: mpsc::Receiver<ProjectionMessageBatch>,
+    effects: Arc<dyn MessageEffects>,
+    cancellation: CancellationToken,
+) {
+    loop {
+        let batch = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => break,
+            batch = receiver.recv() => match batch {
+                Some(batch) => batch,
+                None => break,
+            },
+        };
+        let ProjectionMessageBatch {
+            messages,
+            frame_byte_permits,
+        } = batch;
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => break,
+            _ = effects.publish_monitored_batch(messages) => {}
+        }
+        drop(frame_byte_permits);
+    }
+    receiver.close();
+}
+
 /// 按入队顺序处理聊天推送及其副作用。
 ///
-/// 1201 必须能解码为 `PushLoginSuccessMessage` 才完成登录 oneshot；解码失败会触发
-/// 故障关闭（fail-closed）、取消连接并停止 worker。2202 解码失败则只记录警告、
-/// 丢弃当前帧并继续，不取消连接；成功后逐条读取最新监控状态，
-/// 受监控消息按“数据库 insert → 尝试 emit”处理，写库失败的不进入回执，未监控消息
-/// 不落库但仍回执。之后按群 ID 有序发送覆盖全部可处理消息的 2102；任一回执失败会
-/// 取消连接并停止后续处理。2205 当前仅记录预留日志。取消分支优先，退出时关闭
-/// receiver 并丢弃仍排队及之后发送的帧；这不会回滚或保证阻止当前正在等待的
-/// SQLite 写入或 Channel 发送，进行中的副作用可能已经完成。
+/// 1201 立即解码并完成登录 oneshot，失败时取消连接。2202 先验证顶层 wire 结构预算，
+/// 再由 Prost 解码；每帧只读取一次监控集合，并按“最多 100 条或首条等待 25ms”微批。
+/// 2205 仍仅记录预留日志。取消分支优先并丢弃未提交批次。事务与回执留在本 worker；
+/// 已回执监控批次进入独立有界队列，由单一投影 worker 完成解密和 Channel，避免单批
+/// 慢投影直接阻塞后续收帧。
 async fn run_message_worker_with_effects(
     mut receiver: mpsc::Receiver<IncomingFrame>,
     effects: Arc<dyn MessageEffects>,
     cancellation: CancellationToken,
     login_sender: tokio::sync::oneshot::Sender<im_proto::PushLoginSuccessMessage>,
 ) {
+    let (projection_sender, projection_receiver) = mpsc::channel(MESSAGE_PROJECTION_QUEUE_CAPACITY);
+    let projection_effects = effects.clone();
+    let projection_cancellation = cancellation.clone();
+    let projection_worker = tokio::spawn(async move {
+        run_message_projection_worker(
+            projection_receiver,
+            projection_effects,
+            projection_cancellation,
+        )
+        .await;
+    });
     let mut login_sender = Some(login_sender);
-    loop {
-        let frame = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => break,
-            frame = receiver.recv() => match frame {
-                Some(frame) => frame,
-                None => break,
+    let mut pending = Vec::<PendingGroupMessage>::with_capacity(MESSAGE_BATCH_MAX_MESSAGES);
+    let mut batch_deadline = None::<tokio::time::Instant>;
+    'message_loop: loop {
+        let frame = if let Some(deadline) = batch_deadline {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => break,
+                _ = tokio::time::sleep_until(deadline) => {
+                    if !flush_group_message_batch(
+                        &mut pending,
+                        effects.as_ref(),
+                        &cancellation,
+                        &projection_sender,
+                    ).await {
+                        break;
+                    }
+                    batch_deadline = None;
+                    continue;
+                }
+                frame = receiver.recv() => frame,
             }
+        } else {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => break,
+                frame = receiver.recv() => frame,
+            }
+        };
+        let Some(mut frame) = frame else {
+            if !flush_group_message_batch(
+                &mut pending,
+                effects.as_ref(),
+                &cancellation,
+                &projection_sender,
+            )
+            .await
+            {
+                break;
+            }
+            break;
         };
         match frame.message_id {
             im_chat::heartbeat::PUSH_LOGIN_SUCCESS => {
@@ -1057,6 +1431,12 @@ async fn run_message_worker_with_effects(
                 }
             }
             im_chat::heartbeat::PUSH_GROUP_MESSAGE => {
+                if let Err(error) = count_group_messages_before_decode(frame.content.as_slice()) {
+                    tracing::warn!(
+                        "Failed to validate PushGroupMessage wire structure before decode: {error}"
+                    );
+                    continue;
+                }
                 let push = match im_proto::PushGroupMessage::decode(frame.content.as_slice()) {
                     Ok(push) => push,
                     Err(error) => {
@@ -1064,41 +1444,35 @@ async fn run_message_worker_with_effects(
                         continue;
                     }
                 };
-                let mut receipts = std::collections::BTreeMap::<i64, Vec<i64>>::new();
+                let monitoring = tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => break,
+                    snapshot = effects.monitoring_snapshot() => snapshot,
+                };
+                let frame_byte_permit = frame.queue_byte_permit.take();
                 for group_message in push.group_msg {
-                    let group_id = group_message.group_id;
-                    let msg_id = group_message.msg_id;
-                    let monitored = tokio::select! {
-                        biased;
-                        _ = cancellation.cancelled() => return,
-                        monitored = effects.is_monitored(group_id) => monitored,
-                    };
-                    let handled = if monitored {
-                        tokio::select! {
-                            biased;
-                            _ = cancellation.cancelled() => return,
-                            persisted = effects.persist_and_emit(group_message) => persisted,
-                        }
-                    } else {
-                        true
-                    };
-                    if handled {
-                        receipts.entry(group_id).or_default().push(msg_id);
+                    if pending.is_empty() {
+                        batch_deadline =
+                            Some(tokio::time::Instant::now() + MESSAGE_BATCH_MAX_DELAY);
                     }
-                }
-                for (group_id, msg_ids) in receipts {
-                    let receipt_result = tokio::select! {
-                        biased;
-                        _ = cancellation.cancelled() => return,
-                        result = effects.acknowledge_group_messages(group_id, msg_ids) => result,
-                    };
-                    if let Err(error) = receipt_result {
-                        tracing::error!(
-                            group_id,
-                            "Failed to acknowledge received group messages: {error}"
-                        );
-                        cancellation.cancel();
-                        return;
+                    let monitored = monitoring.contains(&group_message.group_id);
+                    pending.push(PendingGroupMessage {
+                        message: group_message,
+                        monitored,
+                        frame_byte_permit: frame_byte_permit.clone(),
+                    });
+                    if pending.len() == MESSAGE_BATCH_MAX_MESSAGES {
+                        if !flush_group_message_batch(
+                            &mut pending,
+                            effects.as_ref(),
+                            &cancellation,
+                            &projection_sender,
+                        )
+                        .await
+                        {
+                            break 'message_loop;
+                        }
+                        batch_deadline = None;
                     }
                 }
             }
@@ -1108,9 +1482,12 @@ async fn run_message_worker_with_effects(
             message_id => tracing::debug!("Ignoring unsupported chat message {message_id}"),
         }
     }
-    // 关闭接收端会丢弃仍排队及之后发送的帧；它不会回滚或保证阻止当前正在等待的
-    // SQLite 写入或 Channel 发送，进行中的副作用可能已经完成。
+    // 关闭接收端会丢弃仍排队及之后发送的帧；已完成的事务或回执不会被取消回滚。
     receiver.close();
+    drop(projection_sender);
+    if let Err(error) = projection_worker.await {
+        tracing::warn!("Message projection worker failed to join: {error}");
+    }
 }
 
 /// 启动 30 秒周期心跳，并在发送失败时进入受门禁的断线处理。
@@ -1722,30 +2099,31 @@ pub async fn disconnect_chat(state: State<'_, AppState>) -> Result<(), String> {
 /// 分页查询指定群或全部群组的已存储消息。
 ///
 /// `group_id` 为 `Some` 时必须是 64 位十进制整数并只查询该群；为 `None` 时跨群读取
-/// 最近消息。查询后尝试用可选本地用户私钥和按需取得的群密钥解密正文；
+/// 最近消息。`before_send_time` 与字符串 `before_msg_id` 必须同时提供或同时省略；
+/// `limit` 省略时为 200，且不得超过 200。查询后以最多 8 路并发解密并恢复存储顺序；
 /// 单条解密失败只写入 DTO 的 `decode_error`，不令整页失败。
 pub async fn get_messages(
     state: State<'_, AppState>,
     group_id: Option<String>,
-    limit: usize,
-    offset: usize,
-) -> Result<Vec<MessageDto>, String> {
-    let (limit, offset) = validate_message_page(limit, offset)?;
-    let messages = match group_id {
+    limit: Option<usize>,
+    before_send_time: Option<i64>,
+    before_msg_id: Option<String>,
+) -> Result<MessagePageDto, String> {
+    let (limit, cursor) = validate_message_page(limit, before_send_time, before_msg_id.as_deref())?;
+    let page = match group_id {
         Some(group_id) => {
             let group_id = super::parse_i64_id(&group_id, "group_id")?;
             state
                 .db
                 .messages
-                .get_by_group(group_id, limit, offset)
+                .get_by_group(group_id, limit, cursor)
                 .await
         }
-        None => state.db.messages.get_recent(limit, offset).await,
+        None => state.db.messages.get_recent(limit, cursor).await,
     }
     .map_err(|error| error.to_string())?;
 
-    let mut result = Vec::with_capacity(messages.len());
-    for row in messages {
+    let messages = map_ordered_bounded(page.messages, MESSAGE_DECRYPT_CONCURRENCY, |row| async {
         let message = row
             .raw_proto
             .as_deref()
@@ -1764,9 +2142,17 @@ pub async fn get_messages(
         } else {
             dto.decode_error = Some("消息缺少可解码的原始协议数据".to_string());
         }
-        result.push(dto);
-    }
-    Ok(result)
+        dto
+    })
+    .await;
+    Ok(MessagePageDto {
+        messages,
+        next_cursor: page.next_cursor.map(|cursor| MessageCursorDto {
+            send_time: cursor.send_time,
+            msg_id: cursor.msg_id.to_string(),
+        }),
+        has_more: page.has_more,
+    })
 }
 
 const MAX_ATTACHMENT_DOWNLOAD_SIZE: usize = 256 * 1024 * 1024;
@@ -1922,22 +2308,30 @@ fn safe_attachment_filename(msg_id: i64, thumbnail: bool, source_name: &str) -> 
     )
 }
 
-fn validate_message_page(limit: usize, offset: usize) -> Result<(usize, usize), String> {
+/// 校验页长和成对游标，并把字符串消息 ID 转为存储层复合键。
+fn validate_message_page(
+    limit: Option<usize>,
+    before_send_time: Option<i64>,
+    before_msg_id: Option<&str>,
+) -> Result<(usize, Option<im_store::message::MessageCursor>), String> {
+    let limit = limit.unwrap_or(im_store::message::MAX_MESSAGE_PAGE_LIMIT);
     if !(1..=im_store::message::MAX_MESSAGE_PAGE_LIMIT).contains(&limit) {
         return Err(format!(
             "limit must be between 1 and {}",
             im_store::message::MAX_MESSAGE_PAGE_LIMIT
         ));
     }
-    if offset > im_store::message::MAX_MESSAGE_PAGE_OFFSET {
-        return Err(format!(
-            "offset exceeds maximum {}",
-            im_store::message::MAX_MESSAGE_PAGE_OFFSET
-        ));
-    }
-    i64::try_from(limit).map_err(|_| "limit exceeds supported integer range".to_string())?;
-    i64::try_from(offset).map_err(|_| "offset exceeds supported integer range".to_string())?;
-    Ok((limit, offset))
+    let cursor = match (before_send_time, before_msg_id) {
+        (None, None) => None,
+        (Some(send_time), Some(msg_id)) => Some(im_store::message::MessageCursor {
+            send_time,
+            msg_id: super::parse_i64_id(msg_id, "before_msg_id")?,
+        }),
+        _ => {
+            return Err("before_send_time and before_msg_id must be provided together".to_string())
+        }
+    };
+    Ok((limit, cursor))
 }
 
 #[cfg(test)]
@@ -1947,6 +2341,7 @@ mod tests {
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     };
+    use std::time::Duration;
 
     use im_common::config::AppConfig;
     use tokio::io::AsyncReadExt;
@@ -1965,16 +2360,35 @@ mod tests {
         message_dto_from_row, publish_realtime_message, replace_message_channel,
         retry_automatic_connection, run_cancellable_with_timeout, run_message_worker_with_effects,
         stored_message_parts, validate_message_page, ConnectionAttemptGuard, IncomingFrame,
-        MessageDto, MessageEffects, HEARTBEAT_INTERVAL, MAX_QUEUED_MESSAGE_SIZE,
-        MESSAGE_QUEUE_CAPACITY,
+        MessageCursorDto, MessageDto, MessageEffects, MessagePageDto, HEARTBEAT_INTERVAL,
+        MAX_QUEUED_MESSAGE_SIZE, MESSAGE_BATCH_MAX_MESSAGES, MESSAGE_DECRYPT_CONCURRENCY,
+        MESSAGE_PROJECTION_QUEUE_CAPACITY, MESSAGE_QUEUE_BYTE_BUDGET, MESSAGE_QUEUE_CAPACITY,
     };
 
     fn installed_client(client: im_chat::ChatClient) -> InstalledClient {
         InstalledClient::new(crate::state::ConnectionAttemptKey::new(0, 1), client)
     }
 
+    fn full_monitored_batch_frame(batch_id: i64) -> IncomingFrame {
+        IncomingFrame {
+            message_id: im_chat::heartbeat::PUSH_GROUP_MESSAGE,
+            content: im_proto::PushGroupMessage {
+                group_msg: (0..MESSAGE_BATCH_MAX_MESSAGES as i64)
+                    .map(|offset| im_proto::GroupMessage {
+                        msg_id: batch_id * 1_000 + offset,
+                        group_id: 7,
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            queue_byte_permit: None,
+        }
+    }
+
     #[tokio::test]
-    async fn newest_registered_channel_receives_realtime_message() {
+    async fn newest_registered_channel_receives_realtime_message_batch() {
         let slot = tokio::sync::RwLock::new(None);
         let first_payloads = Arc::new(std::sync::Mutex::new(Vec::new()));
         let first_payloads_for_channel = first_payloads.clone();
@@ -1998,7 +2412,7 @@ mod tests {
 
         publish_realtime_message(
             &slot,
-            &MessageDto {
+            &[MessageDto {
                 msg_id: "80".to_string(),
                 group_id: "8".to_string(),
                 send_uid: "42".to_string(),
@@ -2010,27 +2424,63 @@ mod tests {
                 send_time: 20,
                 content_md5: String::new(),
                 stored_at: None,
-            },
+            }],
         )
         .await
         .unwrap();
 
         assert!(first_payloads.lock().unwrap().is_empty());
-        assert!(latest_payloads.lock().unwrap()[0].contains(r#""msg_id":"80""#));
+        let payloads = latest_payloads.lock().unwrap();
+        assert_eq!(payloads.len(), 1);
+        assert!(payloads[0].starts_with('['));
+        assert!(payloads[0].contains(r#""msg_id":"80""#));
     }
 
-    // 分页边界：拒绝零值、超限与整数溢出，同时接受最大合法 limit/offset。
+    // 分页边界：limit 省略时取 200；游标必须成对出现，消息 ID 按十进制字符串安全解析。
     #[test]
-    fn message_page_rejects_zero_excessive_and_overflowing_values() {
-        assert!(validate_message_page(0, 0).is_err());
-        assert!(validate_message_page(201, 0).is_err());
-        assert!(validate_message_page(1, 1_000_001).is_err());
-        if usize::BITS > 63 {
-            assert!(validate_message_page(1, (i64::MAX as usize) + 1).is_err());
-        }
+    fn message_page_validates_limit_and_paired_cursor() {
         assert_eq!(
-            validate_message_page(200, 1_000_000).unwrap(),
-            (200, 1_000_000)
+            validate_message_page(None, None, None).unwrap(),
+            (200, None)
+        );
+        assert!(validate_message_page(Some(0), None, None).is_err());
+        assert!(validate_message_page(Some(201), None, None).is_err());
+        assert!(validate_message_page(Some(10), Some(100), None).is_err());
+        assert!(validate_message_page(Some(10), None, Some("9")).is_err());
+        assert!(validate_message_page(Some(10), Some(100), Some("9223372036854775808")).is_err());
+        assert_eq!(
+            validate_message_page(Some(10), Some(100), Some("9")).unwrap(),
+            (
+                10,
+                Some(im_store::message::MessageCursor {
+                    send_time: 100,
+                    msg_id: 9,
+                })
+            )
+        );
+    }
+
+    #[test]
+    fn message_page_serializes_camel_case_cursor_without_losing_large_id() {
+        let page = MessagePageDto {
+            messages: Vec::new(),
+            next_cursor: Some(MessageCursorDto {
+                send_time: 100,
+                msg_id: "9007199254740993".to_string(),
+            }),
+            has_more: true,
+        };
+
+        assert_eq!(
+            serde_json::to_value(page).unwrap(),
+            serde_json::json!({
+                "messages": [],
+                "nextCursor": {
+                    "sendTime": 100,
+                    "msgId": "9007199254740993"
+                },
+                "hasMore": true
+            })
         );
     }
 
@@ -2120,17 +2570,27 @@ mod tests {
     async fn bounded_message_queue_rejects_oversize() {
         let (sender, _receiver) = tokio::sync::mpsc::channel(MESSAGE_QUEUE_CAPACITY);
         let cancellation = tokio_util::sync::CancellationToken::new();
+        let budget = Arc::new(tokio::sync::Semaphore::new(MESSAGE_QUEUE_BYTE_BUDGET));
         let oversized = enqueue_incoming_frame(
             &sender,
             IncomingFrame {
                 message_id: 2202,
                 content: vec![0; MAX_QUEUED_MESSAGE_SIZE + 1],
+                queue_byte_permit: None,
             },
             &cancellation,
+            &budget,
         )
         .await
         .unwrap_err();
         assert!(oversized.to_string().contains("exceeds queue limit"));
+    }
+
+    // 接收缓冲基线：帧数上限为 64，字节预算独立限制整条未完成链路的正文。
+    #[test]
+    fn receive_buffer_uses_planned_frame_and_byte_limits() {
+        assert_eq!(MESSAGE_QUEUE_CAPACITY, 64);
+        assert_eq!(super::MESSAGE_QUEUE_BYTE_BUDGET, 32 * 1024 * 1024);
     }
 
     // 2102 兼容性：回执字段及 wire 编码必须与 Java 服务端契约一致。
@@ -2144,6 +2604,103 @@ mod tests {
         assert_eq!(receipt.encode_to_vec(), vec![10, 2, 70, 71, 16, 7]);
     }
 
+    // 解码前结构预算：恰好 10,000 个 field 1 可通过，第 10,001 个立即拒绝。
+    #[test]
+    fn push_group_message_prescan_accepts_limit_and_rejects_one_over_limit() {
+        let mut payload = [0x0a, 0x00].repeat(super::MAX_GROUP_MESSAGES_PER_PUSH);
+        assert_eq!(
+            super::count_group_messages_before_decode(&payload).unwrap(),
+            super::MAX_GROUP_MESSAGES_PER_PUSH
+        );
+        assert_eq!(
+            im_proto::PushGroupMessage::decode(payload.as_slice())
+                .unwrap()
+                .group_msg
+                .len(),
+            super::MAX_GROUP_MESSAGES_PER_PUSH
+        );
+
+        payload.extend_from_slice(&[0x0a, 0x00]);
+        assert!(super::count_group_messages_before_decode(&payload)
+            .unwrap_err()
+            .contains("exceeds structural limit"));
+    }
+
+    // 未知字段：预扫描按 wire type 跳过 varint、fixed64、length-delimited 和 fixed32。
+    #[test]
+    fn push_group_message_prescan_skips_unknown_fields_by_wire_type() {
+        let payload = [
+            0x10, 0x96, 0x01, // field 2, varint
+            0x19, 1, 2, 3, 4, 5, 6, 7, 8, // field 3, fixed64
+            0x22, 0x03, b'a', b'b', b'c', // field 4, length-delimited
+            0x2d, 1, 2, 3, 4, // field 5, fixed32
+            0x33, 0x0a, 0x00, 0x34, // field 6 group，内部 field 1 不计入顶层
+            0x0a, 0x00, // field 1, empty GroupMessage
+        ];
+
+        assert_eq!(
+            super::count_group_messages_before_decode(&payload).unwrap(),
+            1
+        );
+    }
+
+    // 畸形 wire：截断/溢出的 varint、越界长度、截断定长字段和非法 wire type 均拒绝。
+    #[test]
+    fn push_group_message_prescan_rejects_malformed_wire_values() {
+        let mut overflowing_length = vec![0x0a];
+        overflowing_length.extend(std::iter::repeat_n(0xff, 9));
+        overflowing_length.push(0x01);
+        let malformed = [
+            vec![0x80],
+            vec![0x10, 0x80],
+            vec![0x0a, 0x80],
+            vec![0x0a, 0x05, 0x00],
+            overflowing_length,
+            vec![
+                0x0a, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02,
+            ],
+            vec![0x19, 1, 2],
+            vec![0x2d, 1, 2],
+            vec![0x0e],
+            vec![0x00],
+            vec![0x0b],
+            vec![0x0b, 0x14],
+        ];
+
+        for payload in malformed {
+            assert!(
+                super::count_group_messages_before_decode(&payload).is_err(),
+                "malformed payload unexpectedly passed: {payload:?}"
+            );
+        }
+    }
+
+    // worker 门禁：超过结构预算的 2202 在监控快照及 Prost 完整解码前被丢弃。
+    #[tokio::test]
+    async fn message_worker_rejects_oversized_group_message_structure_before_dispatch() {
+        let effects = Arc::new(FakeMessageEffects::default());
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let (login_sender, _login_receiver) = tokio::sync::oneshot::channel();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let payload = [0x0a, 0x00].repeat(super::MAX_GROUP_MESSAGES_PER_PUSH.saturating_add(1));
+        sender
+            .send(IncomingFrame {
+                message_id: im_chat::heartbeat::PUSH_GROUP_MESSAGE,
+                content: payload,
+                queue_byte_permit: None,
+            })
+            .await
+            .unwrap();
+        drop(sender);
+
+        run_message_worker_with_effects(receiver, effects.clone(), cancellation, login_sender)
+            .await;
+
+        assert_eq!(effects.snapshot_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(effects.persist_calls.load(Ordering::SeqCst), 0);
+        assert!(effects.acknowledged.lock().await.is_empty());
+    }
+
     // 心跳配置：30 秒周期必须短于服务端 60 秒失活窗口。
     #[test]
     fn heartbeat_interval_is_below_java_server_timeout() {
@@ -2155,36 +2712,178 @@ mod tests {
     async fn bounded_message_queue_waits_for_capacity_without_message_loss() {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
         let cancellation = tokio_util::sync::CancellationToken::new();
+        let budget = Arc::new(tokio::sync::Semaphore::new(MESSAGE_QUEUE_BYTE_BUDGET));
         enqueue_incoming_frame(
             &sender,
             IncomingFrame {
                 message_id: 3203,
                 content: Vec::new(),
+                queue_byte_permit: None,
             },
             &cancellation,
+            &budget,
         )
         .await
         .unwrap();
 
         let pending_sender = sender.clone();
         let pending_cancellation = cancellation.clone();
-        let pending = tokio::spawn(async move {
+        let pending_budget = budget.clone();
+        let (enqueue_started, enqueue_is_running) = tokio::sync::oneshot::channel();
+        let mut pending = tokio::spawn(async move {
+            let _ = enqueue_started.send(());
             enqueue_incoming_frame(
                 &pending_sender,
                 IncomingFrame {
                     message_id: 3204,
                     content: Vec::new(),
+                    queue_byte_permit: None,
                 },
                 &pending_cancellation,
+                &pending_budget,
             )
             .await
         });
-        tokio::task::yield_now().await;
-        assert!(!pending.is_finished());
+        enqueue_is_running.await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut pending)
+                .await
+                .is_err(),
+            "second frame must remain blocked while the only queue slot is occupied"
+        );
 
         assert_eq!(receiver.recv().await.unwrap().message_id, 3203);
         pending.await.unwrap().unwrap();
         assert_eq!(receiver.recv().await.unwrap().message_id, 3204);
+    }
+
+    // 字节背压：总预算耗尽时后续入队等待，前一帧释放许可后才继续。
+    #[tokio::test]
+    async fn message_queue_byte_budget_blocks_until_queued_bytes_are_released() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        let budget = Arc::new(tokio::sync::Semaphore::new(5));
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        enqueue_incoming_frame(
+            &sender,
+            IncomingFrame {
+                message_id: 3203,
+                content: vec![0; 5],
+                queue_byte_permit: None,
+            },
+            &cancellation,
+            &budget,
+        )
+        .await
+        .unwrap();
+
+        let (enqueue_started, enqueue_is_running) = tokio::sync::oneshot::channel();
+        let mut pending = tokio::spawn({
+            let sender = sender.clone();
+            let cancellation = cancellation.clone();
+            let budget = budget.clone();
+            async move {
+                let _ = enqueue_started.send(());
+                enqueue_incoming_frame(
+                    &sender,
+                    IncomingFrame {
+                        message_id: 3204,
+                        content: vec![0],
+                        queue_byte_permit: None,
+                    },
+                    &cancellation,
+                    &budget,
+                )
+                .await
+            }
+        });
+        enqueue_is_running.await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut pending)
+                .await
+                .is_err(),
+            "second frame must remain blocked while all byte permits are held"
+        );
+
+        drop(receiver.recv().await.unwrap());
+        pending.await.unwrap().unwrap();
+        drop(receiver.recv().await.unwrap());
+        assert_eq!(budget.available_permits(), 5);
+    }
+
+    // 字节许可取消：等待预算期间取消必须返回错误，且已取得的许可仍可在帧丢弃后全量归还。
+    #[tokio::test]
+    async fn cancelling_byte_budget_wait_releases_every_permit() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        let budget = Arc::new(tokio::sync::Semaphore::new(2));
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        enqueue_incoming_frame(
+            &sender,
+            IncomingFrame {
+                message_id: 3203,
+                content: vec![0; 2],
+                queue_byte_permit: None,
+            },
+            &cancellation,
+            &budget,
+        )
+        .await
+        .unwrap();
+        let (wait_started, wait_is_running) = tokio::sync::oneshot::channel();
+        let mut waiting = tokio::spawn({
+            let sender = sender.clone();
+            let cancellation = cancellation.clone();
+            let budget = budget.clone();
+            async move {
+                let _ = wait_started.send(());
+                enqueue_incoming_frame(
+                    &sender,
+                    IncomingFrame {
+                        message_id: 3204,
+                        content: vec![0],
+                        queue_byte_permit: None,
+                    },
+                    &cancellation,
+                    &budget,
+                )
+                .await
+            }
+        });
+        wait_is_running.await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut waiting)
+                .await
+                .is_err(),
+            "enqueue must still be waiting for byte permits before cancellation"
+        );
+
+        cancellation.cancel();
+        assert!(waiting.await.unwrap().is_err());
+        drop(receiver.recv().await.unwrap());
+        assert_eq!(budget.available_permits(), 2);
+    }
+
+    // 发送失败：取得字节许可后若 receiver 已关闭，错误路径必须归还全部许可。
+    #[tokio::test]
+    async fn closed_message_queue_releases_reserved_bytes() {
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let budget = Arc::new(tokio::sync::Semaphore::new(2));
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        drop(receiver);
+
+        let result = enqueue_incoming_frame(
+            &sender,
+            IncomingFrame {
+                message_id: 3203,
+                content: vec![0; 2],
+                queue_byte_permit: None,
+            },
+            &cancellation,
+            &budget,
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(budget.available_permits(), 2);
     }
 
     // RAII 清理：连接命令被中止时守卫取消 worker、推进代际并恢复空闲状态。
@@ -2353,22 +3052,60 @@ mod tests {
         assert!(matches!(installed, InstalledClient { .. }));
     }
 
-    #[derive(Default)]
     struct FakeMessageEffects {
         monitored: HashSet<i64>,
         persisted: tokio::sync::Mutex<Vec<i64>>,
+        persisted_batches: tokio::sync::Mutex<Vec<Vec<i64>>>,
+        published: tokio::sync::Mutex<Vec<Vec<i64>>>,
         acknowledged: tokio::sync::Mutex<Vec<(i64, Vec<i64>)>>,
+        persist_calls: AtomicUsize,
+        snapshot_calls: AtomicUsize,
+        persist_succeeds: AtomicBool,
+    }
+
+    impl Default for FakeMessageEffects {
+        fn default() -> Self {
+            Self {
+                monitored: HashSet::new(),
+                persisted: tokio::sync::Mutex::new(Vec::new()),
+                persisted_batches: tokio::sync::Mutex::new(Vec::new()),
+                published: tokio::sync::Mutex::new(Vec::new()),
+                acknowledged: tokio::sync::Mutex::new(Vec::new()),
+                persist_calls: AtomicUsize::new(0),
+                snapshot_calls: AtomicUsize::new(0),
+                persist_succeeds: AtomicBool::new(true),
+            }
+        }
     }
 
     #[async_trait::async_trait]
     impl MessageEffects for FakeMessageEffects {
-        async fn is_monitored(&self, group_id: i64) -> bool {
-            self.monitored.contains(&group_id)
+        async fn monitoring_snapshot(&self) -> HashSet<i64> {
+            self.snapshot_calls.fetch_add(1, Ordering::SeqCst);
+            self.monitored.clone()
         }
 
-        async fn persist_and_emit(&self, message: im_proto::GroupMessage) -> bool {
-            self.persisted.lock().await.push(message.msg_id);
+        async fn persist_monitored_batch(&self, messages: &[im_proto::GroupMessage]) -> bool {
+            self.persist_calls.fetch_add(1, Ordering::SeqCst);
+            if !self.persist_succeeds.load(Ordering::SeqCst) {
+                return false;
+            }
+            self.persisted_batches
+                .lock()
+                .await
+                .push(messages.iter().map(|message| message.msg_id).collect());
+            self.persisted
+                .lock()
+                .await
+                .extend(messages.iter().map(|message| message.msg_id));
             true
+        }
+
+        async fn publish_monitored_batch(&self, messages: Vec<im_proto::GroupMessage>) {
+            self.published
+                .lock()
+                .await
+                .push(messages.into_iter().map(|message| message.msg_id).collect());
         }
 
         async fn acknowledge_group_messages(
@@ -2389,14 +3126,19 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MessageEffects for SharedMonitoringEffects {
-        async fn is_monitored(&self, group_id: i64) -> bool {
-            self.monitored.read().await.contains(&group_id)
+        async fn monitoring_snapshot(&self) -> HashSet<i64> {
+            self.monitored.read().await.clone()
         }
 
-        async fn persist_and_emit(&self, message: im_proto::GroupMessage) -> bool {
-            self.persisted.lock().await.push(message.msg_id);
+        async fn persist_monitored_batch(&self, messages: &[im_proto::GroupMessage]) -> bool {
+            self.persisted
+                .lock()
+                .await
+                .extend(messages.iter().map(|message| message.msg_id));
             true
         }
+
+        async fn publish_monitored_batch(&self, _messages: Vec<im_proto::GroupMessage>) {}
 
         async fn acknowledge_group_messages(
             &self,
@@ -2404,6 +3146,150 @@ mod tests {
             msg_ids: Vec<i64>,
         ) -> Result<(), im_common::error::AppError> {
             self.acknowledged.lock().await.push((group_id, msg_ids));
+            Ok(())
+        }
+    }
+
+    struct BlockingPersistEffects {
+        persist_started: tokio::sync::Notify,
+        acknowledged: AtomicUsize,
+        published: AtomicUsize,
+    }
+
+    struct BlockingProjectionEffects {
+        snapshot_calls: AtomicUsize,
+        persist_calls: AtomicUsize,
+        receipt_calls: AtomicUsize,
+        projection_calls: AtomicUsize,
+        projection_started: tokio::sync::Notify,
+        projection_release: tokio::sync::Semaphore,
+    }
+
+    struct ReceiptFailureEffects {
+        persisted: AtomicUsize,
+        acknowledged_groups: tokio::sync::Mutex<Vec<i64>>,
+        projected: AtomicUsize,
+    }
+
+    struct ProjectionCancellationEffects {
+        calls: AtomicUsize,
+        started: tokio::sync::Notify,
+        future_cancelled: AtomicBool,
+    }
+
+    struct ProjectionCancellationGuard<'a>(&'a AtomicBool);
+
+    impl Drop for ProjectionCancellationGuard<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MessageEffects for ProjectionCancellationEffects {
+        async fn monitoring_snapshot(&self) -> HashSet<i64> {
+            HashSet::new()
+        }
+
+        async fn persist_monitored_batch(&self, _messages: &[im_proto::GroupMessage]) -> bool {
+            true
+        }
+
+        async fn publish_monitored_batch(&self, _messages: Vec<im_proto::GroupMessage>) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let _guard = ProjectionCancellationGuard(&self.future_cancelled);
+            self.started.notify_one();
+            std::future::pending().await
+        }
+
+        async fn acknowledge_group_messages(
+            &self,
+            _group_id: i64,
+            _msg_ids: Vec<i64>,
+        ) -> Result<(), im_common::error::AppError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MessageEffects for ReceiptFailureEffects {
+        async fn monitoring_snapshot(&self) -> HashSet<i64> {
+            [7, 8, 9].into_iter().collect()
+        }
+
+        async fn persist_monitored_batch(&self, _messages: &[im_proto::GroupMessage]) -> bool {
+            self.persisted.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+
+        async fn publish_monitored_batch(&self, _messages: Vec<im_proto::GroupMessage>) {
+            self.projected.fetch_add(1, Ordering::SeqCst);
+        }
+
+        async fn acknowledge_group_messages(
+            &self,
+            group_id: i64,
+            _msg_ids: Vec<i64>,
+        ) -> Result<(), im_common::error::AppError> {
+            self.acknowledged_groups.lock().await.push(group_id);
+            if group_id == 8 {
+                return Err(im_common::error::AppError::TcpFrame(
+                    "injected receipt failure".to_string(),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MessageEffects for BlockingProjectionEffects {
+        async fn monitoring_snapshot(&self) -> HashSet<i64> {
+            self.snapshot_calls.fetch_add(1, Ordering::SeqCst);
+            [7].into_iter().collect()
+        }
+
+        async fn persist_monitored_batch(&self, _messages: &[im_proto::GroupMessage]) -> bool {
+            self.persist_calls.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+
+        async fn publish_monitored_batch(&self, _messages: Vec<im_proto::GroupMessage>) {
+            self.projection_calls.fetch_add(1, Ordering::SeqCst);
+            self.projection_started.notify_one();
+            self.projection_release.acquire().await.unwrap().forget();
+        }
+
+        async fn acknowledge_group_messages(
+            &self,
+            _group_id: i64,
+            _msg_ids: Vec<i64>,
+        ) -> Result<(), im_common::error::AppError> {
+            self.receipt_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MessageEffects for BlockingPersistEffects {
+        async fn monitoring_snapshot(&self) -> HashSet<i64> {
+            [7].into_iter().collect()
+        }
+
+        async fn persist_monitored_batch(&self, _messages: &[im_proto::GroupMessage]) -> bool {
+            self.persist_started.notify_one();
+            std::future::pending().await
+        }
+
+        async fn publish_monitored_batch(&self, _messages: Vec<im_proto::GroupMessage>) {
+            self.published.fetch_add(1, Ordering::SeqCst);
+        }
+
+        async fn acknowledge_group_messages(
+            &self,
+            _group_id: i64,
+            _msg_ids: Vec<i64>,
+        ) -> Result<(), im_common::error::AppError> {
+            self.acknowledged.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -2457,6 +3343,7 @@ mod tests {
             .send(IncomingFrame {
                 message_id: 2202,
                 content: push.encode_to_vec(),
+                queue_byte_permit: None,
             })
             .await
             .unwrap();
@@ -2474,8 +3361,7 @@ mod tests {
     async fn message_worker_accepts_valid_1201_and_only_processes_monitored_2202() {
         let effects = Arc::new(FakeMessageEffects {
             monitored: [7].into_iter().collect(),
-            persisted: tokio::sync::Mutex::new(Vec::new()),
-            acknowledged: tokio::sync::Mutex::new(Vec::new()),
+            ..Default::default()
         });
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
         let (login_sender, login_receiver) = tokio::sync::oneshot::channel();
@@ -2505,6 +3391,7 @@ mod tests {
             .send(IncomingFrame {
                 message_id: 1201,
                 content: login.encode_to_vec(),
+                queue_byte_permit: None,
             })
             .await
             .unwrap();
@@ -2527,6 +3414,7 @@ mod tests {
             .send(IncomingFrame {
                 message_id: 2202,
                 content: push.encode_to_vec(),
+                queue_byte_permit: None,
             })
             .await
             .unwrap();
@@ -2534,6 +3422,7 @@ mod tests {
             .send(IncomingFrame {
                 message_id: 2205,
                 content: b"reserved recall payload".to_vec(),
+                queue_byte_permit: None,
             })
             .await
             .unwrap();
@@ -2546,6 +3435,867 @@ mod tests {
             *effects.acknowledged.lock().await,
             [(7, vec![70]), (8, vec![80])]
         );
+    }
+
+    // 微批上限：同一帧中的 100 条监控消息应一次提交并立即 flush。
+    #[tokio::test]
+    async fn message_worker_flushes_one_hundred_messages_in_one_batch() {
+        let effects = Arc::new(FakeMessageEffects {
+            monitored: [7].into_iter().collect(),
+            ..Default::default()
+        });
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let (login_sender, _login_receiver) = tokio::sync::oneshot::channel();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let worker = tokio::spawn(run_message_worker_with_effects(
+            receiver,
+            effects.clone(),
+            cancellation.clone(),
+            login_sender,
+        ));
+        let push = im_proto::PushGroupMessage {
+            group_msg: (1..=100)
+                .map(|msg_id| im_proto::GroupMessage {
+                    msg_id,
+                    group_id: 7,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        sender
+            .send(IncomingFrame {
+                message_id: 2202,
+                content: push.encode_to_vec(),
+                queue_byte_permit: None,
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_millis(200), async {
+            while effects.persist_calls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("100 messages must flush while the input queue remains open");
+
+        assert_eq!(effects.persist_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(effects.persisted.lock().await.len(), 100);
+        cancellation.cancel();
+        drop(sender);
+        worker.await.unwrap();
+    }
+
+    // 可重复负载：单帧 10,000 条消息必须按阈值形成恰好 100 个事务批次，并保持
+    // 持久化、投影与按群回执的 ID 集合及协议顺序完全一致。只输出观测值，不设耗时门槛。
+    #[tokio::test]
+    async fn message_worker_preserves_ten_thousand_message_burst_without_loss_or_duplicates() {
+        const MESSAGE_COUNT: usize = 10_000;
+        const EXPECTED_BATCH_COUNT: usize = 100;
+        let effects = Arc::new(FakeMessageEffects {
+            monitored: [7, 8].into_iter().collect(),
+            ..Default::default()
+        });
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let (login_sender, _login_receiver) = tokio::sync::oneshot::channel();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let messages = (0..MESSAGE_COUNT)
+            .map(|index| im_proto::GroupMessage {
+                msg_id: index as i64 + 1,
+                group_id: if index % 2 == 0 { 7 } else { 8 },
+                send_time: index as i64,
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let expected_ids = messages
+            .iter()
+            .map(|message| message.msg_id)
+            .collect::<Vec<_>>();
+        let started = std::time::Instant::now();
+
+        sender
+            .send(IncomingFrame {
+                message_id: im_chat::heartbeat::PUSH_GROUP_MESSAGE,
+                content: im_proto::PushGroupMessage {
+                    group_msg: messages,
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+                queue_byte_permit: None,
+            })
+            .await
+            .unwrap();
+        drop(sender);
+        run_message_worker_with_effects(receiver, effects.clone(), cancellation, login_sender)
+            .await;
+
+        let persisted_batches = effects.persisted_batches.lock().await;
+        let published_batches = effects.published.lock().await;
+        let receipts = effects.acknowledged.lock().await;
+        let persisted_ids = persisted_batches
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
+        let published_ids = published_batches
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
+        let receipt_ids = receipts
+            .iter()
+            .flat_map(|(_, ids)| ids.iter().copied())
+            .collect::<Vec<_>>();
+        let peak_batch = persisted_batches.iter().map(Vec::len).max().unwrap_or(0);
+
+        assert_eq!(persisted_batches.len(), EXPECTED_BATCH_COUNT);
+        assert_eq!(peak_batch, 100);
+        assert!(persisted_batches
+            .iter()
+            .all(|batch| batch.len() <= MESSAGE_BATCH_MAX_MESSAGES));
+        assert_eq!(published_batches.len(), persisted_batches.len());
+        assert_eq!(persisted_ids, expected_ids);
+        assert_eq!(published_ids, expected_ids);
+        assert_eq!(
+            persisted_ids.iter().copied().collect::<HashSet<_>>().len(),
+            MESSAGE_COUNT
+        );
+        assert_eq!(
+            published_ids.iter().copied().collect::<HashSet<_>>().len(),
+            MESSAGE_COUNT
+        );
+        assert_eq!(
+            receipt_ids.iter().copied().collect::<HashSet<_>>(),
+            expected_ids.iter().copied().collect::<HashSet<_>>()
+        );
+        assert_eq!(receipt_ids.len(), MESSAGE_COUNT);
+        assert_eq!(receipts.len(), persisted_batches.len() * 2);
+        for (batch_index, receipts_for_batch) in receipts.chunks_exact(2).enumerate() {
+            assert_eq!(receipts_for_batch[0].0, 7);
+            assert_eq!(receipts_for_batch[1].0, 8);
+            let mut merged = receipts_for_batch
+                .iter()
+                .flat_map(|(_, ids)| ids.iter().copied())
+                .collect::<Vec<_>>();
+            merged.sort_unstable();
+            assert_eq!(merged, persisted_batches[batch_index]);
+        }
+
+        eprintln!(
+            "10k message worker load: elapsed={:?}, peak_batch={}, observed_projection_queue_capacity={}",
+            started.elapsed(),
+            peak_batch,
+            MESSAGE_PROJECTION_QUEUE_CAPACITY
+        );
+    }
+
+    // 时间上限：不足 100 条时从首条进入空批次起等待 25ms 后提交。
+    #[tokio::test(start_paused = true)]
+    async fn message_worker_flushes_partial_batch_after_twenty_five_milliseconds() {
+        let effects = Arc::new(FakeMessageEffects {
+            monitored: [7].into_iter().collect(),
+            ..Default::default()
+        });
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let (login_sender, _login_receiver) = tokio::sync::oneshot::channel();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let worker = tokio::spawn(run_message_worker_with_effects(
+            receiver,
+            effects.clone(),
+            cancellation.clone(),
+            login_sender,
+        ));
+        sender
+            .send(IncomingFrame {
+                message_id: 2202,
+                content: im_proto::PushGroupMessage {
+                    group_msg: vec![im_proto::GroupMessage {
+                        msg_id: 70,
+                        group_id: 7,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+                queue_byte_permit: None,
+            })
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(Duration::from_millis(24)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(effects.persist_calls.load(Ordering::SeqCst), 0);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(effects.persist_calls.load(Ordering::SeqCst), 1);
+
+        cancellation.cancel();
+        drop(sender);
+        worker.await.unwrap();
+    }
+
+    // 协议优先级：待 flush 的 2202 不阻塞随后到达的 1201 登录确认。
+    #[tokio::test(start_paused = true)]
+    async fn login_success_is_processed_while_partial_message_batch_waits() {
+        let effects = Arc::new(FakeMessageEffects {
+            monitored: [7].into_iter().collect(),
+            ..Default::default()
+        });
+        let (sender, receiver) = tokio::sync::mpsc::channel(2);
+        let (login_sender, mut login_receiver) = tokio::sync::oneshot::channel();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let worker = tokio::spawn(run_message_worker_with_effects(
+            receiver,
+            effects.clone(),
+            cancellation.clone(),
+            login_sender,
+        ));
+        sender
+            .send(IncomingFrame {
+                message_id: 2202,
+                content: im_proto::PushGroupMessage {
+                    group_msg: vec![im_proto::GroupMessage {
+                        msg_id: 70,
+                        group_id: 7,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+                queue_byte_permit: None,
+            })
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        sender
+            .send(IncomingFrame {
+                message_id: 1201,
+                content: im_proto::PushLoginSuccessMessage::default().encode_to_vec(),
+                queue_byte_permit: None,
+            })
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        assert!(login_receiver.try_recv().is_ok());
+        assert_eq!(effects.persist_calls.load(Ordering::SeqCst), 0);
+
+        cancellation.cancel();
+        drop(sender);
+        worker.await.unwrap();
+    }
+
+    // 帧级快照：同一 PushGroupMessage 的多条消息只读取一次监控集合。
+    #[tokio::test]
+    async fn message_worker_reads_monitoring_snapshot_once_per_push_frame() {
+        let effects = Arc::new(FakeMessageEffects {
+            monitored: [7].into_iter().collect(),
+            ..Default::default()
+        });
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let (login_sender, _login_receiver) = tokio::sync::oneshot::channel();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        sender
+            .send(IncomingFrame {
+                message_id: 2202,
+                content: im_proto::PushGroupMessage {
+                    group_msg: vec![
+                        im_proto::GroupMessage {
+                            msg_id: 70,
+                            group_id: 7,
+                            ..Default::default()
+                        },
+                        im_proto::GroupMessage {
+                            msg_id: 71,
+                            group_id: 7,
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+                queue_byte_permit: None,
+            })
+            .await
+            .unwrap();
+        drop(sender);
+
+        run_message_worker_with_effects(receiver, effects.clone(), cancellation, login_sender)
+            .await;
+
+        assert_eq!(effects.snapshot_calls.load(Ordering::SeqCst), 1);
+    }
+
+    // 事务失败：监控消息不回执、不推前端，未监控消息仍按群回执。
+    #[tokio::test]
+    async fn failed_monitored_batch_only_acknowledges_unmonitored_messages() {
+        let effects = Arc::new(FakeMessageEffects {
+            monitored: [7].into_iter().collect(),
+            persist_succeeds: AtomicBool::new(false),
+            ..Default::default()
+        });
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let (login_sender, _login_receiver) = tokio::sync::oneshot::channel();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        sender
+            .send(IncomingFrame {
+                message_id: 2202,
+                content: im_proto::PushGroupMessage {
+                    group_msg: vec![
+                        im_proto::GroupMessage {
+                            msg_id: 70,
+                            group_id: 7,
+                            ..Default::default()
+                        },
+                        im_proto::GroupMessage {
+                            msg_id: 80,
+                            group_id: 8,
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+                queue_byte_permit: None,
+            })
+            .await
+            .unwrap();
+        drop(sender);
+
+        run_message_worker_with_effects(receiver, effects.clone(), cancellation, login_sender)
+            .await;
+
+        assert!(effects.persisted.lock().await.is_empty());
+        assert_eq!(*effects.acknowledged.lock().await, [(8, vec![80])]);
+        assert!(effects.published.lock().await.is_empty());
+    }
+
+    // Channel 批次：成功事务和回执后仅发布一次，并保持监控消息的协议顺序。
+    #[tokio::test]
+    async fn successful_batch_publishes_once_in_original_order() {
+        let effects = Arc::new(FakeMessageEffects {
+            monitored: [7].into_iter().collect(),
+            ..Default::default()
+        });
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let (login_sender, _login_receiver) = tokio::sync::oneshot::channel();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        sender
+            .send(IncomingFrame {
+                message_id: 2202,
+                content: im_proto::PushGroupMessage {
+                    group_msg: [3, 1, 2]
+                        .into_iter()
+                        .map(|msg_id| im_proto::GroupMessage {
+                            msg_id,
+                            group_id: 7,
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+                queue_byte_permit: None,
+            })
+            .await
+            .unwrap();
+        drop(sender);
+
+        run_message_worker_with_effects(receiver, effects.clone(), cancellation, login_sender)
+            .await;
+
+        assert_eq!(*effects.published.lock().await, [vec![3, 1, 2]]);
+        assert_eq!(*effects.acknowledged.lock().await, [(7, vec![3, 1, 2])]);
+    }
+
+    // 取消边界：监控批次事务尚未完成时退出，不发送回执或 Channel。
+    #[tokio::test]
+    async fn cancellation_during_batch_insert_does_not_acknowledge_uncommitted_messages() {
+        let effects = Arc::new(BlockingPersistEffects {
+            persist_started: tokio::sync::Notify::new(),
+            acknowledged: AtomicUsize::new(0),
+            published: AtomicUsize::new(0),
+        });
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let (login_sender, _login_receiver) = tokio::sync::oneshot::channel();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let worker = tokio::spawn(run_message_worker_with_effects(
+            receiver,
+            effects.clone(),
+            cancellation.clone(),
+            login_sender,
+        ));
+        sender
+            .send(IncomingFrame {
+                message_id: 2202,
+                content: im_proto::PushGroupMessage {
+                    group_msg: (1..=100)
+                        .map(|msg_id| im_proto::GroupMessage {
+                            msg_id,
+                            group_id: 7,
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+                queue_byte_permit: None,
+            })
+            .await
+            .unwrap();
+        effects.persist_started.notified().await;
+
+        cancellation.cancel();
+        worker.await.unwrap();
+
+        assert_eq!(effects.acknowledged.load(Ordering::SeqCst), 0);
+        assert_eq!(effects.published.load(Ordering::SeqCst), 0);
+    }
+
+    // 投影隔离：阻塞的首批投影不妨碍主 worker 继续提交和回执，直到容量 8 的投影队列填满。
+    #[tokio::test]
+    async fn blocked_projection_allows_main_worker_to_fill_bounded_projection_queue() {
+        let effects = Arc::new(BlockingProjectionEffects {
+            snapshot_calls: AtomicUsize::new(0),
+            persist_calls: AtomicUsize::new(0),
+            receipt_calls: AtomicUsize::new(0),
+            projection_calls: AtomicUsize::new(0),
+            projection_started: tokio::sync::Notify::new(),
+            projection_release: tokio::sync::Semaphore::new(0),
+        });
+        let (sender, receiver) = tokio::sync::mpsc::channel(16);
+        let (login_sender, _login_receiver) = tokio::sync::oneshot::channel();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let worker = tokio::spawn(run_message_worker_with_effects(
+            receiver,
+            effects.clone(),
+            cancellation.clone(),
+            login_sender,
+        ));
+        for batch_id in 0..(MESSAGE_PROJECTION_QUEUE_CAPACITY + 3) {
+            sender
+                .send(full_monitored_batch_frame(batch_id as i64))
+                .await
+                .unwrap();
+        }
+        effects.projection_started.notified().await;
+
+        let progressed = tokio::time::timeout(Duration::from_millis(200), async {
+            while effects.persist_calls.load(Ordering::SeqCst)
+                < MESSAGE_PROJECTION_QUEUE_CAPACITY + 2
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+
+        cancellation.cancel();
+        drop(sender);
+        worker.await.unwrap();
+        assert!(
+            progressed.is_ok(),
+            "blocked projection must not stop database and receipt processing before the queue fills"
+        );
+        let processed_before_backpressure = MESSAGE_PROJECTION_QUEUE_CAPACITY + 2;
+        assert_eq!(
+            effects.snapshot_calls.load(Ordering::SeqCst),
+            processed_before_backpressure
+        );
+        assert_eq!(
+            effects.persist_calls.load(Ordering::SeqCst),
+            processed_before_backpressure
+        );
+        assert_eq!(
+            effects.receipt_calls.load(Ordering::SeqCst),
+            processed_before_backpressure
+        );
+        assert_eq!(effects.projection_calls.load(Ordering::SeqCst), 1);
+    }
+
+    // 端到端字节预算：已完成事务和回执但仍阻塞投影的帧必须继续占用其正文许可。
+    #[tokio::test]
+    async fn blocked_projection_keeps_frame_bytes_reserved_until_projection_finishes() {
+        let effects = Arc::new(BlockingProjectionEffects {
+            snapshot_calls: AtomicUsize::new(0),
+            persist_calls: AtomicUsize::new(0),
+            receipt_calls: AtomicUsize::new(0),
+            projection_calls: AtomicUsize::new(0),
+            projection_started: tokio::sync::Notify::new(),
+            projection_release: tokio::sync::Semaphore::new(0),
+        });
+        let payload = im_proto::PushGroupMessage {
+            group_msg: vec![im_proto::GroupMessage {
+                msg_id: 70,
+                group_id: 7,
+                content: vec![1, 2, 3],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let second_frame_bytes = 2;
+        let total_budget = payload.len() + second_frame_bytes - 1;
+        let budget = Arc::new(tokio::sync::Semaphore::new(total_budget));
+        let (sender, receiver) = tokio::sync::mpsc::channel(2);
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let (login_sender, _login_receiver) = tokio::sync::oneshot::channel();
+        let worker = tokio::spawn(run_message_worker_with_effects(
+            receiver,
+            effects.clone(),
+            cancellation.clone(),
+            login_sender,
+        ));
+        enqueue_incoming_frame(
+            &sender,
+            IncomingFrame {
+                message_id: im_chat::heartbeat::PUSH_GROUP_MESSAGE,
+                content: payload,
+                queue_byte_permit: None,
+            },
+            &cancellation,
+            &budget,
+        )
+        .await
+        .unwrap();
+        effects.projection_started.notified().await;
+        assert_eq!(effects.persist_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(effects.receipt_calls.load(Ordering::SeqCst), 1);
+
+        let (enqueue_entered, enqueue_is_running) = tokio::sync::oneshot::channel();
+        let mut second_enqueue = tokio::spawn({
+            let sender = sender.clone();
+            let cancellation = cancellation.clone();
+            let budget = budget.clone();
+            async move {
+                let _ = enqueue_entered.send(());
+                enqueue_incoming_frame(
+                    &sender,
+                    IncomingFrame {
+                        message_id: 9999,
+                        content: vec![0; second_frame_bytes],
+                        queue_byte_permit: None,
+                    },
+                    &cancellation,
+                    &budget,
+                )
+                .await
+            }
+        });
+        enqueue_is_running.await.unwrap();
+        let blocked = tokio::time::timeout(Duration::from_millis(20), &mut second_enqueue).await;
+        let was_blocked = blocked.is_err();
+
+        effects.projection_release.add_permits(1);
+        if was_blocked {
+            second_enqueue.await.unwrap().unwrap();
+        } else {
+            blocked.unwrap().unwrap().unwrap();
+        }
+        tokio::time::timeout(Duration::from_millis(200), async {
+            while budget.available_permits() != total_budget {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("projection completion and later frame consumption must release all bytes");
+        cancellation.cancel();
+        drop(sender);
+        worker.await.unwrap();
+
+        assert!(
+            was_blocked,
+            "the second enqueue must wait while projection retains the first frame permit"
+        );
+    }
+
+    // 投影取消：正在运行的投影 future 被 drop，排队批次不再发布，二者许可均被归还。
+    #[tokio::test]
+    async fn cancelling_projection_worker_drops_active_and_queued_batches() {
+        let effects = Arc::new(ProjectionCancellationEffects {
+            calls: AtomicUsize::new(0),
+            started: tokio::sync::Notify::new(),
+            future_cancelled: AtomicBool::new(false),
+        });
+        let byte_budget = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = Arc::new(byte_budget.clone().acquire_owned().await.unwrap());
+        let (sender, receiver) = tokio::sync::mpsc::channel(2);
+        for msg_id in [70, 71] {
+            sender
+                .send(super::ProjectionMessageBatch {
+                    messages: vec![im_proto::GroupMessage {
+                        msg_id,
+                        group_id: 7,
+                        ..Default::default()
+                    }],
+                    frame_byte_permits: vec![permit.clone()],
+                })
+                .await
+                .unwrap();
+        }
+        drop(permit);
+        drop(sender);
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let projection_worker = tokio::spawn(super::run_message_projection_worker(
+            receiver,
+            effects.clone(),
+            cancellation.clone(),
+        ));
+        effects.started.notified().await;
+
+        cancellation.cancel();
+        projection_worker.await.unwrap();
+
+        assert!(effects.future_cancelled.load(Ordering::SeqCst));
+        assert_eq!(effects.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(byte_budget.available_permits(), 1);
+    }
+
+    // 跨批共享：同一帧拆成两个投影批次时，首批完成不能提前归还该帧许可。
+    #[tokio::test]
+    async fn frame_permit_is_released_after_its_last_projection_batch_finishes() {
+        let effects = Arc::new(BlockingProjectionEffects {
+            snapshot_calls: AtomicUsize::new(0),
+            persist_calls: AtomicUsize::new(0),
+            receipt_calls: AtomicUsize::new(0),
+            projection_calls: AtomicUsize::new(0),
+            projection_started: tokio::sync::Notify::new(),
+            projection_release: tokio::sync::Semaphore::new(0),
+        });
+        let payload = im_proto::PushGroupMessage {
+            group_msg: (0..150)
+                .map(|msg_id| im_proto::GroupMessage {
+                    msg_id,
+                    group_id: 7,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let total_bytes = payload.len();
+        let byte_budget = Arc::new(tokio::sync::Semaphore::new(total_bytes));
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let (login_sender, _login_receiver) = tokio::sync::oneshot::channel();
+        let worker = tokio::spawn(run_message_worker_with_effects(
+            receiver,
+            effects.clone(),
+            cancellation.clone(),
+            login_sender,
+        ));
+        enqueue_incoming_frame(
+            &sender,
+            IncomingFrame {
+                message_id: im_chat::heartbeat::PUSH_GROUP_MESSAGE,
+                content: payload,
+                queue_byte_permit: None,
+            },
+            &cancellation,
+            &byte_budget,
+        )
+        .await
+        .unwrap();
+        drop(sender);
+        effects.projection_started.notified().await;
+
+        effects.projection_release.add_permits(1);
+        while effects.projection_calls.load(Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(byte_budget.available_permits(), 0);
+
+        effects.projection_release.add_permits(1);
+        worker.await.unwrap();
+        assert_eq!(byte_budget.available_permits(), total_bytes);
+    }
+
+    // 回执失败：按 group_id 顺序发送时中途失败会取消连接，不再回执后续群，也不提交投影。
+    #[tokio::test]
+    async fn receipt_failure_cancels_connection_and_skips_remaining_receipts_and_projection() {
+        let effects = Arc::new(ReceiptFailureEffects {
+            persisted: AtomicUsize::new(0),
+            acknowledged_groups: tokio::sync::Mutex::new(Vec::new()),
+            projected: AtomicUsize::new(0),
+        });
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let (login_sender, _login_receiver) = tokio::sync::oneshot::channel();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        sender
+            .send(IncomingFrame {
+                message_id: im_chat::heartbeat::PUSH_GROUP_MESSAGE,
+                content: im_proto::PushGroupMessage {
+                    group_msg: [9, 7, 8]
+                        .into_iter()
+                        .map(|group_id| im_proto::GroupMessage {
+                            msg_id: group_id * 10,
+                            group_id,
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+                queue_byte_permit: None,
+            })
+            .await
+            .unwrap();
+        drop(sender);
+
+        run_message_worker_with_effects(
+            receiver,
+            effects.clone(),
+            cancellation.clone(),
+            login_sender,
+        )
+        .await;
+
+        assert_eq!(effects.persisted.load(Ordering::SeqCst), 1);
+        assert_eq!(*effects.acknowledged_groups.lock().await, [7, 8]);
+        assert_eq!(effects.projected.load(Ordering::SeqCst), 0);
+        assert!(cancellation.is_cancelled());
+    }
+
+    // 无派生消息的帧：真实字节许可在 worker 完成本帧处理后归还。
+    #[tokio::test]
+    async fn message_worker_releases_real_byte_permit_after_frame_handling() {
+        let effects = Arc::new(FakeMessageEffects::default());
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let budget = Arc::new(tokio::sync::Semaphore::new(2));
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        enqueue_incoming_frame(
+            &sender,
+            IncomingFrame {
+                message_id: 9999,
+                content: vec![0; 2],
+                queue_byte_permit: None,
+            },
+            &cancellation,
+            &budget,
+        )
+        .await
+        .unwrap();
+        assert_eq!(budget.available_permits(), 0);
+        let (login_sender, _login_receiver) = tokio::sync::oneshot::channel();
+        let worker = tokio::spawn(run_message_worker_with_effects(
+            receiver,
+            effects,
+            cancellation.clone(),
+            login_sender,
+        ));
+
+        tokio::time::timeout(Duration::from_millis(200), async {
+            while budget.available_permits() != 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("worker must release bytes after receiving the frame");
+
+        cancellation.cancel();
+        drop(sender);
+        worker.await.unwrap();
+    }
+
+    // worker 取消：尚在 mpsc 中的真实许可随 receiver 关闭和排队帧 drop 一并归还。
+    #[tokio::test]
+    async fn cancelled_message_worker_drops_queued_real_byte_permit() {
+        let effects = Arc::new(FakeMessageEffects::default());
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let budget = Arc::new(tokio::sync::Semaphore::new(2));
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        enqueue_incoming_frame(
+            &sender,
+            IncomingFrame {
+                message_id: 9999,
+                content: vec![0; 2],
+                queue_byte_permit: None,
+            },
+            &cancellation,
+            &budget,
+        )
+        .await
+        .unwrap();
+        let (login_sender, _login_receiver) = tokio::sync::oneshot::channel();
+        cancellation.cancel();
+
+        run_message_worker_with_effects(receiver, effects, cancellation, login_sender).await;
+
+        assert_eq!(budget.available_permits(), 2);
+    }
+
+    // 非投影帧：1201、2205 与 2202 解码失败均在本帧处理结束后及时归还真实许可。
+    #[tokio::test]
+    async fn non_projected_frames_release_real_byte_permits_after_handling() {
+        let frames = [
+            IncomingFrame {
+                message_id: im_chat::heartbeat::PUSH_LOGIN_SUCCESS,
+                content: im_proto::PushLoginSuccessMessage {
+                    login_time: 1,
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+                queue_byte_permit: None,
+            },
+            IncomingFrame {
+                message_id: im_chat::heartbeat::PUSH_RECALL_GROUP_MESSAGE,
+                content: vec![1],
+                queue_byte_permit: None,
+            },
+            IncomingFrame {
+                message_id: im_chat::heartbeat::PUSH_GROUP_MESSAGE,
+                content: vec![0xff],
+                queue_byte_permit: None,
+            },
+        ];
+
+        for frame in frames {
+            let total_bytes = frame.content.len();
+            let budget = Arc::new(tokio::sync::Semaphore::new(total_bytes));
+            let (sender, receiver) = tokio::sync::mpsc::channel(1);
+            let cancellation = tokio_util::sync::CancellationToken::new();
+            enqueue_incoming_frame(&sender, frame, &cancellation, &budget)
+                .await
+                .unwrap();
+            drop(sender);
+            let (login_sender, _login_receiver) = tokio::sync::oneshot::channel();
+
+            run_message_worker_with_effects(
+                receiver,
+                Arc::new(FakeMessageEffects::default()),
+                cancellation,
+                login_sender,
+            )
+            .await;
+
+            assert_eq!(budget.available_permits(), total_bytes);
+        }
+    }
+
+    // 有界并发映射：同时运行数不超过 8，结果仍按输入位置排列。
+    #[tokio::test]
+    async fn ordered_bounded_map_limits_concurrency_and_preserves_order() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let output = super::map_ordered_bounded((0..24).collect(), MESSAGE_DECRYPT_CONCURRENCY, {
+            let active = active.clone();
+            let maximum = maximum.clone();
+            move |value| {
+                let active = active.clone();
+                let maximum = maximum.clone();
+                async move {
+                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    maximum.fetch_max(current, Ordering::SeqCst);
+                    tokio::task::yield_now().await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    value
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(maximum.load(Ordering::SeqCst), MESSAGE_DECRYPT_CONCURRENCY);
+        assert_eq!(output, (0..24).collect::<Vec<_>>());
     }
 
     // 1201 合法最小值：零 login_time 的默认消息仍是有效登录确认。
@@ -2567,6 +4317,7 @@ mod tests {
             .send(IncomingFrame {
                 message_id: 1201,
                 content: im_proto::PushLoginSuccessMessage::default().encode_to_vec(),
+                queue_byte_permit: None,
             })
             .await
             .unwrap();
@@ -2606,6 +4357,7 @@ mod tests {
                 .send(IncomingFrame {
                     message_id: 1201,
                     content: payload,
+                    queue_byte_permit: None,
                 })
                 .await
                 .unwrap();
@@ -2637,8 +4389,7 @@ mod tests {
     async fn cancelled_message_worker_discards_queued_frames() {
         let effects = Arc::new(FakeMessageEffects {
             monitored: [7].into_iter().collect(),
-            persisted: tokio::sync::Mutex::new(Vec::new()),
-            acknowledged: tokio::sync::Mutex::new(Vec::new()),
+            ..Default::default()
         });
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
         let push = im_proto::PushGroupMessage {
@@ -2653,6 +4404,7 @@ mod tests {
             .send(IncomingFrame {
                 message_id: 2202,
                 content: push.encode_to_vec(),
+                queue_byte_permit: None,
             })
             .await
             .unwrap();
@@ -2936,12 +4688,21 @@ mod tests {
         let generation = permit.generation();
         let attempt_id = permit.attempt_id();
         let worker_coordinator = coordinator.clone();
-        let worker = tokio::spawn(async move {
+        let (wait_started, wait_is_running) = tokio::sync::oneshot::channel();
+        let mut worker = tokio::spawn(async move {
+            let _ = wait_started.send(());
             cancellation.cancelled().await;
             worker_coordinator
                 .finish_connect(generation, attempt_id)
                 .await;
         });
+        wait_is_running.await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut worker)
+                .await
+                .is_err(),
+            "connection worker must still be waiting before explicit cancellation"
+        );
 
         let reset = tokio::time::timeout(
             std::time::Duration::from_millis(200),

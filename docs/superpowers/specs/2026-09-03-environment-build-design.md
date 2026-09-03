@@ -57,15 +57,31 @@ Vue/Vite 在构建时读取 `VITE_GT4_CAPTCHA_ID`。源码不保留真实 ID 回
 本地实际使用 `.env.test` 与 `.env.production`，两者均被 Git 忽略。测试模板包含非敏感
 测试地址和协议编号；敏感值留空。生产模板由部署者填写。
 
-跨平台 Node 执行器只接受 `dev|build` 和 `test|production`，环境文件值可被调用进程的
-同名变量覆盖。它先校验配置，再执行项目锁定版本的 Tauri CLI，并透传退出状态。
+跨平台 Node 执行器只接受 `dev|build|build-run` 和 `test|production`，环境文件值可被
+调用进程的同名变量覆盖。它先校验配置，再检查 Tauri CLI、Vite、Vue 和
+`@tanstack/vue-virtual` 的安装清单；首次克隆或关键包缺失时，在应用与 UI 目录分别优先
+执行 `npm ci`，没有锁文件时才退回 `npm install`。随后执行项目锁定版本的 Tauri CLI
+并透传退出状态。
 
 公开命令：
 
 - `npm run dev:test`
 - `npm run dev:production`
+- `npm run start:test`
+- `npm run start:production`
 - `npm run build:test`
 - `npm run build:production`
+- `npm run build-run:test`
+- `npm run build-run:production`
+
+`start:*` 是便于首次使用的一键开发启动别名。`build-run:*` 会先生成安装包，再直接运行
+当前工作区 `target/release` 下刚构建的可执行文件，不通过系统应用目录查找同名程序，
+用于避免误开先前安装的旧版本。
+
+GT4 脚本优先使用随 UI 打包的 `/vendor/gt4.js`，并保留官方 CDN 回退。生产 CSP 与开发
+CSP 同时放行 `geetest.com` 主服务以及官方容灾使用的 `geevisit.com`、
+`gsensebot.com` 和 `dn-staticdown.qbox.me` 对应 HTTPS 主机；SDK 异常只展示公开的
+code/msg 诊断字段，不拼接账号或验证结果。
 
 ## GitHub Actions
 
@@ -85,8 +101,9 @@ Version Secret Name 使用 Environment Secrets。
 
 ## 验证
 
-自动测试覆盖 Rust 缺失/非法构建配置、AES 长度、GT4 缺失配置、Node 环境文件解析、
-进程变量覆盖、命令和环境白名单，以及错误不泄漏密钥值。
+自动测试覆盖 Rust 缺失/非法构建配置、AES 长度、GT4 缺失配置与异常详情、主服务及
+容灾 CSP、Node 环境文件解析、进程变量覆盖、依赖安装规划与执行、命令和环境白名单、
+当前工作区产物路径，以及错误不泄漏密钥值。
 
 实施后执行 Rust 格式化、Clippy、workspace 测试、Vue 测试和类型检查、Node 脚本测试及
 本机测试环境构建。三种操作系统的最终 bundle 由首次手动 GitHub workflow 验证。

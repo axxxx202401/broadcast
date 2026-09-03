@@ -8,12 +8,13 @@
  */
 
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-const COMMANDS = new Set(['dev', 'build'])
+const COMMANDS = new Set(['dev', 'build', 'build-run'])
 const PROFILES = new Set(['test', 'production'])
 const REQUIRED_VARIABLES = [
   'IM_OPENCHAT_USER_URL',
@@ -34,7 +35,7 @@ const REQUIRED_VARIABLES = [
 /** 校验命令行选择，防止拼写错误悄悄选择其他环境。 */
 export function validateInvocation(command, profile) {
   if (!COMMANDS.has(command)) {
-    throw new Error('命令必须是 dev 或 build')
+    throw new Error('命令必须是 dev、build 或 build-run')
   }
   if (!PROFILES.has(profile)) {
     throw new Error('构建环境必须是 test 或 production')
@@ -75,6 +76,92 @@ export function parseEnvironmentFile(content) {
 /** 合并环境文件与调用进程；调用者显式设置的值拥有最高优先级。 */
 export function buildEnvironment(fileValues, processValues) {
   return { ...fileValues, ...processValues }
+}
+
+/**
+ * 返回缺少关键 Node 包的安装目录。
+ *
+ * 只检查启动链路必需的包清单；任一清单缺失时对整个目录执行一次锁文件安装，既能覆盖
+ * 首次克隆，也能修复 package.json 已增加依赖而 node_modules 尚未更新的情况。
+ */
+export function dependencyInstallTargets(appDirectory, pathExists = existsSync) {
+  const uiDirectory = path.join(appDirectory, 'ui')
+  const requirements = [
+    {
+      directory: appDirectory,
+      manifests: [
+        path.join(appDirectory, 'node_modules', '@tauri-apps', 'cli', 'package.json'),
+      ],
+    },
+    {
+      directory: uiDirectory,
+      manifests: [
+        path.join(uiDirectory, 'node_modules', 'vite', 'package.json'),
+        path.join(uiDirectory, 'node_modules', 'vue', 'package.json'),
+        path.join(uiDirectory, 'node_modules', '@tanstack', 'vue-virtual', 'package.json'),
+      ],
+    },
+  ]
+  return requirements
+    .filter(({ manifests }) => manifests.some(manifest => !pathExists(manifest)))
+    .map(({ directory }) => directory)
+}
+
+/** 返回当前工作区刚生成的可执行文件，避免误启动系统中安装的旧版本。 */
+export function packagedExecutablePath(repositoryRoot, platform = process.platform) {
+  if (platform === 'darwin') {
+    return path.join(
+      repositoryRoot,
+      'target',
+      'release',
+      'bundle',
+      'macos',
+      'IM Monitor.app',
+      'Contents',
+      'MacOS',
+      'im-app',
+    )
+  }
+  return path.join(
+    repositoryRoot,
+    'target',
+    'release',
+    platform === 'win32' ? 'im-app.exe' : 'im-app',
+  )
+}
+
+/** 在指定目录执行命令并继承终端输出，非零退出码直接终止启动流程。 */
+function runCommand(executable, args, cwd, environment = process.env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, args, {
+      cwd,
+      env: environment,
+      stdio: 'inherit',
+    })
+    child.once('error', reject)
+    child.once('exit', (code, signal) => {
+      if (signal) {
+        reject(new Error(`${executable} 被信号 ${signal} 终止`))
+      } else if (code !== 0) {
+        reject(new Error(`${executable} 退出码为 ${code ?? 'unknown'}`))
+      } else {
+        resolve()
+      }
+    })
+  })
+}
+
+/** 首次运行或关键依赖缺失时，使用 package-lock 执行可重复安装。 */
+export async function ensureNodeDependencies(appDirectory, options = {}) {
+  const pathExists = options.pathExists ?? existsSync
+  const platform = options.platform ?? process.platform
+  const run = options.run ?? runCommand
+  const npm = platform === 'win32' ? 'npm.cmd' : 'npm'
+  for (const directory of dependencyInstallTargets(appDirectory, pathExists)) {
+    const installMode = pathExists(path.join(directory, 'package-lock.json')) ? 'ci' : 'install'
+    console.log(`检测到 Node 依赖未安装，正在执行 npm ${installMode}：${directory}`)
+    await run(npm, [installMode], directory)
+  }
 }
 
 /** 校验一组供 Rust 与 Vite 构建共同使用的配置。 */
@@ -181,27 +268,28 @@ async function run() {
   const fileValues = await readProfileFile(profile, repositoryRoot)
   const environment = buildEnvironment(fileValues, process.env)
   validateEnvironment(environment)
+  await ensureNodeDependencies(appDirectory)
 
   const executable = process.platform === 'win32'
     ? path.join(appDirectory, 'node_modules', '.bin', 'tauri.cmd')
     : path.join(appDirectory, 'node_modules', '.bin', 'tauri')
-  const child = spawn(executable, [command, ...process.argv.slice(4)], {
-    cwd: appDirectory,
-    env: environment,
-    stdio: 'inherit',
-  })
-  child.once('error', (error) => {
-    console.error(`无法启动 Tauri CLI：${error.message}`)
-    process.exitCode = 1
-  })
-  child.once('exit', (code, signal) => {
-    if (signal) {
-      console.error(`Tauri CLI 被信号 ${signal} 终止`)
-      process.exitCode = 1
-      return
+  const tauriCommand = command === 'build-run' ? 'build' : command
+  console.log(`正在使用 ${profile} 环境执行 Tauri ${tauriCommand}`)
+  await runCommand(
+    executable,
+    [tauriCommand, ...process.argv.slice(4)],
+    appDirectory,
+    environment,
+  )
+
+  if (command === 'build-run') {
+    const application = packagedExecutablePath(repositoryRoot)
+    if (!existsSync(application)) {
+      throw new Error(`构建成功但未找到当前工作区应用：${application}`)
     }
-    process.exitCode = code ?? 1
-  })
+    console.log(`正在启动当前工作区应用：${application}`)
+    await runCommand(application, [], appDirectory, environment)
+  }
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : ''

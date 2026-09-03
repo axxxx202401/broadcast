@@ -70,6 +70,24 @@ export interface MessageDto {
   stored_at: number | null
 }
 
+/** 指向一页中最老消息的复合 keyset 游标。 */
+export interface MessageCursor {
+  /** 边界消息的发送时间，与后端 `i64` 时间值保持一致。 */
+  sendTime: number
+  /** 边界消息 ID 的十进制字符串，避免 JavaScript 数值精度损失。 */
+  msgId: string
+}
+
+/** 历史消息命令返回的一页数据。 */
+export interface MessagePage {
+  /** 当前页消息；组合式状态会与持久索引中的实时消息去重合并。 */
+  messages: MessageDto[]
+  /** 仍有更早消息时用于下一次请求的复合游标。 */
+  nextCursor: MessageCursor | null
+  /** 是否仍存在严格早于 `nextCursor` 的消息。 */
+  hasMore: boolean
+}
+
 /** Rust 将附件解密到本地缓存后返回的信息。 */
 export interface AttachmentDownloadDto {
   /** 本地缓存绝对路径。 */

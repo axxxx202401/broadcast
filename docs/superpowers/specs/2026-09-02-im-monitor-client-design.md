@@ -115,7 +115,20 @@ Rust/protobuf/SQLite 内部 ID 使用 `i64`。跨 Tauri/JavaScript 边界的 `ui
 
 并发修复以 generation、attempt ID、`CancellationToken` 和连接 slot 的原子安装/移除隔离旧登录、旧连接、旧重连及旧状态事件。登录先推进 generation 并清理旧 session，只有远端认证和群同步都成功且 generation 仍有效时才发布新 session。群刷新、登录后的群快照落库/监控集合恢复和 `toggle_monitor` 共用 `group_ops` 锁，避免群快照与用户开关互相覆盖；远端 HTTP fetch 不占用该锁。
 
-后端 `connection_status` 事件是前端连接状态的唯一权威来源。HTTP 登录和群同步成功后，后端在不阻塞登录结果的后台任务中自动连接 TCP；首次连接失败保持登录状态并按指数退避重试，新登录、退出或应用关闭会使旧任务失效。消息进入容量 8 的 Tokio 有界队列，单条上限 8 MiB，队列满或超限时失败并断开。Vue 页面挂载时通过 `register_message_channel` 登记 Tauri Channel，热重载或页面重建会用新 Channel 替换旧接收端；监控群消息先写 SQLite，再通过当前 Channel 推送 DTO 并即时合并，不通过轮询或点击群组触发刷新。Channel 未登记或发送失败只记录警告，不影响消息入库及 2102 回执。
+后端 `connection_status` 事件是前端连接状态的唯一权威来源。HTTP 登录和群同步成功后，后端在不阻塞登录结果的后台任务中自动连接 TCP；首次连接失败保持登录状态并按指数退避重试，新登录、退出或应用关闭会使旧任务失效。
+
+实时消息链路使用两层有界队列和端到端字节许可：
+
+- TCP 回调进入容量 64 的 Tokio 帧队列；所有尚未完成 pending、投影排队或活动投影的帧正文共享 32 MiB 许可，单个已解码帧仍限制为 8 MiB；
+- 2202 在 Prost 分配对象前预扫描顶层 `group_msg`，单帧最多 10,000 条，超限或 wire 畸形只丢弃该帧；
+- 每个 2202 帧只读取一次监控群集合快照，消息按先到的“100 条或首条等待 25ms”条件刷新；
+- 监控消息按微批在一个 SQLite 事务中 UPSERT；数据库文件启用 WAL、`synchronous=NORMAL` 和 5 秒 `busy_timeout`，任一行失败回滚整批；
+- 提交成功后，在当前微批内按 `group_id` 合并并按协议顺序发送 2102；未监控消息无需落库即可回执，监控消息只有事务成功才进入回执，回执失败会取消连接；
+- 已提交且已回执的监控批次进入容量 8 的投影队列；每批最多 8 路并发解密，保序收集后通过一次 `Channel<Vec<MessageDto>>` 跨越 WebView 边界；
+- Vue 的 `MessageIndex` 以 `Map<msg_id, MessageDto>` 去重，并按 `(send_time, msg_id)` 稳定升序合并；实时与首屏超限时裁掉较早端，向上翻页超限时裁掉较新端，数组和 Map 双向同步且最多保留 1,000 条；
+- `MessagePanel` 使用 TanStack Virtual 的动态高度测量，仅挂载视口附近及 overscan 行。历史查询使用 `(send_time, msg_id)` 复合 keyset 游标，每页上限 200，不使用 `OFFSET`。历史请求带单调递增 token；面板在 `loadingOlder` 从 true 变为 false 后由单一协调 watcher 完成锚点恢复或无新增/失败收尾，再回传 `older-settled(token)`。父级只接受当前范围、当前轮次的握手，握手前不发布期间缓冲的实时消息。
+
+Vue 页面挂载时通过 `register_message_channel` 登记 Channel，热重载或页面重建会用新 Channel 替换旧接收端。实时消息不依赖轮询、选择群组或点击刷新；每个 Channel 批次过滤后只进行一次响应式状态提交。Channel 未登记、发送失败或单条解密失败只产生警告或可见错误，不撤销已经完成的数据库事务及 2102。
 
 消息视图默认调用 `get_messages(group_id=None)`，读取当前可用且仍受监控群组的最近消息；选择单群后传入群 ID，再次点击当前群或点击“全部消息”恢复全量。全量 DTO 携带 `group_name` 和字符串 `group_id`，实时事件在全量模式接受所有受监控群消息，单群模式只合并当前群。
 
@@ -147,6 +160,18 @@ TCP 帧是：
 群 `relKey` 解开 `GroupMessage.content` 和 HEX `attachment_key`。正文随后按 `msg_type` 解码为 `TextObj`、`ImageObj`、`AudioObj`、`VideoObj` 或 `FileObj`；原始 `content` 与完整 `raw_proto` 仍保留在 SQLite。附件采用裸 HTTP(S) GET，下载上限 256 MiB，再用解出的 `fileKey` 前 16 字节执行 AES-128-ECB/PKCS7。客户端通过首个 102416 字节密文块的独立填充块识别 PC“102400 字节明文分块”方案，否则按移动端整文件方案解密。
 
 解密后的附件写入 Tauri `$APPCACHE/media`，`assetProtocol` 仅开放该目录；Vue 使用 `convertFileSrc` 展示图片、音频、视频或文件下载。单条正文或附件解密失败只产生可见错误，不删除原始消息。
+
+群派生密钥缓存按 `(group_id, version)` 串联合并同键并发加载：缓存未命中后取得群级锁并二次检查，同群最多发起一次 `/sys/getKeyPair`，不同群仍可并行；失败不缓存并允许后续重试。缓存值与 generation 一同保存，fast path 只返回当前 generation；loader 完成后取得值表写锁，并在该临界区重查 generation 后才写入。会话清理先推进 generation 使旧值立即逻辑失效，再物理清表；因此旧 loader 与 clear 无论交错在检查前还是检查后，新代都不能读取旧值。
+
+Vue 的 `MessageIndex` 最多保留 1000 条：正常实时流保留最新窗口，向上读取历史时保留更早窗口。历史请求进行期间到达的 Channel 批次进入容量同样受限、按消息 ID 去重的暂存区；历史页先发布，只有收到当前 token 的 `older-settled` 握手后才合并实时暂存。索引会返回批内唯一 ID 合并后实际裁剪的数量；只要实时 keep-latest 确实删除了消息，即使合并前窗口为空或此前历史页已报告 `hasMore=false`，前端也会重新设置 `hasOlder=true` 并把下一游标回退到新的可见最老键，使后续 keyset 查询重新覆盖被裁区间。未发生裁剪时保留后端末页状态。切群、退出、卸载和陈旧握手都会丢弃旧范围暂存。
+
+### 6.2 错误、取消与顺序语义
+
+- TCP 帧队列槽或 32 MiB 字节许可耗尽时，接收回调等待并向 socket 读取形成背压，不创建无界任务；单帧超过 8 MiB 时返回错误并断开当前连接。
+- 2202 预扫描或 Prost 解码失败只丢弃当前帧。数据库事务失败时，当前微批的监控消息既不回执也不投影；同批未监控消息仍可回执。
+- 连接取消优先于尚未开始的持久化、回执和投影。取消发生在事务提交前时不确认未提交消息；提交和回执已经完成后，等待投影或投影中的批次可以被丢弃，但 SQLite 历史仍保留。
+- 2102 先按微批、再按群合并；每个群内 ID 保持输入协议顺序。只有该批事务成功的监控消息和无需持久化的未监控消息可以进入回执，回执 ID 不跨批猜测或重排。
+- 投影 worker 串行消费批次；批内解密虽然最多 8 路并发，但最终 `Vec<MessageDto>` 恢复输入顺序。前端再以 `(send_time, msg_id)` 建立确定性展示顺序。
 
 ## 7. 启动、测试与构建
 
@@ -181,21 +206,28 @@ git diff --check
 git status --short
 ```
 
-2026-09-03 实际结果：
+负载验证可单独运行：
 
-- Rust：189 项测试通过、1 项 live test 忽略，0 失败；
-- `cargo check --workspace --all-targets`：通过；
-- `cargo fmt --all -- --check`：通过；
-- `cargo clippy --workspace --all-targets -- -D warnings`：通过；
-- Vue：12 个测试文件、61 项测试通过，0 失败；
-- Vue typecheck、生产 build：通过；
-- npm audit：0 vulnerabilities；
-- `cargo tauri build --no-bundle`：通过，包含根 package 代理的前端构建钩子；
-- `git diff --check`：通过。
+```bash
+cd /Volumes/TRANSCEND/works/objects/rust/broadcast
+cargo test -p im-app message_worker_preserves_ten_thousand_message_burst_without_loss_or_duplicates -- --nocapture
+cargo test -p im-store sqlite_batch_upserts_ten_thousand_rows_without_duplicate_primary_keys -- --nocapture
+
+cd /Volumes/TRANSCEND/works/objects/rust/broadcast/im-app/ui
+npm test -- --run src/utils/message.test.ts
+npm test -- --run src/composables/useMonitor.test.ts
+npm test -- --run src/components/MessagePanel.test.ts
+```
+
+Rust 合成负载在单个合法 2202 帧中构造 10,000 条、两个监控群的消息，验证恰好 100 个不超过 100 条的事务批次、每批一次投影、2102 按群合并且只包含已成功提交的监控消息、持久化/投影/回执总 ID 集合与输入完全相等、无重复且协议顺序稳定。独立 SQLite 测试对 10,000 个主键执行批量写入和反序批量 UPSERT，验证最终行数、主键去重和更新结果。前端负载验证 `MessageIndex` 的 10,000 条突发、复合排序、去重、最终 1,000 条双向裁剪及 Map 一致性；Channel 的 10,000 条单批输入只提交一次 Vue 状态；虚拟列表接收索引裁剪后的 1,000 条并断言实际 DOM 行远少于总数，同时保留已有动态高度测试。
+
+负载测试只打印单行 elapsed、峰值微批或已配置投影队列容量等观测信息，避免海量消息日志。elapsed 是诊断数据，不是可跨机器比较的性能承诺；CI 不设置硬耗时阈值。达到 100 条时立即刷新，不通过重复 `sleep(25ms)` 模拟 100 个定时批次；25ms 边界由 Tokio paused time 的独立测试覆盖。
+
+2026-09-03 全套验证结果应以本次命令的最新输出为准，不沿用历史测试计数。自动测试通过不代表真实服务、目标平台打包或端到端性能已完成验证。
 
 ## 8. 状态与安全边界
 
-已完成：六 crate 代码、HTTP/TCP framing、认证与 challenge 编排、GT4 前端绑定、群同步与 SQLite、连接 generation/重连、消息持久化、群密钥与五种正文解析、媒体附件解密、全量/单群消息视图、Tauri IPC、Vue UI 及自动测试。这里的“完成”指本地实现和自动测试，不代表真实端到端可用。
+已完成：六 crate 代码、HTTP/TCP framing、认证与 challenge 编排、GT4 前端绑定、群同步与 SQLite、连接 generation/重连、消息微批持久化与批量 Channel、群密钥与五种正文解析、媒体附件解密、复合游标历史分页、动态虚拟消息视图、Tauri IPC、Vue UI 及自动负载测试。这里的“完成”指本地实现和自动测试，不代表真实端到端可用。
 
 仍未完成：
 

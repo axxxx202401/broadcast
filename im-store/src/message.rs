@@ -2,8 +2,18 @@ use sqlx::{Row, SqlitePool};
 
 /// 单页最多可读取的消息数。
 pub const MAX_MESSAGE_PAGE_LIMIT: usize = 200;
-/// 分页查询允许的最大偏移量。
-pub const MAX_MESSAGE_PAGE_OFFSET: usize = 1_000_000;
+
+/// 消息 keyset 分页游标。
+///
+/// 两个字段共同标识降序结果中的唯一边界；仅按 `send_time` 翻页会遗漏同一发送时间的
+/// 消息，仅按 `msg_id` 则不符合消息时间排序。下一页只读取严格早于该复合键的行。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MessageCursor {
+    /// 本页最老消息的发送时间。
+    pub send_time: i64,
+    /// 本页最老消息的主键。
+    pub msg_id: i64,
+}
 
 /// 准备写入 `messages` 表的一条群消息。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -51,6 +61,17 @@ pub struct MessageRow {
     pub group_name: String,
 }
 
+/// 一页按时间倒序排列的消息。
+#[derive(Debug, Clone)]
+pub struct MessagePage {
+    /// 当前页消息，按 `(send_time, msg_id)` 降序排列。
+    pub messages: Vec<MessageRow>,
+    /// 尚有更早消息时，指向当前页最老一条消息的下一页游标。
+    pub next_cursor: Option<MessageCursor>,
+    /// 是否仍存在严格早于 [`Self::next_cursor`] 的消息。
+    pub has_more: bool,
+}
+
 /// 基于共享 SQLite 连接池的消息数据访问入口。
 pub struct MessageStore {
     pool: SqlitePool,
@@ -64,146 +85,151 @@ impl MessageStore {
         Self { pool }
     }
 
-    /// 写入或替换一条消息，并返回传入的消息主键。
+    /// 在单条事务中写入或更新一条消息，并返回传入的消息主键。
     ///
-    /// 写入使用 SQLite `INSERT OR REPLACE`：发生主键冲突时，SQLite 先删除冲突行，再插入
-    /// 新行，而不是原位执行 `UPDATE`。因此相关触发器与外键按删除、插入语义处理；其中
-    /// 删除触发器是否执行还受 SQLite `recursive_triggers` 设置影响。
+    /// 本方法委托 [`Self::insert_batch`]，主键冲突使用 `ON CONFLICT DO UPDATE` 原位更新，
+    /// 不采用 `INSERT OR REPLACE` 的删除再插入语义。
     ///
     /// `stored_at` 不取自 [`MessageRecord`]，而是在每次写入时记录当前 UTC Unix
     /// 毫秒时间戳；`send_time` 则原样写入，其单位尚未由客户端契约验证。
     ///
     /// SQL 执行失败时返回 [`sqlx::Error`]。
     pub async fn insert(&self, record: &MessageRecord) -> sqlx::Result<i64> {
-        let stored_at = chrono::Utc::now().timestamp_millis();
-        sqlx::query(
-            r#"INSERT OR REPLACE INTO messages
-               (msg_id, group_id, send_uid, msg_type, content, send_time, content_md5, stored_at, raw_proto)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-        )
-        .bind(record.msg_id)
-        .bind(record.group_id)
-        .bind(record.send_uid)
-        .bind(record.msg_type)
-        .bind(&record.content)
-        .bind(record.send_time)
-        .bind(&record.content_md5)
-        .bind(stored_at)
-        .bind(&record.raw_proto)
-        .execute(&self.pool)
-        .await?;
+        self.insert_batch(std::slice::from_ref(record)).await?;
         Ok(record.msg_id)
     }
 
-    /// 分页读取指定群组的消息。
+    /// 在单个事务内写入或更新一批消息。
     ///
-    /// 结果按 `send_time DESC` 排列；发送时间相同时，SQL 未指定次级顺序。
-    /// `limit` 必须位于 `1..=`[`MAX_MESSAGE_PAGE_LIMIT`]，`offset` 不得超过
-    /// [`MAX_MESSAGE_PAGE_OFFSET`]。代码随后将二者转换为 SQLite 绑定使用的 `i64`；由于
-    /// 当前两个上限都可由 `i64` 表示，通过前述检查后，转换失败不是实际的用户输入错误
-    /// 路径，转换检查仅作防御性保留。参数越界时返回 [`sqlx::Error::Protocol`]，查询失败
-    /// 时返回对应的 SQLx 错误；没有匹配消息时返回空列表。
+    /// 同一批使用相同 `stored_at`。主键冲突通过 `ON CONFLICT DO UPDATE` 原位更新，
+    /// 避免 `INSERT OR REPLACE` 的删除再插入语义。任一行失败会回滚整批；空批次不访问
+    /// 数据库并直接成功。
+    pub async fn insert_batch(&self, records: &[MessageRecord]) -> sqlx::Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let stored_at = chrono::Utc::now().timestamp_millis();
+        let mut transaction = self.pool.begin().await?;
+        for record in records {
+            sqlx::query(
+                r#"INSERT INTO messages
+                   (msg_id, group_id, send_uid, msg_type, content, send_time, content_md5, stored_at, raw_proto)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(msg_id) DO UPDATE SET
+                     group_id = excluded.group_id,
+                     send_uid = excluded.send_uid,
+                     msg_type = excluded.msg_type,
+                     content = excluded.content,
+                     send_time = excluded.send_time,
+                     content_md5 = excluded.content_md5,
+                     stored_at = excluded.stored_at,
+                     raw_proto = excluded.raw_proto"#,
+            )
+            .bind(record.msg_id)
+            .bind(record.group_id)
+            .bind(record.send_uid)
+            .bind(record.msg_type)
+            .bind(&record.content)
+            .bind(record.send_time)
+            .bind(&record.content_md5)
+            .bind(stored_at)
+            .bind(&record.raw_proto)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await
+    }
+
+    /// 使用复合 keyset 游标读取指定群组的消息。
+    ///
+    /// 无游标时从最新消息开始；有游标时只读取 `(send_time, msg_id)` 严格更小的行。
+    /// 查询固定多读一行判断是否还有更早记录，不使用 `OFFSET`。`limit` 必须位于
+    /// `1..=`[`MAX_MESSAGE_PAGE_LIMIT`]；参数越界或 SQL 执行失败时返回对应错误。
     pub async fn get_by_group(
         &self,
         group_id: i64,
         limit: usize,
-        offset: usize,
-    ) -> sqlx::Result<Vec<MessageRow>> {
-        if !(1..=MAX_MESSAGE_PAGE_LIMIT).contains(&limit) {
-            return Err(sqlx::Error::Protocol(format!(
-                "message limit must be between 1 and {MAX_MESSAGE_PAGE_LIMIT}"
-            )));
-        }
-        if offset > MAX_MESSAGE_PAGE_OFFSET {
-            return Err(sqlx::Error::Protocol(format!(
-                "message offset exceeds maximum {MAX_MESSAGE_PAGE_OFFSET}"
-            )));
-        }
-        let limit = i64::try_from(limit)
-            .map_err(|_| sqlx::Error::Protocol("message limit exceeds i64".to_string()))?;
-        let offset = i64::try_from(offset)
-            .map_err(|_| sqlx::Error::Protocol("message offset exceeds i64".to_string()))?;
-        let rows = sqlx::query(
-            r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
-                      m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name
-               FROM messages m
-               LEFT JOIN groups g ON g.group_id = m.group_id
-               WHERE m.group_id = ?
-               ORDER BY m.send_time DESC, m.msg_id DESC
-               LIMIT ? OFFSET ?"#,
-        )
-        .bind(group_id)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut result = Vec::with_capacity(rows.len());
-        for row in rows {
-            result.push(MessageRow {
-                msg_id: row.get("msg_id"),
-                group_id: row.get("group_id"),
-                send_uid: row.get("send_uid"),
-                msg_type: row.get("msg_type"),
-                content: row.get("content"),
-                send_time: row.get("send_time"),
-                content_md5: row.get("content_md5"),
-                stored_at: row.get("stored_at"),
-                raw_proto: row.get("raw_proto"),
-                group_name: row.get("group_name"),
-            });
-        }
-        Ok(result)
+        cursor: Option<MessageCursor>,
+    ) -> sqlx::Result<MessagePage> {
+        let fetch_limit = checked_fetch_limit(limit)?;
+        let rows = if let Some(cursor) = cursor {
+            sqlx::query(
+                r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
+                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name
+                   FROM messages m
+                   LEFT JOIN groups g ON g.group_id = m.group_id
+                   WHERE m.group_id = ?
+                     AND (m.send_time < ? OR (m.send_time = ? AND m.msg_id < ?))
+                   ORDER BY m.send_time DESC, m.msg_id DESC
+                   LIMIT ?"#,
+            )
+            .bind(group_id)
+            .bind(cursor.send_time)
+            .bind(cursor.send_time)
+            .bind(cursor.msg_id)
+            .bind(fetch_limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
+                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name
+                   FROM messages m
+                   LEFT JOIN groups g ON g.group_id = m.group_id
+                   WHERE m.group_id = ?
+                   ORDER BY m.send_time DESC, m.msg_id DESC
+                   LIMIT ?"#,
+            )
+            .bind(group_id)
+            .bind(fetch_limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        Ok(message_page(rows, limit))
     }
 
     /// 分页读取当前可用且仍受监控群组的最近消息，并关联群组显示名称。
     ///
     /// 结果按发送时间和消息 ID 降序排列；没有群记录、已不可用或已关闭监控的消息
-    /// 不进入全量监控视图。分页边界与 [`Self::get_by_group`] 相同。
-    pub async fn get_recent(&self, limit: usize, offset: usize) -> sqlx::Result<Vec<MessageRow>> {
-        if !(1..=MAX_MESSAGE_PAGE_LIMIT).contains(&limit) {
-            return Err(sqlx::Error::Protocol(format!(
-                "message limit must be between 1 and {MAX_MESSAGE_PAGE_LIMIT}"
-            )));
-        }
-        if offset > MAX_MESSAGE_PAGE_OFFSET {
-            return Err(sqlx::Error::Protocol(format!(
-                "message offset exceeds maximum {MAX_MESSAGE_PAGE_OFFSET}"
-            )));
-        }
-        let limit = i64::try_from(limit)
-            .map_err(|_| sqlx::Error::Protocol("message limit exceeds i64".to_string()))?;
-        let offset = i64::try_from(offset)
-            .map_err(|_| sqlx::Error::Protocol("message offset exceeds i64".to_string()))?;
-        let rows = sqlx::query(
-            r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
-                      m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name
-               FROM messages m
-               JOIN groups g ON g.group_id = m.group_id
-               WHERE g.monitored = 1 AND g.available = 1
-               ORDER BY m.send_time DESC, m.msg_id DESC
-               LIMIT ? OFFSET ?"#,
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows
-            .into_iter()
-            .map(|row| MessageRow {
-                msg_id: row.get("msg_id"),
-                group_id: row.get("group_id"),
-                send_uid: row.get("send_uid"),
-                msg_type: row.get("msg_type"),
-                content: row.get("content"),
-                send_time: row.get("send_time"),
-                content_md5: row.get("content_md5"),
-                stored_at: row.get("stored_at"),
-                raw_proto: row.get("raw_proto"),
-                group_name: row.get("group_name"),
-            })
-            .collect())
+    /// 不进入全量监控视图。游标语义和页长边界与 [`Self::get_by_group`] 相同。
+    pub async fn get_recent(
+        &self,
+        limit: usize,
+        cursor: Option<MessageCursor>,
+    ) -> sqlx::Result<MessagePage> {
+        let fetch_limit = checked_fetch_limit(limit)?;
+        let rows = if let Some(cursor) = cursor {
+            sqlx::query(
+                r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
+                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name
+                   FROM messages m
+                   JOIN groups g ON g.group_id = m.group_id
+                   WHERE g.monitored = 1 AND g.available = 1
+                     AND (m.send_time < ? OR (m.send_time = ? AND m.msg_id < ?))
+                   ORDER BY m.send_time DESC, m.msg_id DESC
+                   LIMIT ?"#,
+            )
+            .bind(cursor.send_time)
+            .bind(cursor.send_time)
+            .bind(cursor.msg_id)
+            .bind(fetch_limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
+                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name
+                   FROM messages m
+                   JOIN groups g ON g.group_id = m.group_id
+                   WHERE g.monitored = 1 AND g.available = 1
+                   ORDER BY m.send_time DESC, m.msg_id DESC
+                   LIMIT ?"#,
+            )
+            .bind(fetch_limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        Ok(message_page(rows, limit))
     }
 
     /// 按消息 ID 读取单条消息及其完整原始 Protobuf。
@@ -234,5 +260,49 @@ impl MessageStore {
             raw_proto: row.get("raw_proto"),
             group_name: row.get("group_name"),
         }))
+    }
+}
+
+/// 校验业务页长，并返回供 SQL 多读一行的绑定值。
+fn checked_fetch_limit(limit: usize) -> sqlx::Result<i64> {
+    if !(1..=MAX_MESSAGE_PAGE_LIMIT).contains(&limit) {
+        return Err(sqlx::Error::Protocol(format!(
+            "message limit must be between 1 and {MAX_MESSAGE_PAGE_LIMIT}"
+        )));
+    }
+    i64::try_from(limit + 1)
+        .map_err(|_| sqlx::Error::Protocol("message limit exceeds i64".to_string()))
+}
+
+/// 将 SQL 的 `limit + 1` 行裁成稳定页面，并从实际返回页尾构造下一页游标。
+fn message_page(rows: Vec<sqlx::sqlite::SqliteRow>, limit: usize) -> MessagePage {
+    let has_more = rows.len() > limit;
+    let mut messages = rows
+        .into_iter()
+        .take(limit)
+        .map(|row| MessageRow {
+            msg_id: row.get("msg_id"),
+            group_id: row.get("group_id"),
+            send_uid: row.get("send_uid"),
+            msg_type: row.get("msg_type"),
+            content: row.get("content"),
+            send_time: row.get("send_time"),
+            content_md5: row.get("content_md5"),
+            stored_at: row.get("stored_at"),
+            raw_proto: row.get("raw_proto"),
+            group_name: row.get("group_name"),
+        })
+        .collect::<Vec<_>>();
+    let next_cursor = has_more && !messages.is_empty();
+    MessagePage {
+        next_cursor: next_cursor.then(|| {
+            let oldest = messages.last().expect("non-empty page checked above");
+            MessageCursor {
+                send_time: oldest.send_time,
+                msg_id: oldest.msg_id,
+            }
+        }),
+        has_more,
+        messages: std::mem::take(&mut messages),
     }
 }

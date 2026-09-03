@@ -3,8 +3,13 @@ import { Channel } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 import { api } from '../services/tauri'
-import type { ConnectionStatus, GroupDto, MessageDto } from '../types/im'
-import { isCurrentMessageRequest, mergeMessages } from '../utils/message'
+import type { ConnectionStatus, GroupDto, MessageCursor, MessageDto } from '../types/im'
+import {
+  isCurrentMessageRequest,
+  MessageIndex,
+  type MessageMergeResult,
+  type MessageTrimStrategy,
+} from '../utils/message'
 import { errorMessage, normalizeConnectionStatus } from '../utils/protocol'
 
 /**
@@ -23,7 +28,15 @@ export function useMonitor() {
   const groups = ref<GroupDto[]>([])
   const selectedGroupId = ref<string | null>(null)
   const messages = ref<MessageDto[]>([])
+  // 索引跨历史与实时批次持久存在；仅在查询范围切换或会话清理时整体重置。
+  const messageIndex = new MessageIndex()
+  // 旧页请求期间实时消息暂存于独立的有界去重索引，避免提前改变虚拟列表首尾。
+  const bufferedRealtimeIndex = new MessageIndex()
   const messagesLoading = ref(false)
+  const loadingOlder = ref(false)
+  const hasOlder = ref(false)
+  const nextMessageCursor = ref<MessageCursor | null>(null)
+  const olderRequestToken = ref<number | null>(null)
   const search = ref('')
   const connectionStatus = ref<ConnectionStatus>('disconnected')
   const pending = ref<string | null>(null)
@@ -33,7 +46,99 @@ export function useMonitor() {
   let messageRequestId = 0
   let connectionStatusVersion = 0
   let connectionStatusTimer: ReturnType<typeof setTimeout> | null = null
-  let messageChannel: Channel<MessageDto> | null = null
+  let messageChannel: Channel<MessageDto[]> | null = null
+  let bufferedRealtimeRequestId: number | null = null
+  let olderRequestSequence = 0
+  let activeOlderRequest: {
+    token: number
+    requestId: number
+    groupId: string | null
+  } | null = null
+
+  /**
+   * 原位合并索引后只复制并发布一次 Vue 状态。
+   * 索引负责 O(1) 有序尾部追加或 O(log n) 乱序定位，响应式数组不参与中间步骤。
+   */
+  function mergeAndPublishMessages(
+    incoming: MessageDto[],
+    trimStrategy: MessageTrimStrategy = 'keep-latest',
+  ): MessageMergeResult {
+    const result = messageIndex.mergeWithResult(incoming, trimStrategy)
+    if (!result.changed) return result
+    messages.value = messageIndex.snapshot()
+    return result
+  }
+
+  /** 丢弃旧页请求期间积累的实时消息及其范围代次。 */
+  function clearBufferedRealtimeMessages() {
+    bufferedRealtimeIndex.clear()
+    bufferedRealtimeRequestId = null
+  }
+
+  /** 比较消息与游标是否表示同一个复合排序键。 */
+  function matchesCursor(message: MessageDto | undefined, cursor: MessageCursor): boolean {
+    return message?.msg_id === cursor.msgId && message.send_time === cursor.sendTime
+  }
+
+  /**
+   * 合并一个实际实时批次，并在 keep-latest 实际裁剪时重新开放历史分页。
+   *
+   * 裁剪数量由 MessageIndex 基于批内唯一 ID 的实际删除返回，因此空窗口一次接收 10k
+   * 也能识别前 9000 条已离开视图；未裁剪时保留后端给出的 `hasOlder=false`。
+   */
+  function mergeRealtimeAndPublish(incoming: MessageDto[]) {
+    const result = mergeAndPublishMessages(incoming, 'keep-latest')
+    if (!result.changed) return
+    const oldestAfter = messages.value[0]
+    if (result.trimmed > 0 && oldestAfter) {
+      hasOlder.value = true
+      nextMessageCursor.value = {
+        sendTime: oldestAfter.send_time,
+        msgId: oldestAfter.msg_id,
+      }
+      return
+    }
+
+    const cursor = nextMessageCursor.value
+    if (!hasOlder.value || !cursor) return
+    if (matchesCursor(messageIndex.get(cursor.msgId), cursor)) return
+    if (oldestAfter) {
+      nextMessageCursor.value = {
+        sendTime: oldestAfter.send_time,
+        msgId: oldestAfter.msg_id,
+      }
+    }
+  }
+
+  /** 在范围门禁仍有效时，以一次 Vue 赋值发布当前请求缓冲的实时消息。 */
+  function publishBufferedRealtimeMessages(requestId: number, groupId: string | null) {
+    if (
+      bufferedRealtimeRequestId !== requestId
+      || !isCurrentMessageRequest(requestId, messageRequestId, groupId, selectedGroupId.value)
+    ) {
+      clearBufferedRealtimeMessages()
+      return
+    }
+    const buffered = bufferedRealtimeIndex.snapshot()
+    clearBufferedRealtimeMessages()
+    mergeRealtimeAndPublish(buffered)
+  }
+
+  /** 清空当前查询范围的索引，并以一次赋值发布空视图。 */
+  function clearMessages() {
+    messageIndex.clear()
+    messages.value = []
+  }
+
+  /** 清除当前范围的分页边界；切群、重载和退出均使旧游标立即失效。 */
+  function resetMessagePagination() {
+    clearBufferedRealtimeMessages()
+    activeOlderRequest = null
+    olderRequestToken.value = null
+    nextMessageCursor.value = null
+    hasOlder.value = false
+    loadingOlder.value = false
+  }
 
   /** 当前选中的完整群组；未选择或群组已移除时为 null。 */
   const selectedGroup = computed(
@@ -111,7 +216,7 @@ export function useMonitor() {
     uid.value = nextUid
     loggedIn.value = true
     selectedGroupId.value = null
-    messages.value = []
+    clearMessages()
     messagesLoading.value = false
     syncConnectionStatus(nextUid)
     void loadMessages(null)
@@ -133,14 +238,17 @@ export function useMonitor() {
   async function loadMessages(groupId: string | null) {
     const requestId = ++messageRequestId
     selectedGroupId.value = groupId
-    messages.value = []
+    clearMessages()
+    resetMessagePagination()
     messagesLoading.value = true
     error.value = ''
     try {
-      const history = await api.getMessages(groupId ?? undefined)
+      const history = await api.getMessages(groupId ?? undefined, undefined, 200)
       if (isCurrentMessageRequest(requestId, messageRequestId, groupId, selectedGroupId.value)) {
         // 历史返回期间可能已收到实时消息，合并而非覆盖可保留两条来源。
-        messages.value = mergeMessages(messages.value, history)
+        mergeAndPublishMessages(history.messages)
+        nextMessageCursor.value = history.nextCursor
+        hasOlder.value = history.hasMore
       }
     } catch (reason) {
       if (isCurrentMessageRequest(requestId, messageRequestId, groupId, selectedGroupId.value)) {
@@ -151,6 +259,75 @@ export function useMonitor() {
         messagesLoading.value = false
       }
     }
+  }
+
+  /**
+   * 在当前范围内读取更早一页。
+   *
+   * `loadingOlder` 防止同一游标并发重放；请求捕获范围代次和群组，切群、重载或退出后，
+   * 迟到的成功、失败和 finally 均不得修改新范围的消息、游标及加载状态。失败保留现有
+   * 索引与游标，允许用户再次触发。
+   */
+  async function loadOlderMessages() {
+    const cursor = nextMessageCursor.value
+    if (activeOlderRequest || loadingOlder.value || !hasOlder.value || !cursor) return
+
+    const requestId = messageRequestId
+    const groupId = selectedGroupId.value
+    const token = ++olderRequestSequence
+    activeOlderRequest = { token, requestId, groupId }
+    olderRequestToken.value = token
+    clearBufferedRealtimeMessages()
+    bufferedRealtimeRequestId = requestId
+    loadingOlder.value = true
+    error.value = ''
+    try {
+      const history = await api.getMessages(groupId ?? undefined, cursor, 200)
+      if (!isCurrentMessageRequest(requestId, messageRequestId, groupId, selectedGroupId.value)) {
+        return
+      }
+      // 历史页可能与实时批次重叠；向上翻页超限时裁掉尾部新消息，保留可继续浏览的旧窗口。
+      mergeAndPublishMessages(history.messages, 'keep-earliest')
+      nextMessageCursor.value = history.nextCursor
+      hasOlder.value = history.hasMore
+    } catch (reason) {
+      if (isCurrentMessageRequest(requestId, messageRequestId, groupId, selectedGroupId.value)) {
+        // 失败不改变原消息和游标；实时缓冲等待面板完成无新增握手后再发布。
+        error.value = errorMessage(reason)
+      }
+    } finally {
+      if (
+        activeOlderRequest?.token === token
+        && isCurrentMessageRequest(requestId, messageRequestId, groupId, selectedGroupId.value)
+      ) {
+        loadingOlder.value = false
+      }
+    }
+  }
+
+  /**
+   * 接受 MessagePanel 完成锚点恢复后的显式握手。
+   *
+   * token、请求代次和群组必须全部匹配当前活动轮次；陈旧面板事件只被忽略。通过门禁后
+   * 才以一次响应式赋值发布实时缓冲，并释放下一轮历史请求。
+   */
+  function handleOlderSettled(token: number) {
+    const active = activeOlderRequest
+    if (
+      !active
+      || active.token !== token
+      || olderRequestToken.value !== token
+      || !isCurrentMessageRequest(
+        active.requestId,
+        messageRequestId,
+        active.groupId,
+        selectedGroupId.value,
+      )
+    ) return
+
+    publishBufferedRealtimeMessages(active.requestId, active.groupId)
+    activeOlderRequest = null
+    olderRequestToken.value = null
   }
 
   /** 选择单群；再次点击当前群组时取消筛选并恢复全部消息。 */
@@ -202,7 +379,8 @@ export function useMonitor() {
         loggedIn.value = false
         uid.value = null
         groups.value = []
-        messages.value = []
+        clearMessages()
+        resetMessagePagination()
         selectedGroupId.value = null
         messageRequestId += 1
         messagesLoading.value = false
@@ -213,11 +391,23 @@ export function useMonitor() {
   let mounted = true
 
   onMounted(() => {
-    messageChannel = new Channel<MessageDto>()
-    messageChannel.onmessage = (message) => {
-      if (selectedGroupId.value === null || message.group_id === selectedGroupId.value) {
-        messages.value = mergeMessages(messages.value, [message])
+    messageChannel = new Channel<MessageDto[]>()
+    messageChannel.onmessage = (batch) => {
+      // 后端保持批内协议顺序；单群视图只筛选当前群，再一次性合并，避免逐条触发响应式更新。
+      const visible = selectedGroupId.value === null
+        ? batch
+        : batch.filter((message) => message.group_id === selectedGroupId.value)
+      if (visible.length === 0) return
+      if (activeOlderRequest) {
+        // 缓冲索引自身限制为 MAX_MESSAGES，并按 ID 去重；请求结束前不触碰可见索引。
+        if (bufferedRealtimeRequestId !== messageRequestId) {
+          clearBufferedRealtimeMessages()
+          bufferedRealtimeRequestId = messageRequestId
+        }
+        bufferedRealtimeIndex.merge(visible, 'keep-latest')
+        return
       }
+      mergeRealtimeAndPublish(visible)
     }
     void api.registerMessageChannel(messageChannel).catch((reason) => {
       error.value = `实时消息通道注册失败：${errorMessage(reason)}`
@@ -259,6 +449,9 @@ export function useMonitor() {
   onBeforeUnmount(() => {
     // 停止状态轮询，并释放此时已保存到 unlisteners 的监听；尚卡在 allSettled 中的项不在其中。
     mounted = false
+    activeOlderRequest = null
+    olderRequestToken.value = null
+    clearBufferedRealtimeMessages()
     messageChannel = null
     if (connectionStatusTimer) clearTimeout(connectionStatusTimer)
     for (const unlisten of unlisteners) unlisten()
@@ -275,6 +468,10 @@ export function useMonitor() {
     /** 当前群组的历史与实时消息合并结果。 */
     messages,
     messagesLoading,
+    loadingOlder,
+    hasOlder,
+    nextMessageCursor,
+    olderRequestToken,
     search,
     /** 事件与轮询共同维护的聊天连接状态。 */
     connectionStatus,
@@ -288,6 +485,8 @@ export function useMonitor() {
     refreshGroups,
     selectGroup,
     showAllMessages,
+    loadOlderMessages,
+    handleOlderSettled,
     toggleGroup,
     connect,
     disconnect,
