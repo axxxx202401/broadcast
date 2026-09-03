@@ -120,7 +120,10 @@ describe('App 启动恢复', () => {
       groups: [],
       warnings: [],
     } satisfies RestoreSessionResult)
-    mocks.listAccounts.mockResolvedValue([])
+    mocks.listAccounts.mockResolvedValue([restoredAccount])
+    mocks.monitor.logout.mockImplementation(async () => {
+      mocks.monitor.loggedIn.value = false
+    })
   })
 
   it('恢复完成前只显示启动状态', async () => {
@@ -251,6 +254,165 @@ describe('App 启动恢复', () => {
   })
 })
 
+describe('App 头部账号菜单', () => {
+  const otherAccount: AccountSummary = {
+    uid: '84',
+    displayAccount: 'b@example.com',
+    loginType: 4,
+    hasSavedPassword: false,
+    isCurrent: false,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    onLoginCb = null
+    mocks.monitor.loggedIn.value = true
+    mocks.monitor.warning.value = ''
+    mocks.restoreSession.mockResolvedValue({
+      status: 'success',
+      account: restoredAccount,
+      groups: [],
+      warnings: [],
+    } satisfies RestoreSessionResult)
+    mocks.listAccounts.mockResolvedValue([restoredAccount, otherAccount])
+    mocks.monitor.logout.mockImplementation(async () => {
+      mocks.monitor.loggedIn.value = false
+    })
+  })
+
+  it('顶栏展示当前邮箱且不再显示 UID /', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('a@example.com')
+    expect(wrapper.text()).not.toMatch(/UID\s*\//)
+    expect(wrapper.find('[data-test="account-menu"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('退出登录回到登录页并回填当前账号', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    await wrapper.get('[data-test="logout"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.monitor.logout).toHaveBeenCalled()
+    expect(wrapper.findComponent(LoginPanel).exists()).toBe(true)
+    expect(mocks.selectSavedAccount).toHaveBeenCalledWith(restoredAccount)
+    wrapper.unmount()
+  })
+
+  it('添加账号进入空白邮箱密码登录且保留账号列表', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    await wrapper.get('[data-test="add-account"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findComponent(LoginPanel).exists()).toBe(true)
+    expect(mocks.resetAuthForm).toHaveBeenCalledWith({ preserveSelectedAccount: false })
+    expect(api.listAccounts).toHaveBeenCalled()
+    expect(wrapper.findComponent(LoginPanel).props('accounts')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ uid: '42' }),
+        expect.objectContaining({ uid: '84' }),
+      ]),
+    )
+    wrapper.unmount()
+  })
+
+  it('移除当前账号确认后选择剩余最近账号', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    mocks.removeAccount.mockResolvedValue({ warnings: [] })
+    mocks.listAccounts
+      .mockResolvedValueOnce([restoredAccount, otherAccount])
+      .mockResolvedValueOnce([otherAccount])
+
+    const wrapper = mountApp()
+    await flushPromises()
+
+    await wrapper.get('[data-test="remove-account"]').trigger('click')
+    await flushPromises()
+
+    expect(api.removeAccount).toHaveBeenCalledWith('42')
+    expect(wrapper.findComponent(LoginPanel).exists()).toBe(true)
+    expect(mocks.selectSavedAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ uid: '84', displayAccount: 'b@example.com' }),
+    )
+    wrapper.unmount()
+  })
+
+  it('移除唯一账号后进入空白登录表单', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    mocks.removeAccount.mockResolvedValue({ warnings: [] })
+    mocks.listAccounts
+      .mockResolvedValueOnce([restoredAccount])
+      .mockResolvedValueOnce([])
+
+    const wrapper = mountApp()
+    await flushPromises()
+
+    await wrapper.get('[data-test="remove-account"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findComponent(LoginPanel).exists()).toBe(true)
+    expect(mocks.resetAuthForm).toHaveBeenCalledWith({ preserveSelectedAccount: false })
+    wrapper.unmount()
+  })
+
+  it('切换成功时接受新会话，NeedsLogin 时回填登录页', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    mocks.switchAccount.mockResolvedValueOnce({
+      status: 'success',
+      account: otherAccount,
+      groups: [{
+        group_id: '9',
+        name: '群 9',
+        pic: '',
+        host_id: null,
+        member_count: 1,
+        created_at: 0,
+        monitored: 1,
+        updated_at: 0,
+      }],
+      warnings: [],
+    } satisfies RestoreSessionResult)
+
+    await wrapper.get('[data-test="account-84"]').trigger('click')
+    await flushPromises()
+
+    expect(api.switchAccount).toHaveBeenCalledWith('84')
+    expect(mocks.monitor.acceptLogin).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ group_id: '9' })]),
+      '84',
+    )
+
+    mocks.switchAccount.mockResolvedValueOnce({
+      status: 'needsLogin',
+      uid: '42',
+      displayAccount: 'a@example.com',
+      loginType: 4,
+      hasSavedPassword: true,
+    } satisfies RestoreSessionResult)
+
+    await wrapper.get('[data-test="account-42"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findComponent(LoginPanel).exists()).toBe(true)
+    expect(mocks.selectSavedAccount).toHaveBeenCalledWith({
+      uid: '42',
+      displayAccount: 'a@example.com',
+      loginType: 4,
+      hasSavedPassword: true,
+      isCurrent: false,
+    })
+    wrapper.unmount()
+  })
+})
+
 describe('App 消息分页接线', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -261,7 +423,10 @@ describe('App 消息分页接线', () => {
       groups: [],
       warnings: [],
     } satisfies RestoreSessionResult)
-    mocks.listAccounts.mockResolvedValue([])
+    mocks.listAccounts.mockResolvedValue([restoredAccount])
+    mocks.monitor.logout.mockImplementation(async () => {
+      mocks.monitor.loggedIn.value = false
+    })
   })
 
   it('把分页状态和请求代次传给消息面板并转发双向握手事件', async () => {

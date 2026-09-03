@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 
+import AccountMenu from './components/AccountMenu.vue'
 import GroupSidebar from './components/GroupSidebar.vue'
 import LoginPanel from './components/LoginPanel.vue'
 import MessagePanel from './components/MessagePanel.vue'
@@ -8,7 +9,7 @@ import StatusBadge from './components/StatusBadge.vue'
 import { useAccounts } from './composables/useAccounts'
 import { useAuth } from './composables/useAuth'
 import { useMonitor } from './composables/useMonitor'
-import type { RestoreSessionResult } from './types/im'
+import type { AccountSummary, RestoreSessionResult } from './types/im'
 
 // 根组件编排账号恢复、认证与监控状态。启动时先恢复上次登录，避免闪现登录页。
 const monitor = useMonitor()
@@ -20,6 +21,9 @@ const auth = useAuth((payload) => {
   monitor.warning.value = payload.warnings.join('\n')
   void monitor.fetchGroups()
 })
+
+/** 切换进行中：保持主界面并让 AccountMenu 禁用动作、展示“正在切换账号”。 */
+const switching = computed(() => accounts.busy.value === 'switch')
 
 /** 把恢复/切换结果发布到监控会话或登录回填；过期结果为 `null` 时忽略。 */
 function applyRestoreOutcome(result: RestoreSessionResult | null) {
@@ -58,17 +62,57 @@ const useOtherAccount = () => {
   accounts.useOtherAccount()
 }
 
-/** 退出后进入登录页时必须重置 auth 的瞬态状态。 */
+/** 退出后进入登录页；保留刚退出账号的输入上下文供再次登录。 */
 const logout = () =>
   monitor.logout().finally(() => {
     accounts.phase.value = 'needsLogin'
     if (accounts.selectedAccount.value) {
-      // Task 8 会补全“退出后选中账号”的菜单体验；这里至少保持刚退出账号的输入上下文。
       auth.selectSavedAccount(accounts.selectedAccount.value)
     } else {
       auth.resetAuthForm({ preserveSelectedAccount: false })
     }
   })
+
+/**
+ * 切换到已保存账号；结果与启动恢复共用 `applyRestoreOutcome`。
+ * Token 失效时进入目标账号的预填登录页。
+ */
+const onSwitchAccount = (uid: string) => {
+  void accounts.switchAccount(uid).then(applyRestoreOutcome)
+}
+
+/**
+ * 添加账号：本地退出后进入空白邮箱密码登录页。
+ * 不得清除索引中其他已保存账号；`loginMethod` 由 `resetAuthForm` 重置为 4。
+ */
+const addAccount = () =>
+  monitor.logout().finally(() => {
+    accounts.phase.value = 'needsLogin'
+    accounts.selectedAccount.value = null
+    auth.resetAuthForm({ preserveSelectedAccount: false })
+  })
+
+/**
+ * 移除当前账号：先退出会话，再删除索引与凭据。
+ * 有剩余账号时选中列表中的下一项作为登录页默认；没有则空白邮箱密码表单。
+ * 前端摘要不含 `last_used_at`，以移除后刷新列表的首项作为最近可用账号。
+ */
+const removeCurrentAccount = async (uid: string) => {
+  const remainingBefore = accounts.accounts.value.filter((item) => item.uid !== uid)
+  await monitor.logout()
+  accounts.phase.value = 'needsLogin'
+  const result = await accounts.removeAccount(uid)
+  if (result?.warnings.length) {
+    monitor.warning.value = result.warnings.join('\n')
+  }
+  const next: AccountSummary | null =
+    accounts.accounts.value[0] ?? remainingBefore[0] ?? null
+  if (next) {
+    auth.selectSavedAccount(next)
+  } else {
+    auth.resetAuthForm({ preserveSelectedAccount: false })
+  }
+}
 </script>
 
 <template>
@@ -79,8 +123,12 @@ const logout = () =>
     <button type="button" aria-label="关闭警告" @click="monitor.warning.value = ''">×</button>
   </div>
 
-  <!-- 恢复完成前（含可重试）只显示启动状态，不得闪现登录页或操作主界面。 -->
-  <section v-if="accounts.phase.value === 'recovering'" class="restore-shell" role="status">
+  <!-- 恢复完成前（含可重试）只显示启动状态；账号切换中 busy=switch 时保留主界面。 -->
+  <section
+    v-if="accounts.phase.value === 'recovering' && !switching"
+    class="restore-shell"
+    role="status"
+  >
     <p>正在恢复上次登录</p>
     <p v-if="accounts.retryableMessage.value">{{ accounts.retryableMessage.value }}</p>
     <div v-if="accounts.retryableMessage.value" class="restore-actions">
@@ -110,7 +158,7 @@ const logout = () =>
   />
 
   <main v-else class="operations-shell">
-    <!-- 顶栏集中呈现连接状态、操作员身份及连接和退出操作。 -->
+    <!-- 顶栏集中呈现连接状态、当前账号菜单及连接操作。 -->
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">IM</span>
@@ -121,7 +169,16 @@ const logout = () =>
       </div>
       <div class="topbar-actions">
         <StatusBadge :status="monitor.connectionStatus.value" />
-        <span class="operator-id">UID / {{ monitor.uid.value }}</span>
+        <AccountMenu
+          v-if="accounts.selectedAccount.value"
+          :current="accounts.selectedAccount.value"
+          :accounts="accounts.accounts.value"
+          :switching="switching"
+          :switch-account="onSwitchAccount"
+          @logout="logout"
+          @add-account="addAccount"
+          @remove-account="removeCurrentAccount"
+        />
         <button
           v-if="monitor.connectionStatus.value === 'connected'"
           class="button danger compact"
@@ -136,14 +193,6 @@ const logout = () =>
           :disabled="monitor.connectDisabled.value"
           @click="monitor.connect"
         >{{ monitor.connectionStatus.value === 'connecting' ? '连接中…' : '连接聊天' }}</button>
-        <button
-          class="button ghost compact"
-          type="button"
-          :disabled="!!monitor.pending.value"
-          @click="logout"
-        >
-          退出
-        </button>
       </div>
     </header>
 

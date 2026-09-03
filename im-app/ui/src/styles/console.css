@@ -432,13 +432,81 @@
   gap: 9px;
 }
 
-.operator-id {
-  color: var(--text-500);
+/* 头部账号菜单：主按钮显示邮箱/手机号，展开后提供切换与账号管理。 */
+.account-menu {
+  position: relative;
   border-left: 1px solid var(--ink-600);
   margin-left: 4px;
-  padding: 2px 6px 2px 13px;
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 10px;
+  padding-left: 9px;
+}
+
+.account-menu-trigger {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-menu-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  display: grid;
+  gap: 4px;
+  min-width: 220px;
+  padding: 10px;
+  background: var(--ink-900);
+  border: 1px solid var(--ink-600);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+}
+
+.account-menu-status {
+  margin: 0 0 4px;
+  color: var(--amber);
+  font-size: 12px;
+}
+
+.account-menu-current {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 6px;
+  padding: 6px 8px 10px;
+  border-bottom: 1px solid var(--ink-600);
+}
+
+.account-menu-current strong {
+  font-size: 13px;
+}
+
+.account-menu-current small {
+  color: var(--text-500);
+  font-size: 11px;
+}
+
+.account-menu-item {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text-300);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.account-menu-item:hover:not(:disabled) {
+  background: var(--ink-850);
+}
+
+.account-menu-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.account-menu-item.danger {
+  color: #d88989;
 }
 
 .status-badge {
