@@ -1,5 +1,6 @@
 //! 桌面应用入口：初始化日志、持久化存储与共享状态，注册 Tauri 命令并运行事件循环。
 
+mod account;
 mod commands;
 mod message_content;
 mod state;
