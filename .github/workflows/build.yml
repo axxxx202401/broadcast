@@ -46,13 +46,8 @@ jobs:
           - label: linux-x86_64
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-    # 根据 platform 输入决定是否跳过当前 runner
-    if: >-
-      inputs.platform == 'all' ||
-      (inputs.platform == 'windows' && startsWith(matrix.label, 'windows')) ||
-      (inputs.platform == 'macos' && startsWith(matrix.label, 'macos')) ||
-      (inputs.platform == 'linux' && startsWith(matrix.label, 'linux'))
-
+        exclude: ${{ fromJSON(format('{"excludes":[{0}]}', inputs.platform == 'all' && '[]' || inputs.platform == 'windows' && '[{"label":"windows-x86_64"}]' || inputs.platform == 'macos' && '[{"label":"macos-x86_64"},{"label":"macos-arm64"}]' || inputs.platform == 'linux' && '[{"label":"linux-x86_64"}]'))}.excludes}}
+    # env vars available to all steps
     env:
       IM_OPENCHAT_USER_URL: ${{ secrets.IM_OPENCHAT_USER_URL }}
       IM_BIZ_URL: ${{ secrets.IM_BIZ_URL }}
