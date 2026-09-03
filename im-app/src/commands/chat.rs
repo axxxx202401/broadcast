@@ -381,10 +381,20 @@ struct ConnectionContext {
 }
 
 impl ConnectionContext {
-    fn from_state(state: &AppState) -> Self {
-        Self {
+    /// 从当前认证会话取得活动账号数据库，并克隆连接任务所需的共享状态。
+    ///
+    /// 未登录或活动库与会话 UID 不一致时返回错误。返回的 `db` 绑定本次连接；
+    /// generation 失效后不得继续接收或写入。
+    async fn from_state(state: &AppState) -> Result<Self, String> {
+        let session = authenticated_session_for_connect(&state.auth_session).await?;
+        let db = state
+            .account_db
+            .require(session.uid)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
             config: state.config.clone(),
-            db: state.db.clone(),
+            db,
             chat_client: state.chat_client.clone(),
             auth_session: state.auth_session.clone(),
             monitoring_groups: state.monitoring_groups.clone(),
@@ -395,7 +405,7 @@ impl ConnectionContext {
             connected: state.connected.clone(),
             shutdown: state.shutdown.clone(),
             app_handle: state.app_handle().clone(),
-        }
+        })
     }
 }
 
@@ -754,7 +764,7 @@ async fn connect_chat_inner(state: &AppState) -> Result<(), String> {
         auth_session.generation,
     )
     .await?;
-    let context = ConnectionContext::from_state(state);
+    let context = ConnectionContext::from_state(state).await?;
     let generation = permit.generation();
     let attempt_id = permit.attempt_id();
     let mut attempt_guard = ConnectionAttemptGuard::new(
@@ -2099,9 +2109,10 @@ pub async fn disconnect_chat(state: State<'_, AppState>) -> Result<(), String> {
 /// 分页查询指定群或全部群组的已存储消息。
 ///
 /// `group_id` 为 `Some` 时必须是 64 位十进制整数并只查询该群；为 `None` 时跨群读取
-/// 最近消息。`before_send_time` 与字符串 `before_msg_id` 必须同时提供或同时省略；
-/// `limit` 省略时为 200，且不得超过 200。查询后以最多 8 路并发解密并恢复存储顺序；
-/// 单条解密失败只写入 DTO 的 `decode_error`，不令整页失败。
+/// 最近消息。必须已登录且活动库属于当前会话 UID。`before_send_time` 与字符串
+/// `before_msg_id` 必须同时提供或同时省略；`limit` 省略时为 200，且不得超过 200。
+/// 查询后以最多 8 路并发解密并恢复存储顺序；单条解密失败只写入 DTO 的
+/// `decode_error`，不令整页失败。
 pub async fn get_messages(
     state: State<'_, AppState>,
     group_id: Option<String>,
@@ -2110,16 +2121,18 @@ pub async fn get_messages(
     before_msg_id: Option<String>,
 ) -> Result<MessagePageDto, String> {
     let (limit, cursor) = validate_message_page(limit, before_send_time, before_msg_id.as_deref())?;
+    let session = authenticated_session_for_connect(&state.auth_session).await?;
+    let db = state
+        .account_db
+        .require(session.uid)
+        .await
+        .map_err(|error| error.to_string())?;
     let page = match group_id {
         Some(group_id) => {
             let group_id = super::parse_i64_id(&group_id, "group_id")?;
-            state
-                .db
-                .messages
-                .get_by_group(group_id, limit, cursor)
-                .await
+            db.messages.get_by_group(group_id, limit, cursor).await
         }
-        None => state.db.messages.get_recent(limit, cursor).await,
+        None => db.messages.get_recent(limit, cursor).await,
     }
     .map_err(|error| error.to_string())?;
 
@@ -2179,8 +2192,18 @@ pub async fn download_message_attachment(
     thumbnail: bool,
 ) -> Result<AttachmentDownloadDto, String> {
     let msg_id = super::parse_i64_id(&msg_id, "msg_id")?;
-    let row = state
-        .db
+    let session = state
+        .auth_session
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| "尚未登录".to_string())?;
+    let db = state
+        .account_db
+        .require(session.uid)
+        .await
+        .map_err(|error| error.to_string())?;
+    let row = db
         .messages
         .get_by_id(msg_id)
         .await
@@ -2191,12 +2214,6 @@ pub async fn download_message_attachment(
         .ok_or_else(|| format!("消息 {msg_id} 缺少原始协议数据"))?;
     let message = im_proto::GroupMessage::decode(raw_proto.as_slice())
         .map_err(|error| format!("消息 {msg_id} 协议解析失败：{error}"))?;
-    let session = state
-        .auth_session
-        .read()
-        .await
-        .clone()
-        .ok_or_else(|| "尚未登录".to_string())?;
     let config = state.config.read().await;
     let client_info = message_client_info(&config, session.token);
     drop(config);

@@ -750,12 +750,24 @@ impl ConnectionCoordinator {
 /// 注入 Tauri 命令并由后台任务克隆共享的应用状态。
 ///
 /// 各 `Arc` 克隆指向同一底层资源；锁的作用域仅限对应字段。`shutdown` 则贯穿整个应用
-/// 生命周期，用于在退出时通知连接和消息任务停止。
+/// 生命周期，用于在退出时通知连接和消息任务停止。业务 SQLite 不在启动时打开，
+/// 只通过 [`account_db`](Self::account_db) 在认证成功后按 UID 激活。
 pub struct AppState {
     /// 保护运行期配置快照；连接任务读取克隆后使用。
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
-    /// 持久化群组、监控选择与消息的 SQLite 存储。
-    pub db: Arc<SqliteStore>,
+    /// 应用数据根目录及账号文件路径模型。
+    #[allow(dead_code)]
+    pub paths: crate::account::AppPaths,
+    /// 非敏感账号索引；不保存 Token 或密码。
+    #[allow(dead_code)]
+    pub account_index: Arc<crate::account::AccountIndexStore>,
+    /// 系统凭据库；Token 与密码只经此接口读写。
+    #[allow(dead_code)]
+    pub credentials: Arc<dyn crate::account::CredentialStore>,
+    /// 当前活动账号的 SQLite 管理器；未登录时没有打开的业务库。
+    pub account_db: Arc<crate::account::AccountDatabaseManager>,
+    /// 旧单库一次性迁移器；仅在登录成功且已知 UID 后调用。
+    pub legacy_migrator: Arc<crate::account::LegacyDatabaseMigrator>,
     /// 保护当前已安装聊天客户端及其尝试所有者。
     pub chat_client: Arc<ClientSlot>,
     /// 保护从登录成功到登出之间的可选认证会话。
@@ -783,6 +795,8 @@ pub struct AppState {
 /// 从 SQLite 读取已标记监控的群组，并恢复为内存 ID 集合。
 ///
 /// 数据库查询失败时原样返回 `sqlx::Error`，不会产生部分集合。
+/// 启动路径不再调用本函数；登录成功后由群组同步重建监控集合。
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn load_monitoring_groups(db: &SqliteStore) -> Result<HashSet<i64>, sqlx::Error> {
     Ok(db
         .groups
@@ -803,13 +817,69 @@ impl AppState {
 }
 
 #[cfg(test)]
+/// 构造仅具备账号基础设施、尚未打开业务库的测试用 [`AppState`]。
+///
+/// 数据根目录使用独立临时目录；凭据走内存替身。该状态不注入 Tauri 句柄，
+/// 也不预置认证会话或监控群组，用于断言未登录时不得持有活动数据库。
+pub(crate) async fn test_state_with_account_foundation() -> AppState {
+    use crate::account::{
+        credentials::MemoryCredentialStore, AccountDatabaseManager, AccountIndexStore, AppPaths,
+        LegacyDatabaseMigrator,
+    };
+
+    let temp = Box::leak(Box::new(tempfile::tempdir().expect("创建账号测试临时目录")));
+    let paths = AppPaths::new(temp.path().to_path_buf());
+    let config = AppConfig::default();
+    let http = Arc::new(
+        im_http::http_clients::AppHttpClients::new(&config)
+            .expect("测试 HTTP 客户端应能用默认配置创建"),
+    );
+
+    AppState {
+        config: Arc::new(tokio::sync::RwLock::new(config)),
+        paths: paths.clone(),
+        account_index: Arc::new(AccountIndexStore::new(paths.index_file())),
+        credentials: Arc::new(MemoryCredentialStore::default()),
+        account_db: Arc::new(AccountDatabaseManager::new(paths.clone())),
+        legacy_migrator: Arc::new(LegacyDatabaseMigrator::new(paths)),
+        chat_client: Arc::new(tokio::sync::Mutex::new(None)),
+        auth_session: Arc::new(tokio::sync::RwLock::new(None)),
+        monitoring_groups: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
+        group_ops: Arc::new(tokio::sync::Mutex::new(())),
+        connection_coordinator: Arc::new(ConnectionCoordinator::new()),
+        http,
+        message_crypto: Arc::new(crate::message_content::MessageCryptoState::default()),
+        message_channel: Arc::new(tokio::sync::RwLock::new(None)),
+        connected: Arc::new(tokio::sync::RwLock::new(false)),
+        shutdown: CancellationToken::new(),
+        app_handle: None,
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::sync::{atomic::AtomicBool, Arc};
 
     use im_common::config::AppConfig;
     use im_store::group::GroupRow;
 
-    use super::{load_monitoring_groups, AuthSession, ConnectionCoordinator, ConnectionPhase};
+    use super::{
+        load_monitoring_groups, test_state_with_account_foundation, AuthSession,
+        ConnectionCoordinator, ConnectionPhase,
+    };
+    use crate::account::AccountError;
+
+    /// 未登录时不得打开业务 SQLite，内存监控集合也必须为空。
+    #[tokio::test]
+    async fn app_state_has_no_business_database_before_login() {
+        let state = test_state_with_account_foundation().await;
+        let error = match state.account_db.active().await {
+            Err(error) => error,
+            Ok(_) => panic!("未登录时不应持有活动账号数据库"),
+        };
+        assert!(matches!(error, AccountError::NoActiveDatabase));
+        assert!(state.monitoring_groups.read().await.is_empty());
+    }
 
     #[tokio::test]
     async fn cancellation_advances_generation_and_wakes_blocked_operation() {

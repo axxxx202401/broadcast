@@ -1,4 +1,4 @@
-//! 桌面应用入口：初始化日志、持久化存储与共享状态，注册 Tauri 命令并运行事件循环。
+//! 桌面应用入口：初始化日志、账号基础设施与共享状态，注册 Tauri 命令并运行事件循环。
 
 mod account;
 mod commands;
@@ -27,55 +27,42 @@ async fn main() {
             // 真实服务参数来自构建时环境快照；缺项或格式错误时拒绝启动，避免安装包
             // 静默连接测试环境或使用历史密钥。
             let config = im_common::config::AppConfig::from_build_env()?;
-            // 数据库默认位于 ~/.im-monitor/im_monitor.db；无法取得 HOME 时退回当前目录。
-            // setup 先创建父目录，再按 SqliteStore 契约打开数据库：文件缺失时可创建，随后依次
-            // 建表、迁移旧版 groups 表并建立索引。文件系统步骤和这些 SQL 未组成整体事务；
-            // 初始化失败时，已创建的目录、数据库文件或部分 schema 可能保留。
-            let db_path = std::env::var("HOME")
-                .map(|home| {
-                    std::path::PathBuf::from(home)
-                        .join(".im-monitor")
-                        .join("im_monitor.db")
-                })
-                .unwrap_or_else(|_| std::path::PathBuf::from("im_monitor.db"));
-            if let Some(parent) = db_path
-                .parent()
-                .filter(|parent| !parent.as_os_str().is_empty())
-            {
-                std::fs::create_dir_all(parent).map_err(|error| {
-                    std::io::Error::other(format!(
-                        "failed to create database directory {}: {error}",
-                        parent.display()
-                    ))
-                })?;
-            }
-            let db_path_text = db_path.to_string_lossy();
-            let db = futures::executor::block_on(async {
-                im_store::SqliteStore::new(&db_path_text).await
-            })
-            .map_err(|error| {
+            // 数据根目录固定为用户主目录下的 `.im-monitor`。启动时只创建该目录和账号
+            // 基础设施，不打开业务 SQLite，也不从磁盘恢复监控集合。
+            let data_root = app
+                .path()
+                .home_dir()
+                .map_err(|error| {
+                    std::io::Error::other(format!("failed to resolve user home directory: {error}"))
+                })?
+                .join(".im-monitor");
+            std::fs::create_dir_all(&data_root).map_err(|error| {
                 std::io::Error::other(format!(
-                    "failed to initialize SQLite database {}: {error}",
-                    db_path.display()
+                    "failed to create data directory {}: {error}",
+                    data_root.display()
                 ))
             })?;
-            // 在构造 AppState 前恢复监控集合，避免命令看到尚未加载的初始快照。
-            let monitoring_groups = futures::executor::block_on(state::load_monitoring_groups(&db))
-                .map_err(|error| {
-                    std::io::Error::other(format!(
-                        "failed to restore monitored groups from {}: {error}",
-                        db_path.display()
-                    ))
-                })?;
+            let paths = account::AppPaths::new(data_root);
+            let account_index = Arc::new(account::AccountIndexStore::new(paths.index_file()));
+            let credentials: Arc<dyn account::CredentialStore> =
+                Arc::new(account::KeyringCredentialStore);
+            let account_db = Arc::new(account::AccountDatabaseManager::new(paths.clone()));
+            let legacy_migrator = Arc::new(account::LegacyDatabaseMigrator::new(paths.clone()));
             let http = Arc::new(im_http::http_clients::AppHttpClients::new(&config)?);
-            // AppState 按配置、数据库、会话与连接协作组件的依赖顺序组装；
+            // AppState 按配置、账号服务、会话与连接协作组件的依赖顺序组装；
             // Arc 让 Tauri 命令及其后台任务共享同一份客户端、锁和协调器。
             let state = AppState {
                 config: Arc::new(tokio::sync::RwLock::new(config)),
-                db: Arc::new(db),
+                paths,
+                account_index,
+                credentials,
+                account_db,
+                legacy_migrator,
                 chat_client: Arc::new(tokio::sync::Mutex::new(None)),
                 auth_session: Arc::new(tokio::sync::RwLock::new(None)),
-                monitoring_groups: Arc::new(tokio::sync::RwLock::new(monitoring_groups)),
+                monitoring_groups: Arc::new(tokio::sync::RwLock::new(
+                    std::collections::HashSet::new(),
+                )),
                 group_ops: Arc::new(tokio::sync::Mutex::new(())),
                 connection_coordinator: Arc::new(state::ConnectionCoordinator::new()),
                 http,

@@ -2,10 +2,6 @@
 //!
 //! 迁移只执行一次。成功、无旧库或目标已存在都会写入带明确枚举的 `migration.json`；
 //! 复制或校验失败不写标记，以便下次登录重试。原旧库文件始终保留。
-//! 生产接线完成前，二进制目标不会引用本模块公开类型，因此允许 dead_code。
-
-#![allow(dead_code)]
-
 use super::paths::AppPaths;
 use super::AccountError;
 use im_store::SqliteStore;
@@ -136,19 +132,13 @@ impl LegacyDatabaseMigrator {
             .await;
         pool.close().await;
         vacuum.map_err(|error| {
-            std::io::Error::other(format!(
-                "VACUUM INTO {} 失败: {error}",
-                temp.display()
-            ))
+            std::io::Error::other(format!("VACUUM INTO {} 失败: {error}", temp.display()))
         })?;
 
         let store = SqliteStore::new(&temp.to_string_lossy())
             .await
             .map_err(|error| {
-                std::io::Error::other(format!(
-                    "打开迁移临时库 {} 失败: {error}",
-                    temp.display()
-                ))
+                std::io::Error::other(format!("打开迁移临时库 {} 失败: {error}", temp.display()))
             })?;
         let verified = verify_usable_schema(&store, temp).await;
         // 校验期间 SqliteStore 会以 WAL 打开临时库；截断 checkpoint 后再关闭，
@@ -169,11 +159,7 @@ impl LegacyDatabaseMigrator {
     }
 
     /// 原子写入包含 UID、时间和明确 outcome 的 `migration.json`。
-    async fn write_marker(
-        &self,
-        uid: i64,
-        outcome: MigrationOutcome,
-    ) -> Result<(), AccountError> {
+    async fn write_marker(&self, uid: i64, outcome: MigrationOutcome) -> Result<(), AccountError> {
         let marker = MigrationMarker {
             uid,
             completed_at: unix_ms(),
@@ -204,11 +190,9 @@ async fn verify_usable_schema(store: &SqliteStore, temp: &Path) -> Result<(), Ac
     .fetch_one(&store.pool)
     .await?;
     if groups == 0 {
-        return Err(std::io::Error::other(format!(
-            "迁移临时库 {} 缺少 groups 表",
-            temp.display()
-        ))
-        .into());
+        return Err(
+            std::io::Error::other(format!("迁移临时库 {} 缺少 groups 表", temp.display())).into(),
+        );
     }
     store.groups.list_all().await?;
     Ok(())

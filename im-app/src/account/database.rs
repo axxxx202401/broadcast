@@ -1,10 +1,6 @@
 //! 活动账号数据库管理器：按 UID 打开、切换并关闭隔离的 SQLite 库。
 //!
 //! 未认证时不持有业务数据库。打开成功后才替换活动句柄；打开失败时保留原活动库。
-//! 生产接线完成前，二进制目标不会引用本模块公开类型，因此允许 dead_code。
-
-#![allow(dead_code)]
-
 use super::paths::AppPaths;
 use super::AccountError;
 use im_store::SqliteStore;
@@ -72,16 +68,14 @@ impl AccountDatabaseManager {
             })?;
         }
 
-        let store = Arc::new(
-            SqliteStore::new(&db_path.to_string_lossy())
-                .await
-                .map_err(|error| {
-                    std::io::Error::other(format!(
-                        "打开账号数据库 {} 失败: {error}",
-                        db_path.display()
-                    ))
-                })?,
-        );
+        let store = Arc::new(SqliteStore::new(&db_path.to_string_lossy()).await.map_err(
+            |error| {
+                std::io::Error::other(format!(
+                    "打开账号数据库 {} 失败: {error}",
+                    db_path.display()
+                ))
+            },
+        )?);
 
         let previous = {
             let mut active = self.active.write().await;
@@ -98,6 +92,9 @@ impl AccountDatabaseManager {
     }
 
     /// 返回当前活动数据库；尚未打开时返回 [`AccountError::NoActiveDatabase`]。
+    ///
+    /// 生产命令通过 [`Self::require`] 按会话 UID 取库；本方法供未登录断言与测试使用。
+    #[allow(dead_code)]
     pub async fn active(&self) -> Result<Arc<SqliteStore>, AccountError> {
         self.active
             .read()

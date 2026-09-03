@@ -343,8 +343,10 @@ pub async fn login(
         Some(state.app_handle()),
     )
     .await?;
-    // 认证代际切换后立即丢弃上一账号的可选本地解密材料，防止跨账号复用。
+    // 认证代际切换后立即丢弃上一账号的可选本地解密材料，并关闭旧账号库，
+    // 防止远程登录失败后仍留下无会话的活动数据库。
     state.message_crypto.clear().await;
+    state.account_db.close().await;
 
     // 远程认证、群组同步和旧连接清理完成前，不发布新的认证会话。
     let remote_login = classify_remote_login(state.http.openchat_user.login(&request).await)?;
@@ -372,6 +374,19 @@ pub async fn login(
     };
     let remote_groups = crate::commands::groups::fetch_remote_groups(&state, &token).await?;
 
+    // 远端 UID 已知后先迁移旧单库，再打开该账号的隔离数据库。此时尚未发布
+    // AuthSession，不能使用 require。
+    state
+        .legacy_migrator
+        .migrate_if_needed(uid)
+        .await
+        .map_err(|error| error.to_string())?;
+    let db = state
+        .account_db
+        .open(uid)
+        .await
+        .map_err(|error| error.to_string())?;
+
     // 在发布新认证会话前写入远程群组快照，并恢复数据库中保留的监控选择。
     let groups = finish_login_after_sync(
         LoginStateRefs {
@@ -383,7 +398,7 @@ pub async fn login(
         generation,
         uid,
         token.clone(),
-        async { crate::commands::groups::apply_remote_groups(&state.db, &remote_groups).await },
+        async { crate::commands::groups::apply_remote_groups(&db, &remote_groups).await },
     )
     .await?;
 
@@ -441,8 +456,8 @@ where
 /// 登出当前会话。
 ///
 /// 该命令推进 generation、取消进行中的连接、断开现有 TCP 客户端，并清空认证会话、
-/// 监控群组和连接状态，随后在 generation 仍有效时发布断开事件。断开失败会作为字符串
-/// 错误返回；清理发生在本地，不调用远程登出接口。
+/// 监控群组和连接状态，随后关闭活动账号数据库，并在 generation 仍有效时发布断开
+/// 事件。断开失败会作为字符串错误返回；清理发生在本地，不调用远程登出接口。
 #[tauri::command]
 pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     let generation = clear_session_state(
@@ -454,6 +469,8 @@ pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     )
     .await?;
     state.message_crypto.clear().await;
+    // 连接取消并等待旧任务后，才关闭活动账号库，避免后台写入落到已关闭连接池。
+    state.account_db.close().await;
     publish_disconnected_status_if_current(
         &state.connection_coordinator,
         generation,

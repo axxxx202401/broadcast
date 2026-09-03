@@ -1,9 +1,6 @@
-//! 账号持久化基础设施，统一管理账号级文件布局、非敏感账号索引、系统凭据库与后续账号操作错误。
+//! 账号持久化基础设施，统一管理账号级文件布局、非敏感账号索引、系统凭据库与活动数据库。
 //!
-//! 这些公开 API 按任务分阶段落地，尚未接入 AppState 与 Tauri 命令。
-//! 二进制 crate 会把未引用的 `pub` 项视为 dead_code，因此在接线前允许该 lint。
-
-#![allow(dead_code)]
+//! [`AppState`](crate::state::AppState) 持有这些服务，但未登录时不打开业务 SQLite。
 
 use thiserror::Error;
 
@@ -22,6 +19,12 @@ pub mod database;
 /// 旧单库一次性迁移。
 pub mod migration;
 
+pub use credentials::{CredentialStore, KeyringCredentialStore};
+pub use database::AccountDatabaseManager;
+pub use index::AccountIndexStore;
+pub use migration::LegacyDatabaseMigrator;
+pub use paths::AppPaths;
+
 /// 账号持久化与会话切换过程中可能出现的统一错误。
 ///
 /// 该类型保留底层文件系统、JSON 与数据库错误的来源，同时为凭据不可用、
@@ -38,6 +41,7 @@ pub enum AccountError {
     #[error("账号 JSON 数据处理失败: {0}")]
     Json(#[from] serde_json::Error),
     /// 系统凭据存储当前不可用；字符串包含可安全展示的原因摘要。
+    #[allow(dead_code)]
     #[error("系统凭据存储不可用: {0}")]
     CredentialUnavailable(String),
     /// 当前没有已激活的账号数据库。
@@ -55,9 +59,11 @@ pub enum AccountError {
     #[error("账号数据库操作失败: {0}")]
     Database(#[from] sqlx::Error),
     /// 登录流程缺少尚待完成的登录上下文。
+    #[allow(dead_code)]
     #[error("不存在待完成的登录")]
     MissingPendingLogin,
     /// 登录流程试图再次消费已经使用过的密码。
+    #[allow(dead_code)]
     #[error("登录密码已被使用，禁止重复消费")]
     PasswordAlreadyReused,
 }

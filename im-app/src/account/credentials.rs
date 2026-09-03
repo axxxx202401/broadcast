@@ -1,7 +1,6 @@
 //! 系统凭据库封装：按 UID 分别存取 Token 与密码，禁止将密钥写入普通文件。
 //!
-//! 生产接线完成前，二进制目标不会引用本模块公开类型，因此允许 dead_code。
-
+// Token/密码读写由后续登录保存计划接入；当前生产路径只构造 Keyring 实现。
 #![allow(dead_code)]
 
 use super::AccountError;

@@ -48,15 +48,21 @@ fn group_dtos(groups: Vec<im_store::group::GroupRow>) -> Vec<GroupDto> {
 /// 从本地数据库读取全部群组。
 ///
 /// 该命令不发起远程请求，也不修改数据库或内存监控集合；成功返回按 Tauri 边界格式转换
-/// 的群组列表，数据库查询错误转换为字符串返回。
+/// 的群组列表。未登录、活动库与会话 UID 不一致或数据库查询错误转换为字符串返回。
 #[tauri::command]
 pub async fn fetch_group_list(state: State<'_, AppState>) -> Result<Vec<GroupDto>, String> {
-    let groups = state
-        .db
-        .groups
-        .list_all()
+    let session = state
+        .auth_session
+        .read()
         .await
-        .map_err(|e| e.to_string())?;
+        .clone()
+        .ok_or_else(|| "Not logged in".to_string())?;
+    let db = state
+        .account_db
+        .require(session.uid)
+        .await
+        .map_err(|error| error.to_string())?;
+    let groups = db.groups.list_all().await.map_err(|e| e.to_string())?;
     Ok(group_dtos(groups))
 }
 
@@ -70,18 +76,22 @@ pub async fn fetch_group_list(state: State<'_, AppState>) -> Result<Vec<GroupDto
 /// 写入构成原子事务。
 #[tauri::command]
 pub async fn refresh_group_list(state: State<'_, AppState>) -> Result<Vec<GroupDto>, String> {
-    let token = state
+    let session = state
         .auth_session
         .read()
         .await
         .clone()
-        .ok_or_else(|| "Not logged in".to_string())?
-        .token;
+        .ok_or_else(|| "Not logged in".to_string())?;
+    let db = state
+        .account_db
+        .require(session.uid)
+        .await
+        .map_err(|error| error.to_string())?;
     let groups = fetch_and_apply_remote_groups(
         &state.group_ops,
-        &state.db,
+        &db,
         &state.monitoring_groups,
-        fetch_remote_groups(&state, &token),
+        fetch_remote_groups(&state, &session.token),
     )
     .await?;
     Ok(group_dtos(groups))
@@ -216,9 +226,20 @@ pub async fn toggle_monitor(
     monitored: bool,
 ) -> Result<(), String> {
     let group_id = super::parse_i64_id(&group_id, "group_id")?;
+    let session = state
+        .auth_session
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| "Not logged in".to_string())?;
+    let db = state
+        .account_db
+        .require(session.uid)
+        .await
+        .map_err(|error| error.to_string())?;
     toggle_monitor_serialized(
         &state.group_ops,
-        &state.db,
+        &db,
         &state.monitoring_groups,
         group_id,
         monitored,
