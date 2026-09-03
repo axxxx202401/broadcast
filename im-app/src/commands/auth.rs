@@ -343,6 +343,8 @@ pub async fn login(
         Some(state.app_handle()),
     )
     .await?;
+    // 认证代际切换后立即丢弃上一账号的可选本地解密材料，防止跨账号复用。
+    state.message_crypto.clear().await;
 
     // 远程认证、群组同步和旧连接清理完成前，不发布新的认证会话。
     let remote_login = classify_remote_login(state.http.openchat_user.login(&request).await)?;
@@ -451,6 +453,7 @@ pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
         &state.connected,
     )
     .await?;
+    state.message_crypto.clear().await;
     publish_disconnected_status_if_current(
         &state.connection_coordinator,
         generation,

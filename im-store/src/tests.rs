@@ -105,6 +105,105 @@ async fn test_get_by_group() {
 }
 
 #[tokio::test]
+async fn test_get_recent_returns_all_groups_with_names() {
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    for (group_id, name) in [(10, "研发群"), (20, "运维群")] {
+        store
+            .groups
+            .insert_or_update(&GroupRow {
+                group_id,
+                name: name.to_string(),
+                pic: String::new(),
+                host_id: None,
+                member_count: 0,
+                created_at: 0,
+                monitored: 1,
+                updated_at: 0,
+            })
+            .await
+            .unwrap();
+        store
+            .messages
+            .insert(&MessageRecord {
+                msg_id: group_id,
+                group_id,
+                send_uid: 1,
+                msg_type: 0,
+                content: name.as_bytes().to_vec(),
+                send_time: group_id,
+                content_md5: String::new(),
+                raw_proto: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    let rows = store.messages.get_recent(10, 0).await.unwrap();
+
+    assert_eq!(
+        rows.iter().map(|row| row.msg_id).collect::<Vec<_>>(),
+        [20, 10]
+    );
+    assert_eq!(rows[0].group_name, "运维群");
+    assert_eq!(rows[1].group_name, "研发群");
+}
+
+#[tokio::test]
+async fn test_get_message_by_id_keeps_raw_proto() {
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    store
+        .messages
+        .insert(&MessageRecord {
+            msg_id: 30,
+            group_id: 10,
+            send_uid: 1,
+            msg_type: 7,
+            content: vec![1, 2],
+            send_time: 3,
+            content_md5: String::new(),
+            raw_proto: Some(vec![4, 5, 6]),
+        })
+        .await
+        .unwrap();
+
+    let row = store.messages.get_by_id(30).await.unwrap().unwrap();
+
+    assert_eq!(row.raw_proto, Some(vec![4, 5, 6]));
+}
+
+// 密钥生命周期：同一账号的新版本替换“最新值”，私钥能够在应用重启后从 SQLite 恢复。
+#[tokio::test]
+async fn user_key_pair_store_restores_latest_version() {
+    let store = SqliteStore::new("sqlite::memory:").await.unwrap();
+    store
+        .key_pairs
+        .set(&crate::key_pair::UserKeyPairRecord {
+            uid: 109_477,
+            key_version: 1,
+            public_key: "public-v1".to_string(),
+            private_key: "private-v1".to_string(),
+        })
+        .await
+        .unwrap();
+    store
+        .key_pairs
+        .set(&crate::key_pair::UserKeyPairRecord {
+            uid: 109_477,
+            key_version: 2,
+            public_key: "public-v2".to_string(),
+            private_key: "private-v2".to_string(),
+        })
+        .await
+        .unwrap();
+
+    let actual = store.key_pairs.get_latest(109_477).await.unwrap().unwrap();
+
+    assert_eq!(actual.key_version, 2);
+    assert_eq!(actual.public_key, "public-v2");
+    assert_eq!(actual.private_key, "private-v2");
+}
+
+#[tokio::test]
 async fn test_insert_or_update_group() {
     let store = SqliteStore::new(":memory:").await.unwrap();
 

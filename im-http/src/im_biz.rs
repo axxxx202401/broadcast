@@ -93,6 +93,58 @@ fn decode_group_list_response(data: &[u8]) -> Result<Vec<GroupInfo>, AppError> {
     Ok(response.groups.iter().map(GroupInfo::from).collect())
 }
 
+/// 解码 im-biz `/sys/getKeyPair` 的旧版响应并取得通用密钥槽。
+///
+/// 服务端业务成功码必须为 200，且 field 2 的 `key_pair` 必须存在。目标类型由请求
+/// `flag` 决定，旧版响应没有 Web 扩展协议中的多个独立密钥槽。
+fn decode_group_key_pair_response(data: &[u8]) -> Result<im_proto::KeyPairBase, AppError> {
+    let response = im_proto::GetKeyPairResp::decode(data)
+        .map_err(|error| AppError::ProtoParse(error.to_string()))?;
+    if let Some(result) = response.common_result {
+        if result.err_code != 200 {
+            return Err(AppError::Business {
+                code: result.err_code,
+                message: result.err_msg,
+            });
+        }
+    }
+    response
+        .key_pair
+        .ok_or_else(|| AppError::ProtoParse("GetKeyPairResp missing key_pair".to_string()))
+}
+
+/// 构造 im-biz `/sys/updateUserKeyPair` 的旧版 SysProto 请求。
+fn build_update_user_key_pair_request(
+    client_info: &im_proto::ClientInfo,
+    public_key: &str,
+) -> im_proto::UpdateKeyPairReq {
+    im_proto::UpdateKeyPairReq {
+        client_info: Some(client_info.clone()),
+        public_key: public_key.to_string(),
+    }
+}
+
+/// 解码 im-biz 公钥登记响应，并返回服务端分配的正版本号。
+fn decode_update_user_key_pair_response(data: &[u8]) -> Result<i32, AppError> {
+    let response = im_proto::UpdateKeyPairResp::decode(data)
+        .map_err(|error| AppError::ProtoParse(error.to_string()))?;
+    let result = response.common_result.ok_or_else(|| {
+        AppError::ProtoParse("UpdateKeyPairResp missing common_result".to_string())
+    })?;
+    if result.err_code != 200 {
+        return Err(AppError::Business {
+            code: result.err_code,
+            message: result.err_msg,
+        });
+    }
+    if response.key_version <= 0 {
+        return Err(AppError::ProtoParse(
+            "UpdateKeyPairResp key_version must be positive".to_string(),
+        ));
+    }
+    Ok(response.key_version)
+}
+
 impl ImBizClient {
     /// 创建 im-biz 客户端。
     ///
@@ -234,6 +286,85 @@ impl ImBizClient {
 
         Ok(groups)
     }
+
+    /// 获取指定群组最新的 Curve25519 公钥和被包装消息密钥。
+    ///
+    /// 请求使用 im-biz `SysProto.GetKeyPairReq`，`flag` 固定为 `KEY_GROUP`。
+    /// HTTP 帧、AES 和 `X-One` 与群列表请求一致。响应只接受业务码 200 和 field 2
+    /// 明确存在的 `key_pair`。
+    pub async fn fetch_group_key_pair(
+        &self,
+        client_info: &im_proto::ClientInfo,
+        group_id: i64,
+    ) -> Result<im_proto::KeyPairBase, Box<dyn std::error::Error + Send + Sync>> {
+        const PATH: &str = "/sys/getKeyPair";
+        let request = im_proto::GetKeyPairReq {
+            client_info: Some(client_info.clone()),
+            flag: im_proto::KeyPairType::KeyGroup as i32,
+            target_id: group_id,
+        };
+        let body = build_im_biz_request_body(&self.body_cipher, &request.encode_to_vec())?;
+        let response = self
+            .http
+            .post(format!("{}{PATH}", self.base_url))
+            .header("X-One", self.header_manager.build_x_one()?)
+            .header("Content-Type", "application/json; charset=utf-8")
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| AppError::Http(format!("POST {PATH} request failed: {error}")))?;
+        let status = response.status();
+        let data = read_response_body_limited(response, MAX_HTTP_RESPONSE_SIZE).await?;
+        if !status.is_success() {
+            return Err(AppError::Http(format!(
+                "POST {PATH} -> HTTP {}: {}",
+                status,
+                super::openchat_user::sanitize_debug_json(&data)
+            ))
+            .into());
+        }
+        let decrypted = parse_im_biz_response(&self.body_cipher, &data).map_err(|error| {
+            AppError::Http(format!("POST {PATH} response decode failed: {error}"))
+        })?;
+        decode_group_key_pair_response(&decrypted).map_err(Into::into)
+    }
+
+    /// 登记当前账号由本客户端生成的 App 公钥，并返回服务端密钥版本。
+    ///
+    /// 私钥不会传入本方法或写入日志。请求使用 im-biz 旧版 SysProto 和现有加密 HTTP
+    /// 帧；业务码非 200、版本非正数及所有传输或解码错误都会返回。
+    pub async fn update_user_key_pair(
+        &self,
+        client_info: &im_proto::ClientInfo,
+        public_key: &str,
+    ) -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
+        const PATH: &str = "/sys/updateUserKeyPair";
+        let request = build_update_user_key_pair_request(client_info, public_key);
+        let body = build_im_biz_request_body(&self.body_cipher, &request.encode_to_vec())?;
+        let response = self
+            .http
+            .post(format!("{}{PATH}", self.base_url))
+            .header("X-One", self.header_manager.build_x_one()?)
+            .header("Content-Type", "application/json; charset=utf-8")
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| AppError::Http(format!("POST {PATH} request failed: {error}")))?;
+        let status = response.status();
+        let data = read_response_body_limited(response, MAX_HTTP_RESPONSE_SIZE).await?;
+        if !status.is_success() {
+            return Err(AppError::Http(format!(
+                "POST {PATH} -> HTTP {}: {}",
+                status,
+                super::openchat_user::sanitize_debug_json(&data)
+            ))
+            .into());
+        }
+        let decrypted = parse_im_biz_response(&self.body_cipher, &data).map_err(|error| {
+            AppError::Http(format!("POST {PATH} response decode failed: {error}"))
+        })?;
+        decode_update_user_key_pair_response(&decrypted).map_err(Into::into)
+    }
 }
 
 #[cfg(test)]
@@ -243,10 +374,14 @@ mod tests {
     use im_common::error::AppError;
     use im_common::version_key::HeaderManager;
     use im_proto::{
-        ClientInfo, CommonResult, CommonResultReq, GroupContactListReq, GroupContactListResp,
+        ClientInfo, CommonResult, CommonResultReq, GetKeyPairResp, GroupContactListReq,
+        GroupContactListResp, KeyPairBase, UpdateKeyPairReq, UpdateKeyPairResp,
     };
 
-    use super::{decode_group_list_response, ImBizClient};
+    use super::{
+        build_update_user_key_pair_request, decode_group_key_pair_response,
+        decode_group_list_response, decode_update_user_key_pair_response, ImBizClient,
+    };
     use prost::Message;
 
     #[test]
@@ -292,6 +427,49 @@ mod tests {
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].group_id, 1);
+    }
+
+    #[test]
+    fn group_key_pair_response_returns_im_biz_key_slot() {
+        let expected = KeyPairBase {
+            public_key: "public".to_string(),
+            msg_key: "encrypted-message-key".to_string(),
+            key_version: 3,
+            ..Default::default()
+        };
+        let response = GetKeyPairResp {
+            common_result: Some(CommonResult {
+                err_code: 200,
+                ..Default::default()
+            }),
+            key_pair: Some(expected.clone()),
+        };
+
+        let actual = decode_group_key_pair_response(&response.encode_to_vec()).unwrap();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn group_key_pair_response_accepts_im_biz_sys_field_two() {
+        let expected = KeyPairBase {
+            public_key: "group-public".to_string(),
+            msg_key: "wrapped-group-key".to_string(),
+            key_version: 1,
+            ..Default::default()
+        };
+        // im-biz 的 SysProto.GetKeyPairResp 在 field 2 返回通用 keyPair。
+        let response = GetKeyPairResp {
+            common_result: Some(CommonResult {
+                err_code: 200,
+                ..Default::default()
+            }),
+            key_pair: Some(expected.clone()),
+        };
+
+        let actual = decode_group_key_pair_response(&response.encode_to_vec()).unwrap();
+
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -359,6 +537,40 @@ mod tests {
     }
 
     #[test]
+    fn update_user_key_pair_request_matches_im_biz_sys_contract() {
+        let client_info = ClientInfo {
+            token: "session-token".to_string(),
+            ..Default::default()
+        };
+
+        let request = build_update_user_key_pair_request(&client_info, "AABBCC");
+
+        assert_eq!(
+            request,
+            UpdateKeyPairReq {
+                client_info: Some(client_info),
+                public_key: "AABBCC".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn update_user_key_pair_response_returns_server_version() {
+        let response = UpdateKeyPairResp {
+            common_result: Some(CommonResult {
+                err_code: 200,
+                ..Default::default()
+            }),
+            key_version: 7,
+        };
+
+        assert_eq!(
+            decode_update_user_key_pair_response(&response.encode_to_vec()).unwrap(),
+            7
+        );
+    }
+
+    #[test]
     fn invalid_body_key_returns_constructor_error() {
         // 无效 AES 密钥应在无网络副作用的构造阶段立即返回错误。
         let header_manager =
@@ -410,5 +622,39 @@ mod tests {
         assert!(request.contains("\r\ncontent-type: application/json; charset=utf-8\r\n"));
         assert!(error.to_string().contains("POST /group/groupContactList"));
         assert!(error.to_string().contains("500"));
+    }
+
+    #[tokio::test]
+    async fn update_user_key_pair_posts_to_im_biz_sys_path() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![0u8; 4096];
+            let count = socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 500 Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            String::from_utf8_lossy(&request[..count]).into_owned()
+        });
+        let client = ImBizClient::new(
+            reqwest::Client::new(),
+            format!("http://{address}"),
+            "0123456789abcdef".to_string(),
+            HeaderManager::new("secret".to_string(), "1234567890abcdef".to_string()),
+        )
+        .unwrap();
+
+        let error = client
+            .update_user_key_pair(&ClientInfo::default(), "AABBCC")
+            .await
+            .unwrap_err();
+        let request = server.await.unwrap();
+
+        assert!(request.starts_with("POST /sys/updateUserKeyPair HTTP/1.1\r\n"));
+        assert!(error
+            .to_string()
+            .contains("POST /sys/updateUserKeyPair -> HTTP 500"));
     }
 }

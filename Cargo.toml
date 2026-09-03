@@ -32,6 +32,8 @@ cipher = "0.4"
 pkcs7 = "0.4"
 md-5 = "0.10"
 hex = "0.4"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 # 压缩
 flate2 = "1"

@@ -73,4 +73,15 @@ describe('认证 IPC 契约', () => {
 
     await expect(api.login({ loginType: 1 })).rejects.toEqual(businessError)
   })
+
+  it('使用 onMessage 参数登记实时消息 Channel', async () => {
+    mocks.invoke.mockResolvedValueOnce(undefined)
+    const channel = {} as never
+
+    await api.registerMessageChannel(channel)
+
+    expect(mocks.invoke).toHaveBeenCalledWith('register_message_channel', {
+      onMessage: channel,
+    })
+  })
 })

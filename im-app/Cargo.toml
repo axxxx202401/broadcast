@@ -13,7 +13,7 @@ im-proto = { path = "../im-proto" }
 im-chat = { path = "../im-chat" }
 im-store = { path = "../im-store" }
 im-http = { path = "../im-http" }
-tauri = { workspace = true }
+tauri = { workspace = true, features = ["protocol-asset"] }
 tokio = { workspace = true, features = ["sync"] }
 tokio-util = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -28,6 +28,12 @@ futures = "0.3"
 base64 = { workspace = true }
 prost = { workspace = true }
 md-5 = { workspace = true }
+hex = { workspace = true }
+x25519-dalek = { workspace = true }
+rand_core = { workspace = true }
+aes = { workspace = true }
+cipher = { workspace = true }
+reqwest = { workspace = true }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

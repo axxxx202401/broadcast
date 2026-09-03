@@ -5,6 +5,8 @@
 
 /// 群组数据访问类型。
 pub mod group;
+/// 当前账号 App 密钥对数据访问类型。
+pub mod key_pair;
 /// 消息数据访问类型。
 pub mod message;
 /// SQLite 表结构定义。
@@ -19,6 +21,7 @@ use sqlx::SqlitePool;
 use std::str::FromStr;
 
 use crate::group::GroupStore;
+use crate::key_pair::UserKeyPairStore;
 use crate::message::MessageStore;
 
 /// SQLite 存储的总入口。
@@ -31,6 +34,8 @@ pub struct SqliteStore {
     pub messages: MessageStore,
     /// 使用同一连接池的群组数据访问入口。
     pub groups: GroupStore,
+    /// 使用同一连接池的当前账号 App 密钥对访问入口。
+    pub key_pairs: UserKeyPairStore,
 }
 
 impl SqliteStore {
@@ -63,6 +68,7 @@ impl SqliteStore {
             pool: pool.clone(),
             messages: MessageStore::new(pool.clone()).await,
             groups: GroupStore::new(pool.clone()).await,
+            key_pairs: UserKeyPairStore::new(pool.clone()),
         })
     }
 }

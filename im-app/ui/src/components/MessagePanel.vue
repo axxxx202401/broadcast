@@ -2,7 +2,8 @@
 import { nextTick, ref, watch } from 'vue'
 
 import type { GroupDto, MessageDto } from '../types/im'
-import { decodeMessageContent, formatMessageTime } from '../utils/message'
+import { formatMessageTime } from '../utils/message'
+import MessageBody from './MessageBody.vue'
 
 // 父组件提供当前群组、对应消息及加载状态，面板只负责四态展示和消息格式化。
 const props = defineProps<{
@@ -32,8 +33,8 @@ watch(
         <h2>{{ group.name || `群组 ${group.group_id}` }}</h2>
       </div>
       <div v-else>
-        <p class="eyebrow">CHANNEL NOT SELECTED</p>
-        <h2>消息流</h2>
+        <p class="eyebrow">ALL MONITORED CHANNELS</p>
+        <h2>全部群消息</h2>
       </div>
       <div class="stream-meta">
         <span><i class="pulse-dot"></i>只读采集</span>
@@ -47,31 +48,29 @@ watch(
         <span class="loader-grid" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
         <p>正在读取本地历史记录</p>
       </div>
-      <div v-else-if="!group" class="panel-empty">
-        <span class="empty-glyph" aria-hidden="true">⌁</span>
-        <strong>选择左侧群组以检查消息流</strong>
-        <p>实时事件仅追加到当前选中的群组视图</p>
-      </div>
       <div v-else-if="messages.length === 0" class="panel-empty">
         <span class="empty-glyph" aria-hidden="true">Ø</span>
         <strong>暂无已存储消息</strong>
         <p>开启群监控并连接聊天链路后等待新消息</p>
       </div>
-      <ol v-else class="message-log">
+      <ol v-else class="message-log" :class="{ 'all-groups': !group }">
         <li v-for="message in messages" :key="message.msg_id">
           <time :datetime="new Date(message.send_time < 10_000_000_000 ? message.send_time * 1000 : message.send_time).toISOString()">
             {{ formatMessageTime(message.send_time) }}
           </time>
+          <span v-if="!group" class="message-group">
+            {{ message.group_name || `群组 ${message.group_id}` }} <small>#{{ message.group_id }}</small>
+          </span>
           <span class="sender-id">UID {{ message.send_uid }}</span>
-          <p>{{ decodeMessageContent(message.content_b64) }}</p>
-          <span class="message-type">T{{ message.msg_type }}</span>
+          <MessageBody :message="message" />
         </li>
       </ol>
     </div>
 
     <footer class="message-footer">
-      <span>消息内容按后端 DTO 的 Base64 契约解码显示</span>
+      <span>正文和附件由 Rust 解密，失败时保留原始内容提示</span>
       <span v-if="group">CHANNEL / {{ group.group_id }}</span>
+      <span v-else>ALL MONITORED CHANNELS</span>
     </footer>
   </section>
 </template>

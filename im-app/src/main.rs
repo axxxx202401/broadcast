@@ -1,6 +1,7 @@
 //! 桌面应用入口：初始化日志、持久化存储与共享状态，注册 Tauri 命令并运行事件循环。
 
 mod commands;
+mod message_content;
 mod state;
 
 use state::AppState;
@@ -77,6 +78,8 @@ async fn main() {
                 group_ops: Arc::new(tokio::sync::Mutex::new(())),
                 connection_coordinator: Arc::new(state::ConnectionCoordinator::new()),
                 http,
+                message_crypto: Arc::new(message_content::MessageCryptoState::default()),
+                message_channel: Arc::new(tokio::sync::RwLock::new(None)),
                 connected: Arc::new(tokio::sync::RwLock::new(false)),
                 shutdown: tokio_util::sync::CancellationToken::new(),
                 app_handle: Some(app_handle.clone()),
@@ -97,11 +100,13 @@ async fn main() {
             commands::groups::fetch_group_list,
             commands::groups::refresh_group_list,
             commands::groups::toggle_monitor,
-            // 聊天连接、状态与消息（4 项）。
+            // 聊天连接、状态与消息（6 项）。
+            commands::chat::register_message_channel,
             commands::chat::connect_chat,
             commands::chat::disconnect_chat,
             commands::chat::get_connection_status,
             commands::chat::get_messages,
+            commands::chat::download_message_attachment,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

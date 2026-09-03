@@ -18,6 +18,24 @@ const group: GroupDto = {
 }
 
 describe('GroupSidebar', () => {
+  it('提供全部消息入口并在无单群选择时标记选中', async () => {
+    const wrapper = mount(GroupSidebar, {
+      props: {
+        groups: [group],
+        total: 1,
+        monitoredCount: 0,
+        selectedId: null,
+        search: '',
+        pending: null,
+      },
+    })
+
+    const button = wrapper.get('button.all-messages')
+    expect(button.attributes('aria-pressed')).toBe('true')
+    await button.trigger('click')
+    expect(wrapper.emitted('select-all')).toEqual([[]])
+  })
+
   // 可访问性交互契约：列表保留原生语义，选择与开关必须是两个非嵌套按钮并各自发出事件。
   it('uses list semantics with sibling selection and monitoring buttons', async () => {
     const wrapper = mount(GroupSidebar, {

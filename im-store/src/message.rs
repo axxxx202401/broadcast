@@ -47,6 +47,8 @@ pub struct MessageRow {
     pub stored_at: i64,
     /// 可选的原始协议字节，对应 `messages.raw_proto`。
     pub raw_proto: Option<Vec<u8>>,
+    /// 群组显示名称；群记录不存在时为空字符串。
+    pub group_name: String,
 }
 
 /// 基于共享 SQLite 连接池的消息数据访问入口。
@@ -122,11 +124,12 @@ impl MessageStore {
         let offset = i64::try_from(offset)
             .map_err(|_| sqlx::Error::Protocol("message offset exceeds i64".to_string()))?;
         let rows = sqlx::query(
-            r#"SELECT msg_id, group_id, send_uid, msg_type, content, send_time,
-                      content_md5, stored_at, raw_proto
-               FROM messages
-               WHERE group_id = ?
-               ORDER BY send_time DESC
+            r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
+                      m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name
+               FROM messages m
+               LEFT JOIN groups g ON g.group_id = m.group_id
+               WHERE m.group_id = ?
+               ORDER BY m.send_time DESC, m.msg_id DESC
                LIMIT ? OFFSET ?"#,
         )
         .bind(group_id)
@@ -147,8 +150,89 @@ impl MessageStore {
                 content_md5: row.get("content_md5"),
                 stored_at: row.get("stored_at"),
                 raw_proto: row.get("raw_proto"),
+                group_name: row.get("group_name"),
             });
         }
         Ok(result)
+    }
+
+    /// 分页读取当前可用且仍受监控群组的最近消息，并关联群组显示名称。
+    ///
+    /// 结果按发送时间和消息 ID 降序排列；没有群记录、已不可用或已关闭监控的消息
+    /// 不进入全量监控视图。分页边界与 [`Self::get_by_group`] 相同。
+    pub async fn get_recent(&self, limit: usize, offset: usize) -> sqlx::Result<Vec<MessageRow>> {
+        if !(1..=MAX_MESSAGE_PAGE_LIMIT).contains(&limit) {
+            return Err(sqlx::Error::Protocol(format!(
+                "message limit must be between 1 and {MAX_MESSAGE_PAGE_LIMIT}"
+            )));
+        }
+        if offset > MAX_MESSAGE_PAGE_OFFSET {
+            return Err(sqlx::Error::Protocol(format!(
+                "message offset exceeds maximum {MAX_MESSAGE_PAGE_OFFSET}"
+            )));
+        }
+        let limit = i64::try_from(limit)
+            .map_err(|_| sqlx::Error::Protocol("message limit exceeds i64".to_string()))?;
+        let offset = i64::try_from(offset)
+            .map_err(|_| sqlx::Error::Protocol("message offset exceeds i64".to_string()))?;
+        let rows = sqlx::query(
+            r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
+                      m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name
+               FROM messages m
+               JOIN groups g ON g.group_id = m.group_id
+               WHERE g.monitored = 1 AND g.available = 1
+               ORDER BY m.send_time DESC, m.msg_id DESC
+               LIMIT ? OFFSET ?"#,
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| MessageRow {
+                msg_id: row.get("msg_id"),
+                group_id: row.get("group_id"),
+                send_uid: row.get("send_uid"),
+                msg_type: row.get("msg_type"),
+                content: row.get("content"),
+                send_time: row.get("send_time"),
+                content_md5: row.get("content_md5"),
+                stored_at: row.get("stored_at"),
+                raw_proto: row.get("raw_proto"),
+                group_name: row.get("group_name"),
+            })
+            .collect())
+    }
+
+    /// 按消息 ID 读取单条消息及其完整原始 Protobuf。
+    ///
+    /// 附件下载流程使用原始 Protobuf 重新取得 `attachment_key`、版本及媒体 URL。
+    /// 消息不存在时返回 `Ok(None)`；群记录不存在不会阻止消息返回。
+    pub async fn get_by_id(&self, msg_id: i64) -> sqlx::Result<Option<MessageRow>> {
+        let row = sqlx::query(
+            r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
+                      m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name
+               FROM messages m
+               LEFT JOIN groups g ON g.group_id = m.group_id
+               WHERE m.msg_id = ?"#,
+        )
+        .bind(msg_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|row| MessageRow {
+            msg_id: row.get("msg_id"),
+            group_id: row.get("group_id"),
+            send_uid: row.get("send_uid"),
+            msg_type: row.get("msg_type"),
+            content: row.get("content"),
+            send_time: row.get("send_time"),
+            content_md5: row.get("content_md5"),
+            stored_at: row.get("stored_at"),
+            raw_proto: row.get("raw_proto"),
+            group_name: row.get("group_name"),
+        }))
     }
 }

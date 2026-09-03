@@ -103,11 +103,11 @@ GT4 实现位于 `/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app/ui/src/
 
 ## 5. Tauri IPC 与并发边界
 
-实际注册的 13 个 command：
+实际注册的 15 个 command：
 
 - 认证：`login`、`logout`、`send_sms_code`、`send_email_code`、`issue_validation_token`、`verify_validations`、`list_pending_validations`；
 - 群组：`fetch_group_list`、`refresh_group_list`、`toggle_monitor`；
-- 连接/消息：`connect_chat`、`disconnect_chat`、`get_messages`。
+- 连接/消息：`connect_chat`、`disconnect_chat`、`get_connection_status`、`get_messages`、`download_message_attachment`。
 
 前端服务 `/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app/ui/src/services/tauri.ts` 对所有带 request struct 的认证 command 使用 `{ request }` 包装；无参 command 不包装。`toggle_monitor`、`get_messages` 按各自 command 参数名直接传参。
 
@@ -115,7 +115,9 @@ Rust/protobuf/SQLite 内部 ID 使用 `i64`。跨 Tauri/JavaScript 边界的 `ui
 
 并发修复以 generation、attempt ID、`CancellationToken` 和连接 slot 的原子安装/移除隔离旧登录、旧连接、旧重连及旧状态事件。登录先推进 generation 并清理旧 session，只有远端认证和群同步都成功且 generation 仍有效时才发布新 session。群刷新、登录后的群快照落库/监控集合恢复和 `toggle_monitor` 共用 `group_ops` 锁，避免群快照与用户开关互相覆盖；远端 HTTP fetch 不占用该锁。
 
-后端 `connection_status` 事件是前端连接状态的唯一权威来源。HTTP 登录和群同步成功后，后端在不阻塞登录结果的后台任务中自动连接 TCP；首次连接失败保持登录状态并按指数退避重试，新登录、退出或应用关闭会使旧任务失效。消息进入容量 8 的 Tokio 有界队列，单条上限 8 MiB，队列满或超限时失败并断开，监控群消息先写 SQLite 再发布 `new_message`。
+后端 `connection_status` 事件是前端连接状态的唯一权威来源。HTTP 登录和群同步成功后，后端在不阻塞登录结果的后台任务中自动连接 TCP；首次连接失败保持登录状态并按指数退避重试，新登录、退出或应用关闭会使旧任务失效。消息进入容量 8 的 Tokio 有界队列，单条上限 8 MiB，队列满或超限时失败并断开。Vue 页面挂载时通过 `register_message_channel` 登记 Tauri Channel，热重载或页面重建会用新 Channel 替换旧接收端；监控群消息先写 SQLite，再通过当前 Channel 推送 DTO 并即时合并，不通过轮询或点击群组触发刷新。Channel 未登记或发送失败只记录警告，不影响消息入库及 2102 回执。
+
+消息视图默认调用 `get_messages(group_id=None)`，读取当前可用且仍受监控群组的最近消息；选择单群后传入群 ID，再次点击当前群或点击“全部消息”恢复全量。全量 DTO 携带 `group_name` 和字符串 `group_id`，实时事件在全量模式接受所有受监控群消息，单群模式只合并当前群。
 
 ## 6. TCP 协议事实
 
@@ -134,13 +136,25 @@ TCP 帧是：
 
 因此 1201 不做 `clinet_info`/token 校验，也不能按 `LoginSessionMessage`、`LoginResp` 或 `CommonResult` 解码。畸形的 `PushLoginSuccessMessage` 才会使当前登录尝试失败；合法 payload（包括 `login_time=0`）可完成连接。
 
+### 6.1 群消息与媒体附件解密
+
+`GroupMessage.version != 0` 表示应用层正文已加密。im-chat 1201 的 `user_key_pair` 由 `getAppNewestKeyPair` 映射，只包含公钥和版本，不包含私钥；缺少私钥不能判定 TCP 登录失败。客户端通过 im-biz 旧版 `POST /sys/getKeyPair` 请求 `client_info + KEY_GROUP + group_id`，并从响应 field 2 的通用 `key_pair` 读取群 `public_key` 和包装后的 `msg_key`。
+
+服务端会用当前用户 App 公钥和群私钥产生 Curve25519 共享值，再以 AES-128-ECB/PKCS7 包装群 `msg_key`；因此返回值仍需要对应的本地用户私钥才能还原。客户端在 1201 后比较服务端 App 公钥和版本与 SQLite `user_key_pairs` 的本地最新记录：完全匹配时恢复私钥；缺失或不匹配时生成新的 X25519 密钥对，通过 im-biz `POST /sys/updateUserKeyPair` 只上传公钥，并用响应版本持久化完整本地密钥对。私钥不进入日志、HTTP 请求或前端 DTO。
+
+密钥同步在连接发布为 `connected` 后独立运行，失败不撤销 TCP 在线状态，也不影响原始消息入库或 2102 回执。同步完成后后端发送 `message_keys_ready`，Vue 重新读取当前消息范围，使同步前暂时显示解密提示的历史和实时消息得到再次解密。该流程使用账号级 App 公钥槽，适用于监控专用账号；同账号被多个独立 App 客户端同时轮换密钥会产生版本竞争。
+
+群 `relKey` 解开 `GroupMessage.content` 和 HEX `attachment_key`。正文随后按 `msg_type` 解码为 `TextObj`、`ImageObj`、`AudioObj`、`VideoObj` 或 `FileObj`；原始 `content` 与完整 `raw_proto` 仍保留在 SQLite。附件采用裸 HTTP(S) GET，下载上限 256 MiB，再用解出的 `fileKey` 前 16 字节执行 AES-128-ECB/PKCS7。客户端通过首个 102416 字节密文块的独立填充块识别 PC“102400 字节明文分块”方案，否则按移动端整文件方案解密。
+
+解密后的附件写入 Tauri `$APPCACHE/media`，`assetProtocol` 仅开放该目录；Vue 使用 `convertFileSrc` 展示图片、音频、视频或文件下载。单条正文或附件解密失败只产生可见错误，不删除原始消息。
+
 ## 7. 启动、测试与构建
 
-桌面开发启动的唯一推荐命令：
+测试环境桌面开发启动的推荐命令：
 
 ```bash
 cd /Volumes/TRANSCEND/works/objects/rust/broadcast/im-app
-cargo tauri dev
+npm run dev:test
 ```
 
 `/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app/tauri.conf.json` 的 Tauri hooks 实际执行 `npm run dev` 和 `npm run build`。因为 hooks 的 cwd 是 `/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app`，根 package `/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app/package.json` 再代理到 UI package。Vite 固定监听 `127.0.0.1:1420`，Tauri devUrl 也是 `http://127.0.0.1:1420`。生产产物位于 `/Volumes/TRANSCEND/works/objects/rust/broadcast/im-app/ui/dist`。
@@ -169,11 +183,11 @@ git status --short
 
 2026-09-03 实际结果：
 
-- Rust：149 项测试通过，0 失败；
+- Rust：189 项测试通过、1 项 live test 忽略，0 失败；
 - `cargo check --workspace --all-targets`：通过；
 - `cargo fmt --all -- --check`：通过；
 - `cargo clippy --workspace --all-targets -- -D warnings`：通过；
-- Vue：10 个测试文件、44 项测试通过，0 失败；
+- Vue：12 个测试文件、61 项测试通过，0 失败；
 - Vue typecheck、生产 build：通过；
 - npm audit：0 vulnerabilities；
 - `cargo tauri build --no-bundle`：通过，包含根 package 代理的前端构建钩子；
@@ -181,7 +195,7 @@ git status --short
 
 ## 8. 状态与安全边界
 
-已完成：六 crate 代码、HTTP/TCP framing、认证与 challenge 编排、GT4 前端绑定、群同步与 SQLite、连接 generation/重连、消息持久化、Tauri IPC、Vue UI 及自动测试。这里的“完成”指本地实现和自动测试，不代表真实端到端可用。
+已完成：六 crate 代码、HTTP/TCP framing、认证与 challenge 编排、GT4 前端绑定、群同步与 SQLite、连接 generation/重连、消息持久化、群密钥与五种正文解析、媒体附件解密、全量/单群消息视图、Tauri IPC、Vue UI 及自动测试。这里的“完成”指本地实现和自动测试，不代表真实端到端可用。
 
 仍未完成：
 
@@ -189,7 +203,7 @@ git status --short
 - 真实 im-biz 群列表 wire/字段联调；
 - 真实 im-chat 的 1100/1201、心跳、push、断线与重连联调；
 - 目标平台打包、签名、安装和冒烟；
-- 正式 MessageExtractor；
+- 真实环境群密钥、图片、音频、视频和文件样本联调；
 - 消息统计、聚合和导出。
 
 不得宣称端到端完成。文档、日志、bundle 和测试不得泄露 AES/header 密钥、会话 token、手机号、邮箱或真实账号；captchaId 是公开站点标识，可以记录，但 captchaKey 等服务端秘密不得进入前端或文档。

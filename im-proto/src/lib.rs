@@ -16,8 +16,9 @@ pub mod pb {
 ///
 /// 根级重新导出将调用方与生成文件名及内部布局隔离。
 pub use pb::{
-    ClientInfo, CommonResult, CommonResultReq, ErrrMessage, GroupBase, GroupContactListReq,
-    GroupContactListResp, GroupMemberBase, GroupMessage, KeyPairBase, LoginReq, LoginResp,
-    LoginSessionMessage, MessageType, Platform, PushGroupMessage, PushLoginSuccessMessage,
-    ReceiveGroupMessage, UrlInfo, UserBase,
+    AudioObj, ClientInfo, CommonResult, CommonResultReq, ErrrMessage, FileObj, GetKeyPairReq,
+    GetKeyPairResp, GroupBase, GroupContactListReq, GroupContactListResp, GroupMemberBase,
+    GroupMessage, ImageObj, KeyPairBase, KeyPairType, LoginReq, LoginResp, LoginSessionMessage,
+    MessageType, Platform, PushGroupMessage, PushLoginSuccessMessage, ReceiveGroupMessage, TextObj,
+    UpdateKeyPairReq, UpdateKeyPairResp, UrlInfo, UserBase, VideoObj,
 };

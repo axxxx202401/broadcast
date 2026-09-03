@@ -8,12 +8,12 @@
 //! 覆盖新会话。
 //!
 //! 入站回调只负责把帧送入有界队列。工作协程串行解码并处理 1201、2202 和 2205：
-//! 2202 中仅受监控群的消息写入数据库并尝试发送 `new_message` 事件，但所有成功
+//! 2202 中仅受监控群的消息写入数据库并尝试通过前端 Channel 发送 DTO，但所有成功
 //! 处理或无需持久化的消息都会按群汇总后发送 2102 回执。持久化失败的消息不回执；
-//! 事件发送失败只记录日志，仍视为已持久化并回执。1201 解码失败会触发故障关闭
+//! Channel 发送失败只记录日志，仍视为已持久化并回执。1201 解码失败会触发故障关闭
 //! （fail-closed）并取消连接；2202 解码失败则只记录警告、丢弃当前帧并继续。
 //! 取消会关闭接收端并丢弃仍排队及之后发送的帧，但不会回滚或阻止当前正在等待的
-//! SQLite/事件副作用，进行中的操作可能已经完成。
+//! SQLite/Channel 副作用，进行中的操作可能已经完成。
 
 use std::{
     fmt::Display,
@@ -29,7 +29,7 @@ use std::{
 use crate::state::AppState;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use prost::Message;
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -52,7 +52,7 @@ const MAX_QUEUED_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
 ///
 /// 64 位标识以十进制字符串表示，避免 JavaScript 数值精度损失；二进制正文统一使用
 /// 标准 Base64。2202 实时消息由 `persist_and_emit` 成功写入 SQLite 后才发送
-/// `new_message`；事件 DTO 的 `stored_at` 为 `None`，是因为事件没有回读或携带
+/// Channel 消息；实时 DTO 的 `stored_at` 为 `None`，是因为发送前没有回读或携带
 /// INSERT 时生成的写入时间，不表示消息尚未落库。历史查询 DTO 会携带已存的写入时间。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MessageDto {
@@ -64,15 +64,48 @@ pub struct MessageDto {
     pub send_uid: String,
     /// 协议定义的消息类型。
     pub msg_type: i32,
+    /// 群组显示名称；实时协议未携带名称时可能为空。
+    pub group_name: String,
     /// 标准 Base64 编码的原始消息正文。
     pub content_b64: String,
+    /// 成功解密并按消息类型解析后的结构化正文。
+    pub decoded_content: Option<crate::message_content::MediaContent>,
+    /// 解密或正文解析失败的可展示原因；不影响原始消息入库。
+    pub decode_error: Option<String>,
     /// 服务端记录的发送时间。
     pub send_time: i64,
     /// 消息正文的 MD5 摘要。
     pub content_md5: String,
-    /// 数据库写入时间；实时事件未回读 INSERT 生成的值，故为 `None`，但消息已成功落库。
+    /// 数据库写入时间；实时推送未回读 INSERT 生成的值，故为 `None`，但消息已成功落库。
     /// 历史查询会返回已存的写入时间。
     pub stored_at: Option<i64>,
+}
+
+/// 当前前端页面登记的实时消息 Channel；页面重载后用新 Channel 原子替换旧值。
+pub type MessageChannelSlot =
+    tokio::sync::RwLock<Option<tauri::ipc::Channel<MessageDto>>>;
+
+/// 替换实时消息接收端；不向旧页面发送关闭通知。
+async fn replace_message_channel(
+    slot: &MessageChannelSlot,
+    channel: tauri::ipc::Channel<MessageDto>,
+) {
+    *slot.write().await = Some(channel);
+}
+
+/// 向当前登记的页面发送一条已入库消息。
+///
+/// 先克隆 Channel 再释放读锁，避免 WebView 执行期间阻塞页面重载后的接收端替换。
+async fn publish_realtime_message(
+    slot: &MessageChannelSlot,
+    message: &MessageDto,
+) -> Result<(), String> {
+    let channel = slot
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| "Realtime message channel is not registered".to_string())?;
+    channel.send(message.clone()).map_err(|error| error.to_string())
 }
 
 fn stored_message_parts(
@@ -83,7 +116,10 @@ fn stored_message_parts(
         group_id: message.group_id.to_string(),
         send_uid: message.send_uid.to_string(),
         msg_type: message.msg_type,
+        group_name: message.group_name.clone(),
         content_b64: STANDARD.encode(&message.content),
+        decoded_content: None,
+        decode_error: None,
         send_time: message.send_time,
         content_md5: message.content_md5.clone(),
         stored_at: None,
@@ -107,10 +143,54 @@ fn message_dto_from_row(row: im_store::message::MessageRow) -> MessageDto {
         group_id: row.group_id.to_string(),
         send_uid: row.send_uid.to_string(),
         msg_type: row.msg_type,
+        group_name: row.group_name,
         content_b64: STANDARD.encode(row.content),
+        decoded_content: None,
+        decode_error: None,
         send_time: row.send_time,
         content_md5: row.content_md5,
         stored_at: Some(row.stored_at),
+    }
+}
+
+fn message_client_info(
+    config: &im_common::config::AppConfig,
+    token: String,
+) -> im_proto::ClientInfo {
+    im_proto::ClientInfo {
+        session_id: String::new(),
+        app_ver: config.device.app_ver,
+        package_code: config.device.package_code,
+        plat: im_proto::Platform::Android as i32,
+        language: config.device.language,
+        sys_mac: config.device.sys_mac.clone(),
+        sys_model: config.device.sys_model.clone(),
+        token,
+        version: format!("{}-{}", config.device.app_ver, config.device.package_code),
+    }
+}
+
+async fn enrich_message_dto(
+    config: &tokio::sync::RwLock<im_common::config::AppConfig>,
+    auth_session: &tokio::sync::RwLock<Option<crate::state::AuthSession>>,
+    http: &im_http::http_clients::AppHttpClients,
+    message_crypto: &crate::message_content::MessageCryptoState,
+    message: &im_proto::GroupMessage,
+    dto: &mut MessageDto,
+) {
+    let Some(session) = auth_session.read().await.clone() else {
+        dto.decode_error = Some("尚未登录，无法解密消息".to_string());
+        return;
+    };
+    let config = config.read().await;
+    let client_info = message_client_info(&config, session.token);
+    drop(config);
+    match message_crypto
+        .decode_group_message(&http.im_biz, &client_info, message)
+        .await
+    {
+        Ok(decoded) => dto.decoded_content = Some(decoded.content),
+        Err(error) => dto.decode_error = Some(error),
     }
 }
 
@@ -123,6 +203,9 @@ struct ConnectionContext {
     auth_session: Arc<tokio::sync::RwLock<Option<crate::state::AuthSession>>>,
     monitoring_groups: Arc<tokio::sync::RwLock<std::collections::HashSet<i64>>>,
     coordinator: Arc<crate::state::ConnectionCoordinator>,
+    http: Arc<im_http::http_clients::AppHttpClients>,
+    message_crypto: Arc<crate::message_content::MessageCryptoState>,
+    message_channel: Arc<MessageChannelSlot>,
     connected: Arc<tokio::sync::RwLock<bool>>,
     shutdown: CancellationToken,
     app_handle: tauri::AppHandle,
@@ -137,6 +220,9 @@ impl ConnectionContext {
             auth_session: state.auth_session.clone(),
             monitoring_groups: state.monitoring_groups.clone(),
             coordinator: state.connection_coordinator.clone(),
+            http: state.http.clone(),
+            message_crypto: state.message_crypto.clone(),
+            message_channel: state.message_channel.clone(),
             connected: state.connected.clone(),
             shutdown: state.shutdown.clone(),
             app_handle: state.app_handle().clone(),
@@ -304,7 +390,7 @@ async fn enqueue_incoming_frame(
 trait MessageEffects: Send + Sync {
     /// 查询该群在处理当前消息时是否仍处于监控集合。
     async fn is_monitored(&self, group_id: i64) -> bool;
-    /// 先写入 SQLite，再尝试发送 `new_message`；仅写库失败时返回 `false`。
+    /// 先写入 SQLite，再尝试通过 Channel 发送 DTO；仅写库失败时返回 `false`。
     async fn persist_and_emit(&self, message: im_proto::GroupMessage) -> bool;
     /// 按群发送包含完整消息 ID 列表的 2102 接收回执。
     async fn acknowledge_group_messages(
@@ -314,7 +400,7 @@ trait MessageEffects: Send + Sync {
     ) -> Result<(), im_common::error::AppError>;
 }
 
-/// 使用真实应用状态执行监控查询、持久化、事件和回执副作用。
+/// 使用真实应用状态执行监控查询、持久化、Channel 推送和回执副作用。
 struct ConnectionMessageEffects {
     context: ConnectionContext,
     sender: Arc<tokio::sync::OnceCell<im_chat::ChatSender>>,
@@ -332,13 +418,40 @@ impl MessageEffects for ConnectionMessageEffects {
     }
 
     async fn persist_and_emit(&self, message: im_proto::GroupMessage) -> bool {
-        let (record, dto) = stored_message_parts(&message);
+        let (record, mut dto) = stored_message_parts(&message);
         if let Err(error) = self.context.db.messages.insert(&record).await {
             tracing::error!("Failed to insert message: {error}");
             return false;
         }
-        if let Err(error) = self.context.app_handle.emit("new_message", &dto) {
-            tracing::error!("Failed to emit new_message: {error}");
+        enrich_message_dto(
+            &self.context.config,
+            &self.context.auth_session,
+            &self.context.http,
+            &self.context.message_crypto,
+            &message,
+            &mut dto,
+        )
+        .await;
+        match publish_realtime_message(&self.context.message_channel, &dto).await {
+            Ok(()) => {
+                #[cfg(debug_assertions)]
+                tracing::info!(
+                    msg_id = %dto.msg_id,
+                    group_id = %dto.group_id,
+                    "Persisted message sent through frontend Channel"
+                );
+                #[cfg(not(debug_assertions))]
+                tracing::debug!(
+                    msg_id = %dto.msg_id,
+                    group_id = %dto.group_id,
+                    "Persisted message sent through frontend Channel"
+                );
+            }
+            Err(error) => tracing::warn!(
+                msg_id = %dto.msg_id,
+                group_id = %dto.group_id,
+                "Failed to send persisted message through frontend Channel: {error}"
+            ),
         }
         true
     }
@@ -375,7 +488,22 @@ struct EstablishedConnection {
     installed: Arc<AtomicBool>,
     connection_lost: Arc<AtomicBool>,
     connection_cancellation: CancellationToken,
+    server_user_key_pair: im_proto::KeyPairBase,
     _message_worker: tokio::task::JoinHandle<()>,
+}
+
+#[tauri::command]
+/// 登记当前页面用于接收已入库实时消息的 Channel。
+///
+/// 后注册者替换旧页面的 Channel，适配开发热重载和 WebView 重新加载；该命令不读取
+/// 历史消息，调用方仍须通过 `get_messages` 完成初始快照。
+pub async fn register_message_channel(
+    state: State<'_, AppState>,
+    on_message: tauri::ipc::Channel<MessageDto>,
+) -> Result<(), String> {
+    replace_message_channel(&state.message_channel, on_message).await;
+    tracing::info!("Frontend realtime message Channel registered");
+    Ok(())
 }
 
 #[tauri::command]
@@ -475,6 +603,7 @@ async fn connect_chat_inner(state: &AppState) -> Result<(), String> {
         installed,
         connection_lost,
         connection_cancellation,
+        server_user_key_pair,
         _message_worker,
     } = established;
     let install_result = state
@@ -520,6 +649,12 @@ async fn connect_chat_inner(state: &AppState) -> Result<(), String> {
             )
             .await;
             if published {
+                start_user_key_pair_sync(
+                    context.clone(),
+                    auth_session.clone(),
+                    server_user_key_pair,
+                    generation_cancellation.clone(),
+                );
                 start_heartbeat(
                     context,
                     auth_session,
@@ -790,20 +925,84 @@ async fn establish_connection(
         Err(error) => Err(error),
     };
 
-    if let Err(error) = network_result {
-        connection_cancellation.cancel();
-        disconnect_local_client(&mut chat_client).await;
-        let _ = tokio::time::timeout(CHAT_DISCONNECT_TIMEOUT, message_worker).await;
-        return Err(error);
-    }
+    let login_success = match network_result {
+        Ok(login_success) => login_success,
+        Err(error) => {
+            connection_cancellation.cancel();
+            disconnect_local_client(&mut chat_client).await;
+            let _ = tokio::time::timeout(CHAT_DISCONNECT_TIMEOUT, message_worker).await;
+            return Err(error);
+        }
+    };
+    let server_user_key_pair = login_user_key_metadata(login_success);
 
     Ok(EstablishedConnection {
         client: chat_client,
         installed,
         connection_lost,
         connection_cancellation,
+        server_user_key_pair,
         _message_worker: message_worker,
     })
+}
+
+/// 提取 1201 中服务端公布的当前 App 公钥和版本；字段缺失时返回默认元数据。
+fn login_user_key_metadata(
+    login_success: im_proto::PushLoginSuccessMessage,
+) -> im_proto::KeyPairBase {
+    login_success.user_key_pair.unwrap_or_default()
+}
+
+/// 在连接已发布为在线后恢复或登记当前账号的本地 App 密钥对。
+///
+/// 任务受当前认证 generation 的取消信号约束。任何失败只记录不含密钥内容的警告；
+/// 它不会撤销 TCP 连接，后续消息仍会入库和回执，并在 DTO 中携带解密错误。
+fn start_user_key_pair_sync(
+    context: ConnectionContext,
+    auth_session: crate::state::AuthSession,
+    server_key_pair: im_proto::KeyPairBase,
+    cancellation: CancellationToken,
+) {
+    tokio::spawn(async move {
+        let config = context.config.read().await;
+        let client_info = message_client_info(&config, auth_session.token);
+        drop(config);
+        let http = context.http.clone();
+        let synchronization = crate::message_content::synchronize_user_key_pair(
+            &context.message_crypto,
+            &context.db.key_pairs,
+            auth_session.uid,
+            &server_key_pair,
+            move |public_key| async move {
+                http.im_biz
+                    .update_user_key_pair(&client_info, &public_key)
+                    .await
+                    .map_err(|error| format!("登记用户 App 公钥失败：{error}"))
+            },
+        );
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {}
+            result = synchronization => {
+                match result {
+                    Ok(()) => {
+                        tracing::info!(
+                            uid = auth_session.uid,
+                            "User App key pair is ready for group message decryption"
+                        );
+                        if let Err(error) = context.app_handle.emit("message_keys_ready", ()) {
+                            tracing::warn!("Failed to emit message_keys_ready: {error}");
+                        }
+                    }
+                    Err(error) => tracing::warn!(
+                        uid = auth_session.uid,
+                        %error,
+                        "User App key pair synchronization failed; chat remains connected"
+                    ),
+                }
+            }
+        }
+    });
 }
 
 /// 驱动当前连接的串行消息处理循环。
@@ -811,7 +1010,7 @@ async fn run_message_worker(
     receiver: mpsc::Receiver<IncomingFrame>,
     effects: Arc<dyn MessageEffects>,
     cancellation: CancellationToken,
-    login_sender: tokio::sync::oneshot::Sender<()>,
+    login_sender: tokio::sync::oneshot::Sender<im_proto::PushLoginSuccessMessage>,
 ) {
     run_message_worker_with_effects(receiver, effects, cancellation, login_sender).await;
 }
@@ -825,12 +1024,12 @@ async fn run_message_worker(
 /// 不落库但仍回执。之后按群 ID 有序发送覆盖全部可处理消息的 2102；任一回执失败会
 /// 取消连接并停止后续处理。2205 当前仅记录预留日志。取消分支优先，退出时关闭
 /// receiver 并丢弃仍排队及之后发送的帧；这不会回滚或保证阻止当前正在等待的
-/// SQLite 写入或事件发送，进行中的副作用可能已经完成。
+/// SQLite 写入或 Channel 发送，进行中的副作用可能已经完成。
 async fn run_message_worker_with_effects(
     mut receiver: mpsc::Receiver<IncomingFrame>,
     effects: Arc<dyn MessageEffects>,
     cancellation: CancellationToken,
-    login_sender: tokio::sync::oneshot::Sender<()>,
+    login_sender: tokio::sync::oneshot::Sender<im_proto::PushLoginSuccessMessage>,
 ) {
     let mut login_sender = Some(login_sender);
     loop {
@@ -844,16 +1043,17 @@ async fn run_message_worker_with_effects(
         };
         match frame.message_id {
             im_chat::heartbeat::PUSH_LOGIN_SUCCESS => {
-                match im_proto::PushLoginSuccessMessage::decode(frame.content.as_slice()) {
-                    Ok(_) => {}
-                    Err(error) => {
-                        tracing::warn!("Failed to decode PushLoginSuccessMessage: {error}");
-                        cancellation.cancel();
-                        break;
-                    }
-                }
+                let login_success =
+                    match im_proto::PushLoginSuccessMessage::decode(frame.content.as_slice()) {
+                        Ok(message) => message,
+                        Err(error) => {
+                            tracing::warn!("Failed to decode PushLoginSuccessMessage: {error}");
+                            cancellation.cancel();
+                            break;
+                        }
+                    };
                 if let Some(sender) = login_sender.take() {
-                    let _ = sender.send(());
+                    let _ = sender.send(login_success);
                 }
             }
             im_chat::heartbeat::PUSH_GROUP_MESSAGE => {
@@ -909,7 +1109,7 @@ async fn run_message_worker_with_effects(
         }
     }
     // 关闭接收端会丢弃仍排队及之后发送的帧；它不会回滚或保证阻止当前正在等待的
-    // SQLite 写入或界面事件，进行中的副作用可能已经完成。
+    // SQLite 写入或 Channel 发送，进行中的副作用可能已经完成。
     receiver.close();
 }
 
@@ -1057,6 +1257,7 @@ async fn run_reconnect_loop(
         installed,
         connection_lost,
         connection_cancellation,
+        server_user_key_pair,
         _message_worker,
     } = established;
     let install = context
@@ -1102,6 +1303,12 @@ async fn run_reconnect_loop(
             )
             .await
             {
+                start_user_key_pair_sync(
+                    context.clone(),
+                    auth_session.clone(),
+                    server_user_key_pair,
+                    generation_cancellation.clone(),
+                );
                 start_heartbeat(
                     context,
                     auth_session,
@@ -1512,27 +1719,207 @@ pub async fn disconnect_chat(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-/// 分页查询指定群的已存储消息。
+/// 分页查询指定群或全部群组的已存储消息。
 ///
-/// `state` 用于访问 SQLite；`group_id` 必须是可解析的 64 位十进制整数，`limit`
-/// 范围为 1..=200，`offset` 最大为 1_000_000 且二者须可转换为 SQLite 整数。
-/// 成功返回按存储层顺序映射的 [`MessageDto`]；参数非法或数据库查询失败时返回
-/// 字符串错误。本命令不改变连接或数据库内容，也不发送前端事件。
+/// `group_id` 为 `Some` 时必须是 64 位十进制整数并只查询该群；为 `None` 时跨群读取
+/// 最近消息。查询后尝试用可选本地用户私钥和按需取得的群密钥解密正文；
+/// 单条解密失败只写入 DTO 的 `decode_error`，不令整页失败。
 pub async fn get_messages(
     state: State<'_, AppState>,
-    group_id: String,
+    group_id: Option<String>,
     limit: usize,
     offset: usize,
 ) -> Result<Vec<MessageDto>, String> {
-    let group_id = super::parse_i64_id(&group_id, "group_id")?;
     let (limit, offset) = validate_message_page(limit, offset)?;
-    let messages = state
+    let messages = match group_id {
+        Some(group_id) => {
+            let group_id = super::parse_i64_id(&group_id, "group_id")?;
+            state
+                .db
+                .messages
+                .get_by_group(group_id, limit, offset)
+                .await
+        }
+        None => state.db.messages.get_recent(limit, offset).await,
+    }
+    .map_err(|error| error.to_string())?;
+
+    let mut result = Vec::with_capacity(messages.len());
+    for row in messages {
+        let message = row
+            .raw_proto
+            .as_deref()
+            .and_then(|bytes| im_proto::GroupMessage::decode(bytes).ok());
+        let mut dto = message_dto_from_row(row);
+        if let Some(message) = message {
+            enrich_message_dto(
+                &state.config,
+                &state.auth_session,
+                &state.http,
+                &state.message_crypto,
+                &message,
+                &mut dto,
+            )
+            .await;
+        } else {
+            dto.decode_error = Some("消息缺少可解码的原始协议数据".to_string());
+        }
+        result.push(dto);
+    }
+    Ok(result)
+}
+
+const MAX_ATTACHMENT_DOWNLOAD_SIZE: usize = 256 * 1024 * 1024;
+
+/// 已解密到本地缓存的附件定位信息。
+#[derive(serde::Serialize)]
+pub struct AttachmentDownloadDto {
+    /// 可交给 Tauri `convertFileSrc` 的绝对路径。
+    pub path: String,
+    /// 消息协议携带或按媒体类型推导的 MIME。
+    pub mime_type: String,
+}
+
+#[tauri::command]
+/// 下载并解密一条媒体消息的主附件或缩略图，返回本地缓存绝对路径。
+///
+/// 命令从 SQLite 的 `raw_proto` 恢复完整群消息，再按需获取群密钥、解开
+/// `attachment_key` 和正文 Protobuf，最后对 OSS 密文执行 PC 分块或整文件 AES 解密。
+/// 只允许 HTTP(S) URL，下载上限为 256 MiB；明文写入 Tauri 应用缓存目录，不覆盖
+/// 该消息与附件类型之外的路径。
+pub async fn download_message_attachment(
+    state: State<'_, AppState>,
+    msg_id: String,
+    thumbnail: bool,
+) -> Result<AttachmentDownloadDto, String> {
+    let msg_id = super::parse_i64_id(&msg_id, "msg_id")?;
+    let row = state
         .db
         .messages
-        .get_by_group(group_id, limit, offset)
+        .get_by_id(msg_id)
         .await
-        .map_err(|e| e.to_string())?;
-    Ok(messages.into_iter().map(message_dto_from_row).collect())
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("消息 {msg_id} 不存在"))?;
+    let raw_proto = row
+        .raw_proto
+        .ok_or_else(|| format!("消息 {msg_id} 缺少原始协议数据"))?;
+    let message = im_proto::GroupMessage::decode(raw_proto.as_slice())
+        .map_err(|error| format!("消息 {msg_id} 协议解析失败：{error}"))?;
+    let session = state
+        .auth_session
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| "尚未登录".to_string())?;
+    let config = state.config.read().await;
+    let client_info = message_client_info(&config, session.token);
+    drop(config);
+    let decoded = state
+        .message_crypto
+        .decode_group_message(&state.http.im_biz, &client_info, &message)
+        .await?;
+    let descriptor = decoded
+        .content
+        .attachment(thumbnail)
+        .ok_or_else(|| "该消息没有可下载附件".to_string())?;
+    let file_key = decoded
+        .file_key
+        .ok_or_else(|| "消息缺少附件解密密钥".to_string())?;
+    let url =
+        reqwest::Url::parse(&descriptor.url).map_err(|error| format!("附件 URL 无效：{error}"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("附件 URL 必须是无认证信息的 HTTP(S) 地址".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|error| format!("创建附件下载客户端失败：{error}"))?;
+    let mut response = client
+        .get(url.clone())
+        .send()
+        .await
+        .map_err(|error| format!("附件下载失败：{error}"))?
+        .error_for_status()
+        .map_err(|error| format!("附件下载失败：{error}"))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_ATTACHMENT_DOWNLOAD_SIZE as u64)
+    {
+        return Err("附件超过 256 MiB 下载上限".to_string());
+    }
+    let mut ciphertext = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("读取附件失败：{error}"))?
+    {
+        let next_len = ciphertext
+            .len()
+            .checked_add(chunk.len())
+            .ok_or_else(|| "附件长度溢出".to_string())?;
+        if next_len > MAX_ATTACHMENT_DOWNLOAD_SIZE {
+            return Err("附件超过 256 MiB 下载上限".to_string());
+        }
+        ciphertext.extend_from_slice(&chunk);
+    }
+    let plaintext = crate::message_content::decrypt_attachment_bytes(&file_key, &ciphertext)?;
+
+    let source_name = if descriptor.name.contains('.') {
+        descriptor.name
+    } else {
+        url.path_segments()
+            .and_then(|mut segments| segments.rfind(|part| !part.is_empty()))
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&descriptor.name)
+            .to_string()
+    };
+    let cache_dir = state
+        .app_handle()
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("无法取得应用缓存目录：{error}"))?
+        .join("media");
+    tokio::fs::create_dir_all(&cache_dir)
+        .await
+        .map_err(|error| format!("创建附件缓存目录失败：{error}"))?;
+    let cache_path = cache_dir.join(safe_attachment_filename(msg_id, thumbnail, &source_name));
+    tokio::fs::write(&cache_path, plaintext)
+        .await
+        .map_err(|error| format!("写入附件缓存失败：{error}"))?;
+    Ok(AttachmentDownloadDto {
+        path: cache_path.to_string_lossy().into_owned(),
+        mime_type: descriptor.mime_type,
+    })
+}
+
+fn safe_attachment_filename(msg_id: i64, thumbnail: bool, source_name: &str) -> String {
+    let basename = std::path::Path::new(source_name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("attachment");
+    let sanitized: String = basename
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let sanitized = if sanitized.trim_matches(['.', '_']).is_empty() {
+        "attachment"
+    } else {
+        sanitized.as_str()
+    };
+    format!(
+        "{msg_id}-{}-{sanitized}",
+        if thumbnail { "thumbnail" } else { "main" }
+    )
 }
 
 fn validate_message_page(limit: usize, offset: usize) -> Result<(usize, usize), String> {
@@ -1574,14 +1961,62 @@ mod tests {
         disconnect_current_session_and_publish_with_timeout,
         disconnect_current_session_with_timeout, disconnect_owned_chat_client_with_timeout,
         enqueue_incoming_frame, fail_initial_connection_and_publish, linked_cancellation,
-        mark_connected_and_broadcast, mark_disconnected_and_broadcast, message_dto_from_row,
+        login_user_key_metadata, mark_connected_and_broadcast, mark_disconnected_and_broadcast,
+        message_dto_from_row, publish_realtime_message, replace_message_channel,
         retry_automatic_connection, run_cancellable_with_timeout, run_message_worker_with_effects,
         stored_message_parts, validate_message_page, ConnectionAttemptGuard, IncomingFrame,
-        MessageEffects, HEARTBEAT_INTERVAL, MAX_QUEUED_MESSAGE_SIZE, MESSAGE_QUEUE_CAPACITY,
+        MessageDto, MessageEffects, HEARTBEAT_INTERVAL, MAX_QUEUED_MESSAGE_SIZE,
+        MESSAGE_QUEUE_CAPACITY,
     };
 
     fn installed_client(client: im_chat::ChatClient) -> InstalledClient {
         InstalledClient::new(crate::state::ConnectionAttemptKey::new(0, 1), client)
+    }
+
+    #[tokio::test]
+    async fn newest_registered_channel_receives_realtime_message() {
+        let slot = tokio::sync::RwLock::new(None);
+        let first_payloads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let first_payloads_for_channel = first_payloads.clone();
+        let first = tauri::ipc::Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                first_payloads_for_channel.lock().unwrap().push(json);
+            }
+            Ok(())
+        });
+        replace_message_channel(&slot, first).await;
+
+        let latest_payloads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let latest_payloads_for_channel = latest_payloads.clone();
+        let latest = tauri::ipc::Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                latest_payloads_for_channel.lock().unwrap().push(json);
+            }
+            Ok(())
+        });
+        replace_message_channel(&slot, latest).await;
+
+        publish_realtime_message(
+            &slot,
+            &MessageDto {
+                msg_id: "80".to_string(),
+                group_id: "8".to_string(),
+                send_uid: "42".to_string(),
+                msg_type: 0,
+                group_name: "群 8".to_string(),
+                content_b64: String::new(),
+                decoded_content: None,
+                decode_error: None,
+                send_time: 20,
+                content_md5: String::new(),
+                stored_at: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(first_payloads.lock().unwrap().is_empty());
+        assert!(latest_payloads.lock().unwrap()[0].contains(r#""msg_id":"80""#));
     }
 
     // 分页边界：拒绝零值、超限与整数溢出，同时接受最大合法 limit/offset。
@@ -1597,6 +2032,24 @@ mod tests {
             validate_message_page(200, 1_000_000).unwrap(),
             (200, 1_000_000)
         );
+    }
+
+    #[test]
+    fn login_success_without_private_key_keeps_public_metadata() {
+        let login = im_proto::PushLoginSuccessMessage {
+            user_key_pair: Some(im_proto::KeyPairBase {
+                public_key: "server-public-key".to_string(),
+                key_version: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let metadata = login_user_key_metadata(login);
+
+        assert_eq!(metadata.public_key, "server-public-key");
+        assert_eq!(metadata.key_version, 1);
+        assert!(metadata.private_key.is_empty());
     }
 
     // 自动连接：瞬时失败后保留同代认证会话并重试，第二次成功即停止。
@@ -2642,6 +3095,7 @@ mod tests {
             content_md5: record.content_md5.clone(),
             stored_at: 5678,
             raw_proto: record.raw_proto.clone(),
+            group_name: "测试群".to_string(),
         });
 
         assert_eq!(realtime.content_b64, STANDARD.encode(&message.content));
@@ -2669,5 +3123,17 @@ mod tests {
         assert_eq!(json["msg_id"], i64::MAX.to_string());
         assert_eq!(json["group_id"], (i64::MAX - 1).to_string());
         assert_eq!(json["send_uid"], (i64::MAX - 2).to_string());
+    }
+
+    #[test]
+    fn attachment_cache_filename_removes_path_components() {
+        assert_eq!(
+            super::safe_attachment_filename(42, false, "../../报告 final.pdf"),
+            "42-main-报告_final.pdf"
+        );
+        assert_eq!(
+            super::safe_attachment_filename(42, true, ""),
+            "42-thumbnail-attachment"
+        );
     }
 }

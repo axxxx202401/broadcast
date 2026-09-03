@@ -1,6 +1,7 @@
-import { invoke } from '@tauri-apps/api/core'
+import { invoke, type Channel } from '@tauri-apps/api/core'
 
 import type {
+  AttachmentDownloadDto,
   GroupDto,
   IssuedRequest,
   IssuedResponse,
@@ -17,6 +18,13 @@ import type {
 
 /** 前端使用的 Tauri IPC 服务集合；各方法保持后端命令名、参数包装和返回类型契约。 */
 export const api = {
+  /**
+   * 登记持续接收已入库实时消息的 Tauri Channel。
+   * 新调用会替换后端保存的旧页面接收端，适配 WebView 重载；失败表示实时推送未就绪，
+   * 但不影响后端继续接收和持久化消息。
+   */
+  registerMessageChannel: (onMessage: Channel<MessageDto>) =>
+    invoke<void>('register_message_channel', { onMessage }),
   /**
    * 调用 `send_sms_code`，以 `{ request }` 包装参数。
    * 成功无返回值，失败拒绝为结构化认证错误；会请求远程发送短信，但错误不证明短信未发送。
@@ -93,8 +101,15 @@ export const api = {
   getConnectionStatus: () => invoke<'connected' | 'connecting' | 'disconnected'>('get_connection_status'),
   /**
    * 调用 `get_messages`，直接包装为 `{ groupId, limit, offset }`；`limit` 默认 `200`、`offset` 默认 `0`。
-   * 只分页读取本地 SQLite，返回消息列表；参数或查询错误以字符串拒绝，不修改连接或存储。
+   * `groupId` 省略时读取全部受监控群组；查询后端会按需请求群密钥并解密正文，
+   * 单条解密失败通过 DTO 返回，不修改连接或原始消息。
    */
-  getMessages: (groupId: string, limit = 200, offset = 0) =>
+  getMessages: (groupId?: string, limit = 200, offset = 0) =>
     invoke<MessageDto[]>('get_messages', { groupId, limit, offset }),
+  /**
+   * 下载并解密指定消息的主附件或缩略图，返回可转换为 asset URL 的本地缓存路径。
+   * 该调用可能发起远程 OSS 下载并写入媒体缓存，失败不会修改原消息。
+   */
+  downloadMessageAttachment: (msgId: string, thumbnail = false) =>
+    invoke<AttachmentDownloadDto>('download_message_attachment', { msgId, thumbnail }),
 }

@@ -36,6 +36,16 @@ CREATE TABLE IF NOT EXISTS messages (
     raw_proto   BLOB
 );
 
+CREATE TABLE IF NOT EXISTS user_key_pairs (
+    uid          INTEGER NOT NULL,
+    key_version  INTEGER NOT NULL,
+    public_key   TEXT NOT NULL,
+    private_key  TEXT NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (uid, key_version)
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_group_time ON messages(group_id, send_time);
+CREATE INDEX IF NOT EXISTS idx_messages_time ON messages(send_time DESC, msg_id DESC);
 CREATE INDEX IF NOT EXISTS idx_groups_monitored ON groups(monitored) WHERE monitored = 1;
 "#;

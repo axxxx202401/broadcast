@@ -1,4 +1,5 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { Channel } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 import { api } from '../services/tauri'
@@ -10,7 +11,7 @@ import { errorMessage, normalizeConnectionStatus } from '../utils/protocol'
  * 管理监控页会话、群组、消息历史和聊天连接状态。
  *
  * `pending` 只阻止本组合式函数经 `run` 发起的动作重叠，不构成后端事务或全局并发保证；
- * 消息历史另用请求编号防止陈旧响应覆盖当前群组。连接状态以事件和后端快照共同推进；
+   * 消息历史另用请求编号防止陈旧响应覆盖当前范围。连接状态以事件和后端快照共同推进；
  * 部分异步失败路径不具备与成功路径相同的会话门禁，详见对应流程注释。
  *
  * @returns 页面状态、筛选与计数派生值，以及登录接收、群组、连接和退出操作。
@@ -32,6 +33,7 @@ export function useMonitor() {
   let messageRequestId = 0
   let connectionStatusVersion = 0
   let connectionStatusTimer: ReturnType<typeof setTimeout> | null = null
+  let messageChannel: Channel<MessageDto> | null = null
 
   /** 当前选中的完整群组；未选择或群组已移除时为 null。 */
   const selectedGroup = computed(
@@ -86,7 +88,11 @@ export function useMonitor() {
         )
         return
       }
+      const previousStatus = connectionStatus.value
       connectionStatus.value = normalized
+      if (normalized === 'connected' && previousStatus !== 'connected' && loggedIn.value) {
+        void loadMessages(selectedGroupId.value)
+      }
       if (normalized === 'connecting') {
         connectionStatusTimer = setTimeout(
           () => syncConnectionStatus(expectedUid),
@@ -108,6 +114,7 @@ export function useMonitor() {
     messages.value = []
     messagesLoading.value = false
     syncConnectionStatus(nextUid)
+    void loadMessages(null)
   }
 
   /** 从后端读取群组列表。 */
@@ -122,15 +129,15 @@ export function useMonitor() {
       groups.value = await api.refreshGroups()
     })
 
-  /** 选择群组并加载历史；messageRequestId 防止旧群组响应覆盖新选择。 */
-  async function selectGroup(groupId: string) {
+  /** 加载全部或单群历史；messageRequestId 防止旧范围响应覆盖新选择。 */
+  async function loadMessages(groupId: string | null) {
     const requestId = ++messageRequestId
     selectedGroupId.value = groupId
     messages.value = []
     messagesLoading.value = true
     error.value = ''
     try {
-      const history = await api.getMessages(groupId)
+      const history = await api.getMessages(groupId ?? undefined)
       if (isCurrentMessageRequest(requestId, messageRequestId, groupId, selectedGroupId.value)) {
         // 历史返回期间可能已收到实时消息，合并而非覆盖可保留两条来源。
         messages.value = mergeMessages(messages.value, history)
@@ -144,6 +151,16 @@ export function useMonitor() {
         messagesLoading.value = false
       }
     }
+  }
+
+  /** 选择单群；再次点击当前群组时取消筛选并恢复全部消息。 */
+  async function selectGroup(groupId: string) {
+    await loadMessages(selectedGroupId.value === groupId ? null : groupId)
+  }
+
+  /** 显式恢复全部受监控群组消息。 */
+  async function showAllMessages() {
+    await loadMessages(null)
   }
 
   /** 切换指定群组的监控状态，并在远程成功后更新本地列表。 */
@@ -196,8 +213,18 @@ export function useMonitor() {
   let mounted = true
 
   onMounted(() => {
+    messageChannel = new Channel<MessageDto>()
+    messageChannel.onmessage = (message) => {
+      if (selectedGroupId.value === null || message.group_id === selectedGroupId.value) {
+        messages.value = mergeMessages(messages.value, [message])
+      }
+    }
+    void api.registerMessageChannel(messageChannel).catch((reason) => {
+      error.value = `实时消息通道注册失败：${errorMessage(reason)}`
+    })
     /*
-     * connection_status 驱动连接状态，new_message 只合并当前群组消息。allSettled 会等两个
+     * connection_status 和 message_keys_ready 保留低频全局事件；高频实时消息使用上方
+     * Channel，在全部模式接收所有群，在单群模式过滤。allSettled 会等两个
      * listen 注册都 settle 后才进入 then 并保存成功项的 unlisten；若一个成功而另一个长期
      * pending，卸载时可能尚未取得成功项的 unlisten，存在延迟释放或订阅泄漏窗口。
      */
@@ -205,13 +232,15 @@ export function useMonitor() {
       listen<string>('connection_status', ({ payload }) => {
         connectionStatusVersion += 1
         const status = normalizeConnectionStatus(payload)
+        const previousStatus = connectionStatus.value
         connectionStatus.value = status
+        if (status === 'connected' && previousStatus !== 'connected' && loggedIn.value) {
+          void loadMessages(selectedGroupId.value)
+        }
         if (status === 'connecting') syncConnectionStatus()
       }),
-      listen<MessageDto>('new_message', ({ payload }) => {
-        if (payload.group_id === selectedGroupId.value) {
-          messages.value = mergeMessages(messages.value, [payload])
-        }
+      listen('message_keys_ready', () => {
+        if (loggedIn.value) void loadMessages(selectedGroupId.value)
       }),
     ]).then((results) => {
       // 两项均 settle 后若组件已经卸载，此处才调用成功注册项返回的 unlisten。
@@ -230,6 +259,7 @@ export function useMonitor() {
   onBeforeUnmount(() => {
     // 停止状态轮询，并释放此时已保存到 unlisteners 的监听；尚卡在 allSettled 中的项不在其中。
     mounted = false
+    messageChannel = null
     if (connectionStatusTimer) clearTimeout(connectionStatusTimer)
     for (const unlisten of unlisteners) unlisten()
   })
@@ -257,6 +287,7 @@ export function useMonitor() {
     fetchGroups,
     refreshGroups,
     selectGroup,
+    showAllMessages,
     toggleGroup,
     connect,
     disconnect,

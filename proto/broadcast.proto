@@ -405,6 +405,93 @@ message PushGroupMessage {
     map<int64, int32> unread_count_map = 2;
 }
 
+// 获取目标实体密钥时使用的目标类型。
+enum KeyPairType {
+    KEY_USER = 0;
+    KEY_GROUP = 1;
+    KEY_USER_WEB = 2;
+    KEY_CHANNEL = 3;
+}
+
+// im-biz 调用 `/sys/getKeyPair` 使用的旧版请求。
+message GetKeyPairReq {
+    ClientInfo client_info = 1;
+    KeyPairType flag = 2;
+    int64 target_id = 3;
+}
+
+// im-biz 调用 `/sys/getKeyPair` 使用的旧版响应；目标类型统一占用 field 2。
+message GetKeyPairResp {
+    CommonResult common_result = 1;
+    KeyPairBase key_pair = 2;
+}
+
+// im-biz 更新当前用户 App 公钥的请求。
+message UpdateKeyPairReq {
+    ClientInfo client_info = 1;
+    string public_key = 2;
+}
+
+// im-biz 登记 App 公钥后返回服务端分配的版本。
+message UpdateKeyPairResp {
+    CommonResult common_result = 1;
+    int32 key_version = 2;
+}
+
+// 被引用消息的摘要；媒体正文可以携带该结构。
+message ReferenceObj {
+    int64 msg_id = 1;
+    string content = 2;
+    MessageType type = 3;
+    int64 uid = 4;
+    string nickname = 5;
+}
+
+// 文本消息正文。
+message TextObj {
+    string content = 1;
+    ReferenceObj ref = 2;
+}
+
+// 图片消息正文。
+message ImageObj {
+    int32 width = 1;
+    int32 height = 2;
+    int64 file_size = 3;
+    string url = 4;
+    string thumb_url = 5;
+    ReferenceObj ref = 6;
+    int32 size_type = 7;
+}
+
+// 音频消息正文。
+message AudioObj {
+    int32 duration = 1;
+    int64 file_size = 2;
+    string url = 3;
+    ReferenceObj ref = 4;
+}
+
+// 视频消息正文。
+message VideoObj {
+    int32 width = 1;
+    int32 height = 2;
+    int64 file_size = 3;
+    string url = 4;
+    string thumb_url = 5;
+    ReferenceObj ref = 6;
+    int32 duration = 7;
+}
+
+// 文件消息正文。
+message FileObj {
+    int64 size = 1;
+    string file_url = 2;
+    string name = 3;
+    string mime_type = 4;
+    ReferenceObj ref = 5;
+}
+
 // 客户端确认已接收一批群消息的回执。
 message ReceiveGroupMessage {
     // 已接收的消息标识列表。

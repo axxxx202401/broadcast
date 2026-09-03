@@ -76,6 +76,7 @@ const auth = useAuth((groups, uid) => {
         :pending="monitor.pending.value"
         @update:search="monitor.search.value = $event"
         @select="monitor.selectGroup"
+        @select-all="monitor.showAllMessages"
         @toggle="monitor.toggleGroup"
         @refresh="monitor.refreshGroups"
       />

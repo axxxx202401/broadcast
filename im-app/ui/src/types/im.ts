@@ -18,7 +18,30 @@ export interface GroupDto {
   updated_at: number
 }
 
-/** 前端可见的群消息；正文保留原始字节，64 位标识符通过字符串跨越 IPC。 */
+/** 后端完成群消息正文解密与 Protobuf 解析后返回的五种展示模型。 */
+export type DecodedMessageContent =
+  | { kind: 'text'; text: string }
+  | {
+      kind: 'image'
+      url: string
+      thumbnail_url: string
+      file_size: number
+      width: number
+      height: number
+    }
+  | { kind: 'audio'; url: string; duration: number; file_size: number }
+  | {
+      kind: 'video'
+      url: string
+      thumbnail_url: string
+      duration: number
+      file_size: number
+      width: number
+      height: number
+    }
+  | { kind: 'file'; url: string; name: string; mime_type: string; file_size: number }
+
+/** 前端可见的群消息；正文同时保留原始字节与可选结构化解密结果。 */
 export interface MessageDto {
   /** 消息 ID 的十进制字符串表示。 */
   msg_id: string
@@ -28,8 +51,14 @@ export interface MessageDto {
   send_uid: string
   /** 协议定义的消息类型整数。 */
   msg_type: number
+  /** 群组显示名称；缺失时界面回退到群 ID。 */
+  group_name: string
   /** 标准 Base64 编码的原始消息正文字节，不保证是 UTF-8 文本。 */
   content_b64: string
+  /** 成功解密和解析后的正文。 */
+  decoded_content: DecodedMessageContent | null
+  /** 单条消息的解密或解析错误，不影响消息入库。 */
+  decode_error: string | null
   /** 服务端记录的发送时间。 */
   send_time: number
   /** 消息正文的 MD5 摘要。 */
@@ -39,6 +68,14 @@ export interface MessageDto {
    * INSERT 时生成的值，故为 `null`，不表示消息尚未落库。历史查询会返回已存的写入时间。
    */
   stored_at: number | null
+}
+
+/** Rust 将附件解密到本地缓存后返回的信息。 */
+export interface AttachmentDownloadDto {
+  /** 本地缓存绝对路径。 */
+  path: string
+  /** 协议提供或按媒体类型推导的 MIME。 */
+  mime_type: string
 }
 
 /** 随验证码请求转发的 GT4 挑战结果；有效性由服务端判断。 */

@@ -40,7 +40,7 @@ export function mergeMessages(current: MessageDto[], incoming: MessageDto[]): Me
 export function isCurrentMessageRequest(
   requestId: number,
   currentRequestId: number,
-  requestedGroupId: string,
+  requestedGroupId: string | null,
   selectedGroupId: string | null,
 ): boolean {
   return requestId === currentRequestId && requestedGroupId === selectedGroupId

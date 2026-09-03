@@ -11,6 +11,7 @@
     "withGlobalTauri": false,
     "windows": [
       {
+        "label": "main",
         "title": "IM Monitor",
         "width": 1200,
         "height": 800,
@@ -25,6 +26,7 @@
         "default-src": "'self' customprotocol: asset:",
         "connect-src": "ipc: http://ipc.localhost https://static.geetest.com https://gcaptcha4.geetest.com https://monitor.geetest.com",
         "img-src": "'self' asset: http://asset.localhost data: blob: https://static.geetest.com https://gcaptcha4.geetest.com",
+        "media-src": "'self' asset: http://asset.localhost",
         "style-src": "'self' 'unsafe-inline' https://static.geetest.com https://gcaptcha4.geetest.com",
         "script-src": "'self' https://static.geetest.com https://gcaptcha4.geetest.com",
         "font-src": "'self' data: https://static.geetest.com https://gcaptcha4.geetest.com",
@@ -37,6 +39,7 @@
         "default-src": "'self' customprotocol: asset:",
         "connect-src": "'self' ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420 https://static.geetest.com https://gcaptcha4.geetest.com https://monitor.geetest.com",
         "img-src": "'self' asset: http://asset.localhost data: blob: https://static.geetest.com https://gcaptcha4.geetest.com",
+        "media-src": "'self' asset: http://asset.localhost",
         "style-src": "'self' 'unsafe-inline' https://static.geetest.com https://gcaptcha4.geetest.com",
         "script-src": "'self' https://static.geetest.com https://gcaptcha4.geetest.com",
         "font-src": "'self' data: https://static.geetest.com https://gcaptcha4.geetest.com",
@@ -44,6 +47,10 @@
         "object-src": "'none'",
         "base-uri": "'self'",
         "frame-ancestors": "'none'"
+      },
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPCACHE/media/**/*"]
       }
     }
   },

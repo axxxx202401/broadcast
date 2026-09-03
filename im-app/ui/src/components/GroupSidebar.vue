@@ -15,6 +15,7 @@ defineProps<{
 defineEmits<{
   'update:search': [value: string]
   select: [groupId: string]
+  'select-all': []
   toggle: [group: GroupDto]
   refresh: []
 }>()
@@ -46,6 +47,16 @@ defineEmits<{
 
     <!-- 群组列表保持原生列表语义；选择按钮与监控开关是同级交互控件，结构上避免 nested button。 -->
     <div class="list-label"><span>ALL CHANNELS</span><span>{{ groups.length }}</span></div>
+    <button
+      class="all-messages"
+      :class="{ selected: selectedId === null }"
+      type="button"
+      :aria-pressed="selectedId === null"
+      @click="$emit('select-all')"
+    >
+      <span aria-hidden="true">⌘</span>
+      <span><strong>全部消息</strong><small>所有已监控群组</small></span>
+    </button>
     <ul class="group-list" aria-label="群组">
       <li
         v-for="group in groups"
