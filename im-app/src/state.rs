@@ -728,6 +728,11 @@ impl ConnectionCoordinator {
         prepare.await
     }
 
+    /// 判断指定 generation 是否仍是协调器的当前代际。
+    pub async fn is_generation_current(&self, generation: u64) -> bool {
+        self.state.lock().await.generation == generation
+    }
+
     /// 若代际仍当前，将已有认证会话重新标记到该代际。
     ///
     /// 没有会话或代际已变化时不做修改，也不返回错误；常用于显式断开后保留登录态供后续连接。

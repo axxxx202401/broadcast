@@ -11,10 +11,13 @@ use tokio::sync::{Mutex, RwLock};
 /// 当前已打开的账号数据库句柄。
 ///
 /// `store` 指向该 UID 的隔离 SQLite；切换时先打开新库并替换本结构，再关闭旧连接池。
+/// `generation` 是最近一次成功 `open` 的认证代际，失败收尾据此避免关掉更新的同 UID 打开。
 #[derive(Clone)]
 pub struct ActiveDatabase {
     /// 当前活动数据库所属的账号 UID。
     pub uid: i64,
+    /// 最近一次打开该库的认证代际。
+    pub generation: u64,
     /// 该账号的 SQLite 存储入口。
     pub store: Arc<SqliteStore>,
 }
@@ -49,13 +52,19 @@ impl AccountDatabaseManager {
     /// 先校验 UID 并创建账号目录，再打开 [`SqliteStore`]。新库成功后才替换
     /// `active`；若已有其他账号的活动库，先取走旧句柄并关闭其连接池。
     /// 同一 UID 重复打开时复用现有句柄，避免关闭仍被调用方持有的连接池。
-    pub async fn open(&self, uid: i64) -> Result<Arc<SqliteStore>, AccountError> {
+    /// `generation` 记录本次打开所属的认证代际，供失败收尾判断是否仍可关闭。
+    pub async fn open(&self, uid: i64, generation: u64) -> Result<Arc<SqliteStore>, AccountError> {
         let _switch = self.switch_lock.lock().await;
         let db_path = self.database_path(uid)?;
 
-        if let Some(current) = self.active.read().await.as_ref() {
-            if current.uid == uid {
-                return Ok(current.store.clone());
+        {
+            let mut active = self.active.write().await;
+            if let Some(current) = active.as_mut() {
+                if current.uid == uid {
+                    // 复用连接池，但必须把代际推进到这次打开，避免旧失败路径按旧 generation 关闭。
+                    current.generation = generation;
+                    return Ok(current.store.clone());
+                }
             }
         }
 
@@ -81,6 +90,7 @@ impl AccountDatabaseManager {
             let mut active = self.active.write().await;
             active.replace(ActiveDatabase {
                 uid,
+                generation,
                 store: store.clone(),
             })
         };
@@ -128,13 +138,17 @@ impl AccountDatabaseManager {
         }
     }
 
-    /// 仅当活动库属于 `uid` 时关闭连接池；其他账号已占用活动库时不关闭。
+    /// 仅当活动库属于 `uid` 且仍由指定 `generation` 打开时关闭连接池。
     ///
-    /// 登录失败收尾必须使用本方法，避免并发登录或账号切换已经打开另一 UID 后被误关。
-    pub async fn close_if_uid(&self, uid: i64) {
+    /// 其他账号已占用活动库，或同一 UID 已被更新的代际重新打开时，都不得关闭。
+    /// 登录失败收尾必须使用本方法，避免并发登录、切换或同账号重入后被误关。
+    pub async fn close_if_opened_by(&self, uid: i64, generation: u64) {
         let _switch = self.switch_lock.lock().await;
         let mut active = self.active.write().await;
-        if active.as_ref().is_some_and(|database| database.uid == uid) {
+        if active
+            .as_ref()
+            .is_some_and(|database| database.uid == uid && database.generation == generation)
+        {
             if let Some(previous) = active.take() {
                 drop(active);
                 previous.store.pool.close().await;
@@ -169,7 +183,7 @@ mod tests {
     async fn database_manager_switches_between_uid_scoped_databases() {
         let temp = tempfile::tempdir().unwrap();
         let manager = AccountDatabaseManager::new(AppPaths::new(temp.path().to_path_buf()));
-        let first = manager.open(42).await.unwrap();
+        let first = manager.open(42, 1).await.unwrap();
         first
             .groups
             .insert_or_update(&group_row(7, "账号一"))
@@ -177,7 +191,7 @@ mod tests {
             .unwrap();
         manager.close().await;
 
-        let second = manager.open(84).await.unwrap();
+        let second = manager.open(84, 1).await.unwrap();
         assert!(second.groups.list_all().await.unwrap().is_empty());
         assert_ne!(
             manager.database_path(42).unwrap(),
@@ -201,14 +215,14 @@ mod tests {
     async fn open_switches_active_database_without_explicit_close() {
         let temp = tempfile::tempdir().unwrap();
         let manager = AccountDatabaseManager::new(AppPaths::new(temp.path().to_path_buf()));
-        let first = manager.open(42).await.unwrap();
+        let first = manager.open(42, 1).await.unwrap();
         first
             .groups
             .insert_or_update(&group_row(7, "账号一"))
             .await
             .unwrap();
 
-        let second = manager.open(84).await.unwrap();
+        let second = manager.open(84, 2).await.unwrap();
         assert!(second.groups.list_all().await.unwrap().is_empty());
 
         let error = match manager.require(42).await {
@@ -233,33 +247,62 @@ mod tests {
     async fn open_reuses_store_for_the_same_uid() {
         let temp = tempfile::tempdir().unwrap();
         let manager = AccountDatabaseManager::new(AppPaths::new(temp.path().to_path_buf()));
-        let first = manager.open(42).await.unwrap();
+        let first = manager.open(42, 1).await.unwrap();
         first
             .groups
             .insert_or_update(&group_row(7, "账号一"))
             .await
             .unwrap();
 
-        let second = manager.open(42).await.unwrap();
+        let second = manager.open(42, 1).await.unwrap();
         assert!(std::sync::Arc::ptr_eq(&first, &second));
         assert_eq!(first.groups.list_all().await.unwrap().len(), 1);
         assert_eq!(first.groups.list_all().await.unwrap()[0].name, "账号一");
     }
 
-    /// 活动库已切到其他 UID 时，`close_if_uid` 不得关闭当前库。
+    /// 同一 UID 被更新一代打开后，旧 generation 的关闭不得拆掉新活动库。
+    #[tokio::test]
+    async fn older_generation_does_not_close_newer_same_uid_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = AccountDatabaseManager::new(AppPaths::new(temp.path().to_path_buf()));
+        let first = manager.open(42, 1).await.unwrap();
+        first
+            .groups
+            .insert_or_update(&group_row(7, "账号一"))
+            .await
+            .unwrap();
+        let second = manager.open(42, 2).await.unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+
+        manager.close_if_opened_by(42, 1).await;
+        manager
+            .require(42)
+            .await
+            .expect("较新同 UID 打开不得被旧 generation 关闭");
+        assert_eq!(first.groups.list_all().await.unwrap()[0].name, "账号一");
+
+        manager.close_if_opened_by(42, 2).await;
+        let error = match manager.active().await {
+            Err(error) => error,
+            Ok(_) => panic!("匹配 uid 与 generation 时必须关闭活动库"),
+        };
+        assert!(matches!(error, AccountError::NoActiveDatabase));
+    }
+
+    /// 活动库已切到其他 UID 时，按旧 UID 关闭不得影响当前库。
     #[tokio::test]
     async fn close_if_uid_leaves_other_active_database_open() {
         let temp = tempfile::tempdir().unwrap();
         let manager = AccountDatabaseManager::new(AppPaths::new(temp.path().to_path_buf()));
-        manager.open(42).await.unwrap();
-        manager.open(84).await.unwrap();
+        manager.open(42, 1).await.unwrap();
+        manager.open(84, 2).await.unwrap();
 
-        manager.close_if_uid(42).await;
+        manager.close_if_opened_by(42, 1).await;
         manager
             .require(84)
             .await
             .expect("关闭旧 UID 不得影响当前活动库");
-        manager.close_if_uid(84).await;
+        manager.close_if_opened_by(84, 2).await;
         let error = match manager.active().await {
             Err(error) => error,
             Ok(_) => panic!("匹配 UID 时必须关闭活动库"),

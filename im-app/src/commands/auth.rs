@@ -217,6 +217,28 @@ fn display_account_from_request(request: &im_http::openchat_user::LoginReq) -> S
         .unwrap_or_default()
 }
 
+/// 确认本次登录的 generation 仍持有当前会话，否则不得继续落盘或返回 Success。
+///
+/// 同时检查协调器代际与 `auth_session` 的 uid/generation，避免过期登录覆盖较新账号。
+async fn ensure_login_generation_current(
+    state: &AppState,
+    generation: u64,
+    uid: i64,
+) -> Result<(), AuthCommandError> {
+    if !state
+        .connection_coordinator
+        .is_generation_current(generation)
+        .await
+    {
+        return Err("Connection generation changed before credential persistence".into());
+    }
+    let session = state.auth_session.read().await;
+    match session.as_ref() {
+        Some(session) if session.generation == generation && session.uid == uid => Ok(()),
+        _ => Err("Authentication session is no longer current".into()),
+    }
+}
+
 /// 处理已分类的远程登录结果：挑战只迁移待登录缓存，成功才完成本地收尾。
 ///
 /// `remote_groups` 为 `Some` 时跳过远端群组拉取，供测试注入空快照。
@@ -284,7 +306,10 @@ async fn handle_remote_login_result(
 /// 写入账号索引并更新秘密存在标志、启动自动连接。
 ///
 /// 凭据或账号索引写入失败不会撤销已经成功的远端登录，只向 `warnings` 追加
-/// 「本次无法安全保存登录信息」。打开数据库之后的失败仅在活动 UID 仍是本账号时关闭数据库。
+/// 「本次无法安全保存登录信息」。发布会话后、写入凭据前以及返回 Success 前都会
+/// 复核 generation；代际已变化时不落盘、不自动连接，并返回错误而不是 Success。
+/// 本次没有登录密码时保留索引或凭据库中已有的 `has_saved_password`。
+/// 打开数据库之后的失败仅在活动 UID 与 generation 仍属于本次打开时关闭数据库。
 /// 测试状态没有 Tauri 句柄时跳过自动连接，避免后台任务访问空句柄。
 async fn complete_account_login(
     state: &AppState,
@@ -294,13 +319,62 @@ async fn complete_account_login(
     request: &im_http::openchat_user::LoginReq,
     remote_groups: Vec<im_store::group::GroupRow>,
 ) -> Result<LoginCompletion, AuthCommandError> {
+    run_complete_account_login(
+        state,
+        generation,
+        uid,
+        token,
+        request,
+        remote_groups,
+        async {},
+    )
+    .await
+}
+
+/// 与 [`complete_account_login`] 相同，但在发布会话后、写入凭据前执行 `after_publish`。
+///
+/// 仅供测试插入较新会话，验证过期登录不得继续落盘。
+#[cfg(test)]
+async fn complete_account_login_after_publish(
+    state: &AppState,
+    generation: u64,
+    uid: i64,
+    token: zeroize::Zeroizing<String>,
+    request: &im_http::openchat_user::LoginReq,
+    remote_groups: Vec<im_store::group::GroupRow>,
+    after_publish: impl Future<Output = ()>,
+) -> Result<LoginCompletion, AuthCommandError> {
+    run_complete_account_login(
+        state,
+        generation,
+        uid,
+        token,
+        request,
+        remote_groups,
+        after_publish,
+    )
+    .await
+}
+
+/// 实际执行登录收尾；`after_publish` 在会话发布成功后、凭据落盘前运行。
+async fn run_complete_account_login(
+    state: &AppState,
+    generation: u64,
+    uid: i64,
+    token: zeroize::Zeroizing<String>,
+    request: &im_http::openchat_user::LoginReq,
+    remote_groups: Vec<im_store::group::GroupRow>,
+    after_publish: impl Future<Output = ()>,
+) -> Result<LoginCompletion, AuthCommandError> {
     state.legacy_migrator.migrate_if_needed(uid).await?;
-    let db = state.account_db.open(uid).await?;
+    let db = state.account_db.open(uid, generation).await?;
     let groups =
         finish_login_after_opening_account(state, generation, uid, token.to_string(), async {
             crate::commands::groups::apply_remote_groups(&db, &remote_groups).await
         })
         .await?;
+    after_publish.await;
+    ensure_login_generation_current(state, generation, uid).await?;
 
     let pending = match request_validate_token(request) {
         Some(request_token) => state.pending_login.take(request_token).await,
@@ -327,18 +401,36 @@ async fn complete_account_login(
         }
     }
 
-    let mut has_saved_password = false;
-    if let Some(password) = pending_password {
+    let password_saved_this_attempt = if let Some(password) = pending_password {
         match state.credentials.set_password(uid, &password).await {
-            Ok(()) => has_saved_password = true,
+            Ok(()) => Some(true),
             Err(error) => {
                 tracing::warn!(error = %error, uid, "failed to persist login password");
                 if warnings.is_empty() {
                     warnings.push(CREDENTIAL_SAVE_WARNING.to_string());
                 }
+                Some(false)
             }
         }
-    }
+    } else {
+        None
+    };
+    let has_saved_password = match password_saved_this_attempt {
+        Some(true) => true,
+        Some(false) => false,
+        None => {
+            let indexed = state
+                .account_index
+                .has_saved_password(uid)
+                .await
+                .unwrap_or(false);
+            if indexed {
+                true
+            } else {
+                matches!(state.credentials.password(uid).await, Ok(Some(_)))
+            }
+        }
+    };
 
     let last_used_at = chrono::Utc::now().timestamp_millis();
     if let Err(error) = state
@@ -366,6 +458,7 @@ async fn complete_account_login(
         }
     }
 
+    ensure_login_generation_current(state, generation, uid).await?;
     if state.app_handle.is_some() {
         crate::commands::chat::start_automatic_connection(state, generation);
     }
@@ -1005,11 +1098,11 @@ where
     Ok(result)
 }
 
-/// 在已打开的账号库上同步群组并发布会话；失败时按 UID 关闭活动库。
+/// 在已打开的账号库上同步群组并发布会话；失败时按打开代际关闭活动库。
 ///
 /// 打开成功后若群组同步或会话发布失败，调用方不得留下“无会话却占用活动库”的状态。
-/// 仅当活动 UID 仍是本次登录账号时才关闭数据库，避免并发登录或切换已经打开另一
-/// UID 后被误关。
+/// 仅当活动 UID 与 generation 仍属于本次打开时才关闭数据库，避免并发登录、切换
+/// 或同账号重入已经打开更新代际后被误关。
 async fn finish_login_after_opening_account<T, F>(
     state: &AppState,
     generation: u64,
@@ -1034,7 +1127,7 @@ where
     )
     .await;
     if result.is_err() {
-        state.account_db.close_if_uid(uid).await;
+        state.account_db.close_if_opened_by(uid, generation).await;
     }
     result
 }
@@ -1129,10 +1222,10 @@ mod tests {
 
     use super::{
         begin_auth_transition, classify_remote_login, clear_session_state,
-        finish_login_after_opening_account, finish_login_after_sync, hash_verify_passwords,
-        verify_validations_inner, verify_validations_inner_with_http, AccountSummaryDto,
-        AuthCommandError, LoginResultDto, LoginStateRefs, PendingValidationInputDto, RemoteLogin,
-        VerifyValidationsDto,
+        complete_account_login_after_publish, finish_login_after_opening_account,
+        finish_login_after_sync, hash_verify_passwords, verify_validations_inner,
+        verify_validations_inner_with_http, AccountSummaryDto, AuthCommandError, LoginResultDto,
+        LoginStateRefs, PendingValidationInputDto, RemoteLogin, VerifyValidationsDto,
     };
 
     /// 构造已向内存凭据库写入登录密码的测试状态。
@@ -1281,6 +1374,126 @@ mod tests {
             Some("token")
         );
         assert_eq!(state.credentials.password(42).await.unwrap(), None);
+    }
+
+    /// 先密码登录再验证码重登时，不得清掉已保存密码标志，也不得删除凭据库中的密码。
+    #[tokio::test]
+    async fn code_login_preserves_existing_saved_password_flag() {
+        let (state, _temp) = test_state_with_memory_credentials().await;
+        seed_pending_password(&state, "password", "a@example.com", 4, "secret").await;
+        finish_remote_login_for_test(&state, "password", RemoteLogin::success(42, "token-1"))
+            .await
+            .unwrap();
+        assert!(
+            state
+                .account_index
+                .load()
+                .await
+                .unwrap()
+                .accounts
+                .iter()
+                .find(|item| item.uid == 42)
+                .unwrap()
+                .has_saved_password
+        );
+        assert_eq!(
+            state.credentials.password(42).await.unwrap().as_deref(),
+            Some("secret")
+        );
+
+        state
+            .pending_login
+            .insert(
+                "code",
+                crate::account::pending_login::PendingLogin {
+                    display_account: "a@example.com".into(),
+                    primary_login_type: 2,
+                    password: None,
+                    password_reused: false,
+                },
+            )
+            .await;
+        let result =
+            finish_remote_login_for_test(&state, "code", RemoteLogin::success(42, "token-2"))
+                .await
+                .unwrap();
+        let LoginResultDto::Success { account, .. } = result else {
+            panic!("验证码重登成功应返回 Success");
+        };
+        assert!(account.has_saved_password);
+        let record = state
+            .account_index
+            .load()
+            .await
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|item| item.uid == 42)
+            .unwrap();
+        assert!(record.has_saved_password);
+        assert_eq!(
+            state.credentials.password(42).await.unwrap().as_deref(),
+            Some("secret")
+        );
+        assert_eq!(
+            state.credentials.token(42).await.unwrap().as_deref(),
+            Some("token-2")
+        );
+    }
+
+    /// 较新会话发布后，过期登录不得回写 Token 或把 last_used 改成自己。
+    #[tokio::test]
+    async fn stale_login_does_not_persist_credentials_after_newer_session() {
+        let (state, _temp) = test_state_with_memory_credentials().await;
+        seed_pending_password(&state, "old", "a@example.com", 4, "secret-42").await;
+        let request = im_http::openchat_user::LoginReq {
+            login_type: im_http::openchat_user::LoginType::EmailPassword,
+            email: Some("a@example.com".into()),
+            validate_token: Some("old".to_string()),
+            ..Default::default()
+        };
+        let old_generation = begin_auth_transition(
+            &state.connection_coordinator,
+            &state.chat_client,
+            &state.auth_session,
+            &state.monitoring_groups,
+            &state.connected,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let newer_state = state.clone();
+        let result = complete_account_login_after_publish(
+            &state,
+            old_generation,
+            42,
+            zeroize::Zeroizing::new("token-42".into()),
+            &request,
+            Vec::new(),
+            async move {
+                seed_pending_password(&newer_state, "newer", "b@example.com", 4, "secret-99").await;
+                finish_remote_login_for_test(
+                    &newer_state,
+                    "newer",
+                    RemoteLogin::success(99, "token-99"),
+                )
+                .await
+                .unwrap();
+            },
+        )
+        .await;
+
+        assert!(result.is_err(), "过期登录在较新会话发布后不得返回 Success");
+        assert_eq!(
+            state.credentials.token(99).await.unwrap().as_deref(),
+            Some("token-99")
+        );
+        assert_eq!(state.credentials.token(42).await.unwrap(), None);
+        assert_eq!(
+            state.account_index.load().await.unwrap().last_used_uid,
+            Some(99)
+        );
     }
 
     /// 系统凭据库不可用时登录仍成功，只返回普通用户可理解的警告。
@@ -1808,7 +2021,7 @@ mod tests {
     #[tokio::test]
     async fn failed_group_sync_after_open_closes_account_database() {
         let (state, _temp) = crate::state::test_state_with_account_foundation().await;
-        state.account_db.open(42).await.unwrap();
+        state.account_db.open(42, 0).await.unwrap();
 
         let result: Result<(), String> =
             finish_login_after_opening_account(&state, 0, 42, "session-token".to_string(), async {
@@ -1832,8 +2045,8 @@ mod tests {
     #[tokio::test]
     async fn failed_group_sync_after_open_does_not_close_other_account_database() {
         let (state, _temp) = crate::state::test_state_with_account_foundation().await;
-        state.account_db.open(42).await.unwrap();
-        state.account_db.open(84).await.unwrap();
+        state.account_db.open(42, 1).await.unwrap();
+        state.account_db.open(84, 2).await.unwrap();
 
         let result: Result<(), String> =
             finish_login_after_opening_account(&state, 0, 42, "session-token".to_string(), async {

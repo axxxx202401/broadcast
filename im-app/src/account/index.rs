@@ -130,6 +130,19 @@ impl AccountIndexStore {
         .await
     }
 
+    /// 读取指定账号是否已标记存在保存密码；未知 UID 视为 `false`。
+    ///
+    /// 只读索引，不访问系统凭据库。文件损坏时返回 [`AccountError::Json`]。
+    pub async fn has_saved_password(&self, uid: i64) -> Result<bool, AccountError> {
+        Ok(self
+            .load()
+            .await?
+            .accounts
+            .iter()
+            .find(|item| item.uid == uid)
+            .is_some_and(|item| item.has_saved_password))
+    }
+
     /// 更新指定账号的非密钥存在性标志。
     ///
     /// 只改 `has_saved_password` 与 `has_token`，不改展示账号、登录方式、最近使用时间
@@ -330,6 +343,21 @@ mod tests {
         assert_eq!(snapshot.accounts[0].last_used_at, 200);
         assert!(snapshot.accounts[0].has_token);
         assert_eq!(snapshot.last_used_uid, Some(42));
+    }
+
+    /// 未知 UID 视为没有已保存密码；已标记的账号应读回 true。
+    #[tokio::test]
+    async fn has_saved_password_reads_existing_flag() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = AccountIndexStore::new(temp.path().join("accounts.json"));
+        store
+            .upsert(AccountRecord::new(42, "a@example.com", 4, 100))
+            .await
+            .unwrap();
+        assert!(!store.has_saved_password(42).await.unwrap());
+        assert!(!store.has_saved_password(99).await.unwrap());
+        store.set_secret_flags(42, true, true).await.unwrap();
+        assert!(store.has_saved_password(42).await.unwrap());
     }
 
     /// 密钥存在性标志可单独更新，且不改动展示字段或最后账号。
