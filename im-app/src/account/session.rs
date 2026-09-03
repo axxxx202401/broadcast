@@ -1,10 +1,10 @@
 //! Token 恢复与统一会话发布。
 //!
 //! 启动恢复只尝试索引中的最后账号，且该记录必须仍标记 `has_token`。
-//! Token 由用户详情接口校验：业务拒绝会删除 Token 并要求重新登录，传输失败则保留 Token 供重试。
+//! Token 由用户详情接口校验：业务拒绝或本地校验失败会要求重新登录，传输失败则保留 Token 供重试。
 //! 成功路径复用登录收尾的 generation 门禁，但不得再次写入密码。
 
-use std::future::Future;
+use std::{future::Future, pin::Pin};
 
 use crate::account::index::AccountRecord;
 use crate::commands::auth::{AccountSummaryDto, AuthCommandError, CREDENTIAL_SAVE_WARNING};
@@ -61,20 +61,48 @@ const NETWORK_RETRY_MESSAGE: &str = "网络连接失败，请重试";
 /// [`restore_uid_with_user_detail`] 注入结果，避免访问网络。
 pub async fn restore_uid(
     state: &AppState,
+    generation: u64,
     uid: i64,
 ) -> Result<RestoreSessionDto, AuthCommandError> {
-    let http = state.http.clone();
-    restore_uid_with_user_detail(
-        state,
-        uid,
-        move |token| {
-            let http = http.clone();
-            let token = token.to_string();
-            async move { http.openchat_user.user_detail(&token).await }
-        },
-        None,
-    )
-    .await
+    #[cfg(test)]
+    {
+        let http = state.http.clone();
+        return restore_uid_with_user_detail(
+            state,
+            generation,
+            uid,
+            move |token| {
+                let http = http.clone();
+                let token = token.to_string();
+                async move { http.openchat_user.user_detail(&token).await }
+            },
+            Some(Vec::new()),
+        )
+        .await;
+    }
+
+    #[cfg(not(test))]
+    {
+        let state_for_groups = state.clone();
+        let http = state.http.clone();
+        restore_uid_with_services(
+            state,
+            generation,
+            uid,
+            move |token| {
+                let http = http.clone();
+                let token = token.to_string();
+                async move { http.openchat_user.user_detail(&token).await }
+            },
+            move |token| {
+                let token = token.to_string();
+                Box::pin(async move {
+                    crate::commands::groups::fetch_remote_groups(&state_for_groups, &token).await
+                }) as GroupFetchFuture
+            },
+        )
+        .await
+    }
 }
 
 /// 启动恢复：只尝试索引中的最后账号，且该记录 `has_token` 必须为 `true`。
@@ -83,10 +111,11 @@ pub async fn restore_uid(
 /// 最后账号存在但已退出（`has_token == false`）时直接返回
 /// [`RestoreSessionDto::NeedsLogin`]，不得读取或校验凭据库中可能残留的 Token。
 pub async fn restore_session(state: &AppState) -> Result<RestoreSessionDto, AuthCommandError> {
+    let generation = begin_restore_transition(state).await?;
     match last_restore_target(state).await? {
         LastRestoreTarget::NoAccount => Ok(RestoreSessionDto::NoAccount),
         LastRestoreTarget::NeedsLogin(record) => Ok(needs_login(&record)),
-        LastRestoreTarget::Restore(uid) => restore_uid(state, uid).await,
+        LastRestoreTarget::Restore(uid) => restore_uid(state, generation, uid).await,
     }
 }
 
@@ -96,8 +125,10 @@ pub async fn restore_session(state: &AppState) -> Result<RestoreSessionDto, Auth
 /// 打开账号库之后的失败仅在活动 UID 与 generation 仍属于本次打开时关闭数据库。
 /// 成功发布会话后，更新最后使用记录失败只追加普通 warning，不得撤销已发布会话。
 /// 本路径不写入密码。
-pub async fn restore_uid_with_user_detail<F, Fut>(
+#[cfg(test)]
+pub(crate) async fn restore_uid_with_user_detail<F, Fut>(
     state: &AppState,
+    generation: u64,
     uid: i64,
     user_detail: F,
     remote_groups: Option<Vec<im_store::group::GroupRow>>,
@@ -110,6 +141,60 @@ where
             im_http::openchat_user::OpenChatUserError,
         >,
     >,
+{
+    restore_uid_with_services(state, generation, uid, user_detail, move |_token| {
+        let remote_groups = remote_groups.clone();
+        Box::pin(async move {
+            match remote_groups {
+                Some(groups) => Ok(groups),
+                None => Err("restore_uid_with_user_detail requires injected groups".to_string()),
+            }
+        }) as GroupFetchFuture
+    })
+    .await
+}
+
+/// 测试辅助：同时注入用户详情与群组获取逻辑，覆盖恢复链路的失败收尾。
+#[cfg(test)]
+async fn restore_uid_with_injected_group_fetch<F, Fut, G>(
+    state: &AppState,
+    generation: u64,
+    uid: i64,
+    user_detail: F,
+    group_fetch: G,
+) -> Result<RestoreSessionDto, AuthCommandError>
+where
+    F: FnOnce(&str) -> Fut,
+    Fut: Future<
+        Output = Result<
+            im_http::openchat_user::UserDetailResp,
+            im_http::openchat_user::OpenChatUserError,
+        >,
+    >,
+    G: FnOnce(&str) -> GroupFetchFuture,
+{
+    restore_uid_with_services(state, generation, uid, user_detail, group_fetch).await
+}
+
+/// 注入用户详情与群组获取逻辑，统一覆盖生产恢复与测试场景。
+///
+/// `generation` 必须来自调用方开始的恢复/切换过渡，后续 migrate/open/publish 全程沿用。
+async fn restore_uid_with_services<F, Fut, G>(
+    state: &AppState,
+    generation: u64,
+    uid: i64,
+    user_detail: F,
+    group_fetch: G,
+) -> Result<RestoreSessionDto, AuthCommandError>
+where
+    F: FnOnce(&str) -> Fut,
+    Fut: Future<
+        Output = Result<
+            im_http::openchat_user::UserDetailResp,
+            im_http::openchat_user::OpenChatUserError,
+        >,
+    >,
+    G: FnOnce(&str) -> GroupFetchFuture,
 {
     let record = match load_account_record(state, uid).await? {
         Some(record) => record,
@@ -149,15 +234,19 @@ where
             });
         }
         Err(im_http::openchat_user::OpenChatUserError::Validation(_)) => {
-            return Ok(RestoreSessionDto::Retryable {
-                uid: uid.to_string(),
-                message: NETWORK_RETRY_MESSAGE.to_string(),
-            });
+            if let Err(error) = state.account_index.mark_logged_out(uid).await {
+                tracing::warn!(error = %error, uid, "failed to mark validation failure as logged out");
+            }
+            return Ok(needs_login(&record));
         }
     }
 
-    finish_successful_restore(state, uid, &record, token.as_str(), remote_groups).await
+    finish_successful_restore(state, generation, uid, &record, token.as_str(), group_fetch).await
 }
+
+/// 统一群组获取 future 类型，便于测试注入失败路径。
+type GroupFetchFuture =
+    Pin<Box<dyn Future<Output = Result<Vec<im_store::group::GroupRow>, String>> + Send>>;
 
 /// 启动恢复需要处理的最后账号目标。
 enum LastRestoreTarget {
@@ -223,12 +312,12 @@ async fn delete_rejected_token(state: &AppState, uid: i64) {
 /// 本函数不再无条件 `close`。成功后不写入密码。
 async fn finish_successful_restore(
     state: &AppState,
+    generation: u64,
     uid: i64,
     record: &AccountRecord,
     token: &str,
-    remote_groups: Option<Vec<im_store::group::GroupRow>>,
+    group_fetch: impl FnOnce(&str) -> GroupFetchFuture,
 ) -> Result<RestoreSessionDto, AuthCommandError> {
-    let generation = state.connection_coordinator.current_generation().await;
     if !state
         .connection_coordinator
         .is_generation_current(generation)
@@ -239,9 +328,12 @@ async fn finish_successful_restore(
 
     state.legacy_migrator.migrate_if_needed(uid).await?;
     let db = state.account_db.open(uid, generation).await?;
-    let remote_groups = match remote_groups {
-        Some(groups) => groups,
-        None => crate::commands::groups::fetch_remote_groups(state, token).await?,
+    let remote_groups = match group_fetch(token).await {
+        Ok(groups) => groups,
+        Err(error) => {
+            state.account_db.close_if_opened_by(uid, generation).await;
+            return Err(error.into());
+        }
     };
     let groups = crate::commands::auth::finish_login_after_opening_account(
         state,
@@ -278,6 +370,26 @@ async fn finish_successful_restore(
     })
 }
 
+/// 开始一次恢复过渡，并清理旧运行时状态。
+///
+/// 启动恢复与账号切换一样，都必须先推进 generation，再清理消息密钥、待登录缓存和旧库，
+/// 让晚到的旧恢复结果无法借用较新的代际完成发布。
+async fn begin_restore_transition(state: &AppState) -> Result<u64, AuthCommandError> {
+    let generation = crate::commands::auth::begin_auth_transition(
+        &state.connection_coordinator,
+        &state.chat_client,
+        &state.auth_session,
+        &state.monitoring_groups,
+        &state.connected,
+        state.app_handle.as_ref(),
+    )
+    .await?;
+    state.message_crypto.clear().await;
+    state.pending_login.clear().await;
+    state.account_db.close().await;
+    Ok(generation)
+}
+
 /// 测试中注入的用户详情结果，避免访问真实网络。
 #[cfg(test)]
 #[derive(Clone, Copy, Debug)]
@@ -288,6 +400,8 @@ pub(crate) enum UserDetailOutcome {
     BusinessRejected,
     /// 传输层失败，应保留 Token 供重试。
     TransportFailure,
+    /// 本地校验失败，应视为需要重新登录而不是网络重试。
+    ValidationFailure,
 }
 
 #[cfg(test)]
@@ -314,6 +428,9 @@ impl UserDetailOutcome {
             Self::TransportFailure => Err(im_http::openchat_user::OpenChatUserError::Transport(
                 im_common::error::AppError::Http("simulated transport failure".into()),
             )),
+            Self::ValidationFailure => Err(im_http::openchat_user::OpenChatUserError::Validation(
+                "simulated validation failure".into(),
+            )),
         }
     }
 }
@@ -321,7 +438,8 @@ impl UserDetailOutcome {
 #[cfg(test)]
 mod tests {
     use super::{
-        restore_session, restore_uid_with_user_detail, RestoreSessionDto, UserDetailOutcome,
+        begin_restore_transition, restore_session, restore_uid_with_injected_group_fetch,
+        restore_uid_with_user_detail, RestoreSessionDto, UserDetailOutcome,
     };
 
     /// 为恢复测试准备带账号索引和 Token 的状态。
@@ -402,8 +520,10 @@ mod tests {
     ) -> Result<RestoreSessionDto, crate::commands::auth::AuthCommandError> {
         let outcome = state.outcome;
         let calls = state.user_detail_calls.clone();
+        let generation = begin_restore_transition(&state.state).await.unwrap();
         restore_uid_with_user_detail(
             &state.state,
+            generation,
             uid,
             move |_token| {
                 calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -534,6 +654,63 @@ mod tests {
             state.credentials.token(42).await.unwrap().is_some(),
             "已退出路由不得删除残留 Token"
         );
+        assert!(state.auth_session.read().await.is_none());
+    }
+
+    /// 打开账号库后若拉取远端群组失败，必须关闭活动库且不得留下会话。
+    #[tokio::test]
+    async fn group_fetch_failure_after_open_closes_database() {
+        let state = restore_test_state(UserDetailOutcome::Success).await;
+        let generation = begin_restore_transition(&state.state).await.unwrap();
+
+        let result = restore_uid_with_injected_group_fetch(
+            &state.state,
+            generation,
+            42,
+            move |_token| async move { UserDetailOutcome::Success.into_result() },
+            move |_token| Box::pin(async move { Err("simulated group fetch failure".to_string()) }),
+        )
+        .await;
+
+        assert!(result.is_err(), "群组拉取失败必须向上返回错误");
+        assert!(state.auth_session.read().await.is_none());
+        let error = match state.account_db.active().await {
+            Err(error) => error,
+            Ok(_) => panic!("群组拉取失败后不得留下活动账号数据库"),
+        };
+        assert!(matches!(
+            error,
+            crate::account::AccountError::NoActiveDatabase
+        ));
+        let error = match state.account_db.require(42).await {
+            Err(error) => error,
+            Ok(_) => panic!("群组拉取失败后不得继续按 UID 取得数据库"),
+        };
+        assert!(matches!(
+            error,
+            crate::account::AccountError::NoActiveDatabase
+        ));
+    }
+
+    /// 本地校验失败不是网络可重试，而是需要重新登录并标记索引已退出。
+    #[tokio::test]
+    async fn validation_failure_requires_login_and_marks_logged_out() {
+        let state = restore_test_state(UserDetailOutcome::ValidationFailure).await;
+
+        let result = restore_uid(&state, 42).await.unwrap();
+
+        assert!(matches!(result, RestoreSessionDto::NeedsLogin { uid, .. } if uid == "42"));
+        let record = state
+            .account_index
+            .load()
+            .await
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|item| item.uid == 42)
+            .unwrap();
+        assert!(!record.has_token);
+        assert!(state.credentials.token(42).await.unwrap().is_some());
         assert!(state.auth_session.read().await.is_none());
     }
 }

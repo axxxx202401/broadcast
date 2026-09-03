@@ -98,8 +98,8 @@ pub(crate) async fn switch_account_inner(
     state: &AppState,
     uid: i64,
 ) -> Result<RestoreSessionDto, AuthCommandError> {
-    prepare_account_switch(state).await?;
-    restore_uid(state, uid).await
+    let generation = prepare_account_switch(state).await?;
+    restore_uid(state, generation, uid).await
 }
 
 /// 开始账号切换：推进 generation，清空消息密钥和待登录缓存，并关闭旧库。
@@ -200,8 +200,10 @@ mod tests {
         uid: i64,
         outcome: UserDetailOutcome,
     ) -> RestoreSessionDto {
+        let generation = prepare_account_switch(state).await.unwrap();
         restore_uid_with_user_detail(
             state,
+            generation,
             uid,
             move |_token| async move { outcome.into_result() },
             Some(Vec::new()),
@@ -267,24 +269,17 @@ mod tests {
             .await
             .expect("切换前应打开当前账号数据库");
 
-        let generation = prepare_account_switch(&state).await.unwrap();
-        assert!(generation > old_generation);
-        assert!(state.pending_login.take("issued").await.is_none());
-        assert!(!state.message_crypto.has_own_private_key().await);
-        let error = match state.account_db.active().await {
-            Err(error) => error,
-            Ok(_) => panic!("切换开始后必须关闭旧账号数据库"),
-        };
-        assert!(matches!(
-            error,
-            crate::account::AccountError::NoActiveDatabase
-        ));
-
-        let result = restore_for_test(&state, 84, UserDetailOutcome::Success).await;
+        let result = switch_account_inner_for_test(&state, 84, UserDetailOutcome::Success).await;
         assert!(matches!(
             result,
             RestoreSessionDto::Success { ref account, .. } if account.uid == "84"
         ));
+        assert!(
+            state.connection_coordinator.current_generation().await > old_generation,
+            "切换必须推进 generation"
+        );
+        assert!(state.pending_login.take("issued").await.is_none());
+        assert!(!state.message_crypto.has_own_private_key().await);
         state
             .account_db
             .require(84)
@@ -411,5 +406,92 @@ mod tests {
             matches!(restored, RestoreSessionDto::NeedsLogin { ref uid, .. } if uid == "42"),
             "索引已退出后即使残留 Token 也不得自动进入主界面"
         );
+    }
+
+    /// 旧切换在较新代际出现后不得借用“当前 generation”发布会话。
+    #[tokio::test]
+    async fn stale_switch_does_not_publish_after_newer_generation() {
+        let (state, _temp) = crate::state::test_state_with_account_foundation().await;
+        seed_account(&state, 42, "a@example.com", 4, true, Some("token-42")).await;
+        seed_account(&state, 99, "c@example.com", 4, false, Some("token-99")).await;
+        restore_for_test(&state, 99, UserDetailOutcome::Success).await;
+        assert_eq!(
+            state
+                .auth_session
+                .read()
+                .await
+                .as_ref()
+                .map(|session| session.uid),
+            Some(99)
+        );
+
+        let switch = {
+            let state = state.clone();
+            tokio::spawn(async move { switch_account_inner_with_gate(&state, 42).await })
+        };
+
+        tokio::task::yield_now().await;
+        let newer_generation = prepare_account_switch(&state).await.unwrap();
+        assert!(
+            newer_generation >= 2,
+            "较新切换必须推进 generation，使旧切换失效"
+        );
+        let result = switch.await.unwrap();
+        assert!(result.is_err(), "旧切换在较新代际出现后不得成功发布");
+        assert_ne!(
+            state
+                .auth_session
+                .read()
+                .await
+                .as_ref()
+                .map(|session| session.uid),
+            Some(42),
+            "旧切换不得把当前会话改回 42"
+        );
+        let error = match state.account_db.require(42).await {
+            Err(error) => error,
+            Ok(_) => panic!("过期切换不得留下 UID 42 的活动数据库"),
+        };
+        assert!(matches!(
+            error,
+            crate::account::AccountError::NoActiveDatabase
+                | crate::account::AccountError::ActiveUidMismatch { .. }
+        ));
+    }
+
+    /// 为代际竞争测试准备可阻塞的切换：先完成标准切换清理，再等待主线程推进较新代际。
+    async fn switch_account_inner_with_gate(
+        state: &crate::state::AppState,
+        uid: i64,
+    ) -> Result<RestoreSessionDto, crate::commands::auth::AuthCommandError> {
+        let generation = prepare_account_switch(state).await?;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        crate::account::session::restore_uid_with_user_detail(
+            state,
+            generation,
+            uid,
+            move |_token| async move { UserDetailOutcome::Success.into_result() },
+            Some(Vec::new()),
+        )
+        .await
+    }
+
+    /// 测试辅助：复用真实切换清理流程，但把恢复依赖注入为可控结果。
+    async fn switch_account_inner_for_test(
+        state: &crate::state::AppState,
+        uid: i64,
+        outcome: UserDetailOutcome,
+    ) -> RestoreSessionDto {
+        let generation = prepare_account_switch(state).await.unwrap();
+        crate::account::session::restore_uid_with_user_detail(
+            state,
+            generation,
+            uid,
+            move |_token| async move { outcome.into_result() },
+            Some(Vec::new()),
+        )
+        .await
+        .unwrap()
     }
 }

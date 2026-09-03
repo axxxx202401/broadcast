@@ -734,6 +734,7 @@ impl ConnectionCoordinator {
     }
 
     /// 返回协调器当前认可的认证/连接代际。
+    #[cfg(test)]
     pub async fn current_generation(&self) -> u64 {
         self.state.lock().await.generation
     }
