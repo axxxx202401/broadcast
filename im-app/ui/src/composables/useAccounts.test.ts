@@ -40,7 +40,7 @@ function setupAccounts() {
     restoreSession: vi.fn(),
     listAccounts: vi.fn().mockResolvedValue([]),
     switchAccount: vi.fn(),
-    removeAccount: vi.fn().mockResolvedValue({ warnings: [] }),
+    removeAccount: vi.fn().mockResolvedValue({ warnings: [], nextUid: null }),
   }
   let accounts!: ReturnType<typeof useAccounts>
   const wrapper = mount(defineComponent({
@@ -225,6 +225,36 @@ describe('useAccounts', () => {
     wrapper.unmount()
   })
 
+  it('切换可重试失败后重试应再次 switchAccount 而非 restoreSession', async () => {
+    const { accounts, backend, wrapper } = setupAccounts()
+    backend.switchAccount
+      .mockResolvedValueOnce({
+        status: 'retryable',
+        uid: '84',
+        message: '网络连接失败，请重试',
+      })
+      .mockResolvedValueOnce({
+        status: 'success',
+        account: account84,
+        groups: [],
+        warnings: [],
+      })
+
+    await accounts.switchAccount('84')
+    expect(accounts.phase.value).toBe('recovering')
+    expect(accounts.retryableMessage.value).toBe('网络连接失败，请重试')
+    expect(accounts.lastAccountOp.value).toBe('switch')
+
+    await accounts.retryRestore()
+
+    expect(backend.switchAccount).toHaveBeenCalledTimes(2)
+    expect(backend.switchAccount).toHaveBeenNthCalledWith(2, '84')
+    expect(backend.restoreSession).not.toHaveBeenCalled()
+    expect(accounts.phase.value).toBe('ready')
+    expect(accounts.selectedAccount.value).toEqual(account84)
+    wrapper.unmount()
+  })
+
   it('使用其他账号进入登录态并作废进行中的恢复', async () => {
     const { accounts, backend, wrapper } = setupAccounts()
     const deferred = promiseWithResolvers<RestoreSessionResult>()
@@ -250,7 +280,10 @@ describe('useAccounts', () => {
   it('移除账号只发送 uid 并刷新摘要列表', async () => {
     const { accounts, backend, wrapper } = setupAccounts()
     backend.listAccounts.mockResolvedValueOnce([])
-    backend.removeAccount.mockResolvedValueOnce({ warnings: ['本次无法完全清除登录信息'] })
+    backend.removeAccount.mockResolvedValueOnce({
+      warnings: ['本次无法完全清除登录信息'],
+      nextUid: null,
+    })
 
     await accounts.removeAccount('42')
 

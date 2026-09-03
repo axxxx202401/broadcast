@@ -322,12 +322,40 @@ describe('App 头部账号菜单', () => {
     wrapper.unmount()
   })
 
-  it('移除当前账号确认后选择剩余最近账号', async () => {
+  it('移除当前账号确认后按 nextUid 选择最近使用账号而非列表首项', async () => {
+    const accountA: AccountSummary = {
+      uid: '1',
+      displayAccount: 'a@example.com',
+      loginType: 4,
+      hasSavedPassword: true,
+      isCurrent: true,
+    }
+    const accountB: AccountSummary = {
+      uid: '2',
+      displayAccount: 'b@example.com',
+      loginType: 4,
+      hasSavedPassword: false,
+      isCurrent: false,
+    }
+    const accountC: AccountSummary = {
+      uid: '3',
+      displayAccount: 'c@example.com',
+      loginType: 4,
+      hasSavedPassword: false,
+      isCurrent: false,
+    }
     vi.spyOn(window, 'confirm').mockReturnValue(true)
-    mocks.removeAccount.mockResolvedValue({ warnings: [] })
+    mocks.restoreSession.mockResolvedValue({
+      status: 'success',
+      account: accountA,
+      groups: [],
+      warnings: [],
+    } satisfies RestoreSessionResult)
+    // 刷新列表把 C 放在首位；真正最近使用应为 B（nextUid）。
     mocks.listAccounts
-      .mockResolvedValueOnce([restoredAccount, otherAccount])
-      .mockResolvedValueOnce([otherAccount])
+      .mockResolvedValueOnce([accountA, accountC, accountB])
+      .mockResolvedValueOnce([accountC, accountB])
+    mocks.removeAccount.mockResolvedValue({ warnings: [], nextUid: '2' })
 
     const wrapper = mountApp()
     await flushPromises()
@@ -335,17 +363,20 @@ describe('App 头部账号菜单', () => {
     await wrapper.get('[data-test="remove-account"]').trigger('click')
     await flushPromises()
 
-    expect(api.removeAccount).toHaveBeenCalledWith('42')
+    expect(api.removeAccount).toHaveBeenCalledWith('1')
     expect(wrapper.findComponent(LoginPanel).exists()).toBe(true)
     expect(mocks.selectSavedAccount).toHaveBeenCalledWith(
-      expect.objectContaining({ uid: '84', displayAccount: 'b@example.com' }),
+      expect.objectContaining({ uid: '2', displayAccount: 'b@example.com' }),
+    )
+    expect(mocks.selectSavedAccount).not.toHaveBeenCalledWith(
+      expect.objectContaining({ uid: '3' }),
     )
     wrapper.unmount()
   })
 
   it('移除唯一账号后进入空白登录表单', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
-    mocks.removeAccount.mockResolvedValue({ warnings: [] })
+    mocks.removeAccount.mockResolvedValue({ warnings: [], nextUid: null })
     mocks.listAccounts
       .mockResolvedValueOnce([restoredAccount])
       .mockResolvedValueOnce([])
@@ -358,6 +389,40 @@ describe('App 头部账号菜单', () => {
 
     expect(wrapper.findComponent(LoginPanel).exists()).toBe(true)
     expect(mocks.resetAuthForm).toHaveBeenCalledWith({ preserveSelectedAccount: false })
+    wrapper.unmount()
+  })
+
+  it('切换可重试失败后重试再次 switchAccount，文案为正在切换账号', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    mocks.switchAccount.mockResolvedValueOnce({
+      status: 'retryable',
+      uid: '84',
+      message: '网络连接失败，请重试',
+    } satisfies RestoreSessionResult)
+
+    await wrapper.get('[data-test="account-84"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('正在切换账号')
+    expect(wrapper.text()).toContain('网络连接失败，请重试')
+    expect(wrapper.text()).not.toContain('正在恢复上次登录')
+
+    mocks.switchAccount.mockResolvedValueOnce({
+      status: 'success',
+      account: otherAccount,
+      groups: [],
+      warnings: [],
+    } satisfies RestoreSessionResult)
+
+    await wrapper.get('[data-test="retry-restore"]').trigger('click')
+    await flushPromises()
+
+    expect(api.switchAccount).toHaveBeenCalledTimes(2)
+    expect(api.switchAccount).toHaveBeenNthCalledWith(2, '84')
+    expect(api.restoreSession).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('.operations-shell').exists()).toBe(true)
     wrapper.unmount()
   })
 

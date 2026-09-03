@@ -11,6 +11,9 @@ import { toPrimaryLoginType } from '../types/im'
 /** 启动恢复与账号切换的前端阶段。 */
 export type AccountPhase = 'recovering' | 'ready' | 'needsLogin'
 
+/** 最近一次恢复类操作；可重试失败时决定重试调用 restore 还是 switch。 */
+export type AccountOp = 'restore' | 'switch'
+
 /** 账号组合式函数实际使用的后端能力子集。 */
 type AccountsApi = Pick<
   typeof api,
@@ -86,6 +89,10 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
   const selectedAccount = ref<AccountSummary | null>(null)
   const retryableMessage = ref('')
   const busy = ref<string | null>(null)
+  /** 最近一次恢复类操作；切换可重试失败时 UI 显示“正在切换账号”。 */
+  const lastAccountOp = ref<AccountOp>('restore')
+  /** 切换进入 retryable 时记住目标 UID，供 `retryRestore` 再次 switch。 */
+  let pendingSwitchUid: string | null = null
   let operationToken = 0
 
   /** 在当前代次仍有效时刷新非密钥账号列表；列表失败不得把恢复打成 retryable。 */
@@ -106,18 +113,21 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
         phase.value = 'ready'
         selectedAccount.value = normalizeAccountSummary(result.account)
         retryableMessage.value = ''
+        pendingSwitchUid = null
         void refreshAccounts(token)
         return result
       case 'needsLogin':
         phase.value = 'needsLogin'
         selectedAccount.value = accountFromNeedsLogin(result)
         retryableMessage.value = ''
+        pendingSwitchUid = null
         void refreshAccounts(token)
         return result
       case 'noAccount':
         phase.value = 'needsLogin'
         selectedAccount.value = null
         retryableMessage.value = ''
+        pendingSwitchUid = null
         void refreshAccounts(token)
         return result
       case 'retryable':
@@ -129,12 +139,18 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
 
   /** 执行一次带代次的恢复类请求；过期结果返回 `null`。 */
   async function runRestore(
-    key: string,
+    key: AccountOp,
     operation: () => Promise<RestoreSessionResult>,
     fallbackUid: string,
   ): Promise<RestoreSessionResult | null> {
     const token = ++operationToken
     busy.value = key
+    lastAccountOp.value = key
+    if (key === 'switch') {
+      pendingSwitchUid = fallbackUid
+    } else {
+      pendingSwitchUid = null
+    }
     retryableMessage.value = ''
     phase.value = 'recovering'
     try {
@@ -160,8 +176,16 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
   const restore = () =>
     runRestore('restore', () => backend.restoreSession(), selectedAccount.value?.uid ?? '')
 
-  /** 再次执行启动恢复，供可重试界面使用。 */
-  const retryRestore = () => restore()
+  /**
+   * 再次执行最近一次恢复类操作。
+   * 若上次是切换且仍记住目标 UID，则再次 `switchAccount`；否则走启动恢复。
+   */
+  const retryRestore = () => {
+    if (lastAccountOp.value === 'switch' && pendingSwitchUid) {
+      return switchAccount(pendingSwitchUid)
+    }
+    return restore()
+  }
 
   /**
    * 切换到指定 UID 的已保存账号。
@@ -180,6 +204,8 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
     phase.value = 'needsLogin'
     selectedAccount.value = null
     retryableMessage.value = ''
+    pendingSwitchUid = null
+    lastAccountOp.value = 'restore'
   }
 
   /**
@@ -215,6 +241,7 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
     phase.value = 'ready'
     selectedAccount.value = { ...normalizeAccountSummary(account), isCurrent: true }
     retryableMessage.value = ''
+    pendingSwitchUid = null
     void refreshAccounts(operationToken)
   }
 
@@ -229,6 +256,8 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
     retryableMessage,
     /** 非空时表示恢复、切换或移除仍在进行。 */
     busy,
+    /** 最近一次恢复类操作，供可重试界面区分文案与重试目标。 */
+    lastAccountOp,
     restore,
     retryRestore,
     switchAccount,

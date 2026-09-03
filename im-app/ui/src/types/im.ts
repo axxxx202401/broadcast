@@ -350,8 +350,13 @@ export interface LogoutResult {
   warnings: string[]
 }
 
-/** 移除账号命令返回的非阻塞提示；字段名与 Rust `RemoveAccountResultDto` 一致。 */
+/** 移除账号命令返回；字段名与 Rust `RemoveAccountResultDto` 的 camelCase 输出一致。 */
 export interface RemoveAccountResult {
   /** 凭据删除失败等情况下的普通用户文案。 */
   warnings: string[]
+  /**
+   * 移除后索引选定的下一账号 UID（`last_used_uid`）。
+   * 无剩余账号时为 `null`；登录页应按此选择，不得用列表首项冒充最近使用。
+   */
+  nextUid: string | null
 }

@@ -91,8 +91,9 @@ export const api = {
   switchAccount: (uid: string) =>
     invoke<RestoreSessionResult>('switch_account', { uid }),
   /**
-   * 调用 `remove_account`，直接包装为 `{ uid }`，成功返回 `{ warnings }`。
-   * 删除索引与凭据但保留该 UID 的 SQLite 文件；载荷不得包含密码或 Token。
+   * 调用 `remove_account`，直接包装为 `{ uid }`，成功返回 `{ warnings, nextUid }`。
+   * 删除索引与凭据但保留该 UID 的 SQLite 文件；`nextUid` 为删除后的 `last_used_uid`。
+   * 载荷不得包含密码或 Token。
    */
   removeAccount: (uid: string) =>
     invoke<RemoveAccountResult>('remove_account', { uid }),

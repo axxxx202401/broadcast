@@ -9,7 +9,7 @@ import StatusBadge from './components/StatusBadge.vue'
 import { useAccounts } from './composables/useAccounts'
 import { useAuth } from './composables/useAuth'
 import { useMonitor } from './composables/useMonitor'
-import type { AccountSummary, RestoreSessionResult } from './types/im'
+import type { RestoreSessionResult } from './types/im'
 
 // 根组件编排账号恢复、认证与监控状态。启动时先恢复上次登录，避免闪现登录页。
 const monitor = useMonitor()
@@ -94,19 +94,21 @@ const addAccount = () =>
 
 /**
  * 移除当前账号：先退出会话，再删除索引与凭据。
- * 有剩余账号时选中列表中的下一项作为登录页默认；没有则空白邮箱密码表单。
- * 前端摘要不含 `last_used_at`，以移除后刷新列表的首项作为最近可用账号。
+ * 有剩余账号时按 `nextUid`（索引 `last_used_uid`）回填登录页；没有则空白邮箱密码表单。
+ * 不得用刷新列表的首项冒充最近使用账号。
  */
 const removeCurrentAccount = async (uid: string) => {
-  const remainingBefore = accounts.accounts.value.filter((item) => item.uid !== uid)
   await monitor.logout()
   accounts.phase.value = 'needsLogin'
   const result = await accounts.removeAccount(uid)
-  if (result?.warnings.length) {
+  if (!result) return
+  if (result.warnings.length) {
     monitor.warning.value = result.warnings.join('\n')
   }
-  const next: AccountSummary | null =
-    accounts.accounts.value[0] ?? remainingBefore[0] ?? null
+  const nextUid = result.nextUid
+  const next = nextUid
+    ? accounts.accounts.value.find((item) => item.uid === nextUid) ?? null
+    : null
   if (next) {
     auth.selectSavedAccount(next)
   } else {
@@ -129,7 +131,7 @@ const removeCurrentAccount = async (uid: string) => {
     class="restore-shell"
     role="status"
   >
-    <p>正在恢复上次登录</p>
+    <p>{{ accounts.lastAccountOp.value === 'switch' ? '正在切换账号' : '正在恢复上次登录' }}</p>
     <p v-if="accounts.retryableMessage.value">{{ accounts.retryableMessage.value }}</p>
     <div v-if="accounts.retryableMessage.value" class="restore-actions">
       <button

@@ -19,6 +19,9 @@ use crate::state::AppState;
 pub struct RemoveAccountResultDto {
     /// 非阻塞提示；凭据删除失败时只放普通用户文案。
     pub warnings: Vec<String>,
+    /// 删除后索引中的 `last_used_uid`；无剩余账号时为 `None`。
+    /// 前端用它回填登录页默认账号，不得依赖列表写入顺序。
+    pub next_uid: Option<String>,
 }
 
 /// 启动时恢复最后使用且仍持有 Token 的账号。
@@ -133,7 +136,13 @@ pub(crate) async fn remove_account_inner(
         }
     }
     state.account_index.remove(uid).await?;
-    Ok(RemoveAccountResultDto { warnings })
+    let next_uid = state
+        .account_index
+        .load()
+        .await?
+        .last_used_uid
+        .map(|value| value.to_string());
+    Ok(RemoveAccountResultDto { warnings, next_uid })
 }
 
 #[cfg(test)]
@@ -299,6 +308,7 @@ mod tests {
 
         let result = remove_account_inner(&state, 42).await.unwrap();
         assert!(result.warnings.is_empty());
+        assert_eq!(result.next_uid, None);
         assert!(state
             .account_index
             .load()
@@ -310,6 +320,63 @@ mod tests {
         assert_eq!(state.credentials.password(42).await.unwrap(), None);
         assert!(db_path.exists(), "移除账号不得删除 SQLite 文件或账号目录");
         assert!(state.auth_session.read().await.is_none());
+    }
+
+    /// 移除当前账号后 `next_uid` 必须是剩余账号中 `last_used_at` 最大者，而非写入顺序首项。
+    #[tokio::test]
+    async fn remove_account_returns_next_uid_as_most_recently_used_remaining() {
+        let (state, _temp) = crate::state::test_state_with_account_foundation().await;
+        // last_used_at 用显式时间戳：B 最近、C 次之、A 当前但将被移除。
+        state
+            .account_index
+            .upsert(crate::account::index::AccountRecord::new(
+                1,
+                "a@example.com",
+                4,
+                100,
+            ))
+            .await
+            .unwrap();
+        state
+            .account_index
+            .upsert(crate::account::index::AccountRecord::new(
+                3,
+                "c@example.com",
+                4,
+                200,
+            ))
+            .await
+            .unwrap();
+        state
+            .account_index
+            .upsert(crate::account::index::AccountRecord::new(
+                2,
+                "b@example.com",
+                4,
+                300,
+            ))
+            .await
+            .unwrap();
+        state
+            .account_index
+            .touch_last_used(1)
+            .await
+            .unwrap();
+        *state.auth_session.write().await = Some(AuthSession {
+            uid: 1,
+            token: "token-1".into(),
+            generation: 0,
+        });
+
+        let result = remove_account_inner(&state, 1).await.unwrap();
+        assert_eq!(result.next_uid.as_deref(), Some("2"));
+        let index = state.account_index.load().await.unwrap();
+        assert_eq!(index.last_used_uid, Some(2));
+        assert_eq!(
+            index.accounts.iter().map(|item| item.uid).collect::<Vec<_>>(),
+            vec![3, 2],
+            "列表写入顺序仍以 C 在前，不得把 next_uid 误当成 accounts[0]"
+        );
     }
 
     /// 凭据删除失败时仍移除索引，并返回不含密钥的 warning。
@@ -326,6 +393,7 @@ mod tests {
             result.warnings,
             vec!["本次无法完全清除登录信息".to_string()]
         );
+        assert_eq!(result.next_uid, None);
         assert!(state
             .account_index
             .load()
