@@ -117,3 +117,6 @@ GitHub Release。
 - `VITE_GT4_CAPTCHA_ID`：该变量必须在启动 Vite/Tauri 构建前提供。
 - GitHub 提示找不到 bundle：查看对应矩阵 Job 的 Tauri 构建日志；上传步骤不会把空目录
   误报为成功。
+- `macOS 已损坏/无法打开`：通常是下载后触发的 Gatekeeper 隔离属性（quarantine）导致。当前
+  CI macOS 构建启用了 ad-hoc 重签以降低被拦概率；若仍被拦，可先清除隔离后重试：
+  `xattr -cr "/Applications/IM Monitor.app"`。
