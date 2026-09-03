@@ -217,6 +217,19 @@ fn display_account_from_request(request: &im_http::openchat_user::LoginReq) -> S
         .unwrap_or_default()
 }
 
+/// 读取索引或凭据库中是否已有保存密码，供验证码重登或本次写密码失败时保留标志。
+async fn existing_saved_password(state: &AppState, uid: i64) -> bool {
+    if state
+        .account_index
+        .has_saved_password(uid)
+        .await
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    matches!(state.credentials.password(uid).await, Ok(Some(_)))
+}
+
 /// 确认本次登录的 generation 仍持有当前会话，否则不得继续落盘或返回 Success。
 ///
 /// 同时检查协调器代际与 `auth_session` 的 uid/generation，避免过期登录覆盖较新账号。
@@ -306,9 +319,10 @@ async fn handle_remote_login_result(
 /// 写入账号索引并更新秘密存在标志、启动自动连接。
 ///
 /// 凭据或账号索引写入失败不会撤销已经成功的远端登录，只向 `warnings` 追加
-/// 「本次无法安全保存登录信息」。发布会话后、写入凭据前以及返回 Success 前都会
-/// 复核 generation；代际已变化时不落盘、不自动连接，并返回错误而不是 Success。
-/// 本次没有登录密码时保留索引或凭据库中已有的 `has_saved_password`。
+/// 「本次无法安全保存登录信息」。迁移和打开账号库之前先用协调器代际判断是否已过期，
+/// 避免过期登录替换另一 UID 的活动库。发布会话后、写入凭据前以及返回 Success 前都会
+/// 复核 generation 与会话归属；代际已变化时不落盘、不自动连接，并返回错误而不是 Success。
+/// 本次没有登录密码，或写密码失败但索引/凭据库仍有密码时，保留 `has_saved_password`。
 /// 打开数据库之后的失败仅在活动 UID 与 generation 仍属于本次打开时关闭数据库。
 /// 测试状态没有 Tauri 句柄时跳过自动连接，避免后台任务访问空句柄。
 async fn complete_account_login(
@@ -366,6 +380,14 @@ async fn run_complete_account_login(
     remote_groups: Vec<im_store::group::GroupRow>,
     after_publish: impl Future<Output = ()>,
 ) -> Result<LoginCompletion, AuthCommandError> {
+    // 打库前只看协调器代际：此时会话常常仍是 None，不能用发布后的会话门禁。
+    if !state
+        .connection_coordinator
+        .is_generation_current(generation)
+        .await
+    {
+        return Err("Connection generation changed before opening account database".into());
+    }
     state.legacy_migrator.migrate_if_needed(uid).await?;
     let db = state.account_db.open(uid, generation).await?;
     let groups =
@@ -417,19 +439,7 @@ async fn run_complete_account_login(
     };
     let has_saved_password = match password_saved_this_attempt {
         Some(true) => true,
-        Some(false) => false,
-        None => {
-            let indexed = state
-                .account_index
-                .has_saved_password(uid)
-                .await
-                .unwrap_or(false);
-            if indexed {
-                true
-            } else {
-                matches!(state.credentials.password(uid).await, Ok(Some(_)))
-            }
-        }
+        Some(false) | None => existing_saved_password(state, uid).await,
     };
 
     let last_used_at = chrono::Utc::now().timestamp_millis();
@@ -1221,7 +1231,7 @@ mod tests {
     };
 
     use super::{
-        begin_auth_transition, classify_remote_login, clear_session_state,
+        begin_auth_transition, classify_remote_login, clear_session_state, complete_account_login,
         complete_account_login_after_publish, finish_login_after_opening_account,
         finish_login_after_sync, hash_verify_passwords, verify_validations_inner,
         verify_validations_inner_with_http, AccountSummaryDto, AuthCommandError, LoginResultDto,
@@ -1494,6 +1504,54 @@ mod tests {
             state.account_index.load().await.unwrap().last_used_uid,
             Some(99)
         );
+    }
+
+    /// 代际已过期的 complete 不得打开另一 UID 并替换当前活动库。
+    #[tokio::test]
+    async fn stale_complete_does_not_replace_already_open_account_database() {
+        let (state, _temp) = test_state_with_memory_credentials().await;
+        state.account_db.open(99, 0).await.unwrap();
+        assert!(state.account_db.require(99).await.is_ok());
+
+        let old_generation = 0_u64;
+        begin_auth_transition(
+            &state.connection_coordinator,
+            &state.chat_client,
+            &state.auth_session,
+            &state.monitoring_groups,
+            &state.connected,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !state
+                .connection_coordinator
+                .is_generation_current(old_generation)
+                .await
+        );
+
+        let request = im_http::openchat_user::LoginReq {
+            login_type: im_http::openchat_user::LoginType::EmailPassword,
+            email: Some("a@example.com".into()),
+            validate_token: Some("stale".to_string()),
+            ..Default::default()
+        };
+        let result = complete_account_login(
+            &state,
+            old_generation,
+            42,
+            zeroize::Zeroizing::new("token-42".into()),
+            &request,
+            Vec::new(),
+        )
+        .await;
+        assert!(result.is_err(), "过期 generation 不得继续打开账号库");
+        state
+            .account_db
+            .require(99)
+            .await
+            .expect("过期登录不得替换已经打开的 UID 99 数据库");
     }
 
     /// 系统凭据库不可用时登录仍成功，只返回普通用户可理解的警告。

@@ -53,6 +53,8 @@ impl AccountDatabaseManager {
     /// `active`；若已有其他账号的活动库，先取走旧句柄并关闭其连接池。
     /// 同一 UID 重复打开时复用现有句柄，避免关闭仍被调用方持有的连接池。
     /// `generation` 记录本次打开所属的认证代际，供失败收尾判断是否仍可关闭。
+    /// 同 UID 复用时只允许把代际推进到 `max(当前, 本次)`，不得回退，否则过期
+    /// `open` 会让随后的 `close_if_opened_by` 关掉已经发布的较新活动库。
     pub async fn open(&self, uid: i64, generation: u64) -> Result<Arc<SqliteStore>, AccountError> {
         let _switch = self.switch_lock.lock().await;
         let db_path = self.database_path(uid)?;
@@ -61,8 +63,7 @@ impl AccountDatabaseManager {
             let mut active = self.active.write().await;
             if let Some(current) = active.as_mut() {
                 if current.uid == uid {
-                    // 复用连接池，但必须把代际推进到这次打开，避免旧失败路径按旧 generation 关闭。
-                    current.generation = generation;
+                    current.generation = current.generation.max(generation);
                     return Ok(current.store.clone());
                 }
             }
@@ -285,6 +286,36 @@ mod tests {
         let error = match manager.active().await {
             Err(error) => error,
             Ok(_) => panic!("匹配 uid 与 generation 时必须关闭活动库"),
+        };
+        assert!(matches!(error, AccountError::NoActiveDatabase));
+    }
+
+    /// 较旧的同 UID `open` 不得把活动代际回退，也不得因此让旧失败路径关掉新库。
+    #[tokio::test]
+    async fn older_open_does_not_downgrade_generation_or_close_newer_db() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = AccountDatabaseManager::new(AppPaths::new(temp.path().to_path_buf()));
+        let newer = manager.open(42, 2).await.unwrap();
+        newer
+            .groups
+            .insert_or_update(&group_row(7, "账号一"))
+            .await
+            .unwrap();
+
+        let older = manager.open(42, 1).await.unwrap();
+        assert!(std::sync::Arc::ptr_eq(&newer, &older));
+
+        manager.close_if_opened_by(42, 1).await;
+        manager
+            .require(42)
+            .await
+            .expect("较旧 open 回退 generation 后不得关掉较新活动库");
+        assert_eq!(newer.groups.list_all().await.unwrap()[0].name, "账号一");
+
+        manager.close_if_opened_by(42, 2).await;
+        let error = match manager.active().await {
+            Err(error) => error,
+            Ok(_) => panic!("较新 generation 仍应能关闭活动库"),
         };
         assert!(matches!(error, AccountError::NoActiveDatabase));
     }
