@@ -11,6 +11,16 @@ on:
         options:
           - test
           - production
+      platform:
+        description: Build platform (all = Windows + macOS + Linux)
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - windows
+          - macos
+          - linux
 
 permissions:
   contents: read
@@ -67,14 +77,19 @@ jobs:
           echo "/tmp/protoc/bin" >> "$GITHUB_PATH"
 
       - name: Install protoc (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
+        if: runner.os == 'Windows' && (github.event.inputs.platform == 'all' || github.event.inputs.platform == 'windows')
+        shell: powershell
         run: |
-          PROTOC_VERSION="29.3"
-          curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-win64.zip" -o /tmp/protoc.zip
-          unzip -o /tmp/protoc.zip -d /tmp/protoc
-          rm /tmp/protoc.zip
-          echo "/tmp/protoc/bin" >> "$GITHUB_PATH"
+          $ProtocVersion = "29.3"
+          $ProtocZip = "$env:TEMP\protoc-${ProtocVersion}-win64.zip"
+          $ProtocDir = "$env:TEMP\protoc"
+          Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v${ProtocVersion}/protoc-${ProtocVersion}-win64.zip" -OutFile $ProtocZip
+          Expand-Archive -Path $ProtocZip -DestinationPath $ProtocDir -Force
+          Remove-Item $ProtocZip
+          $env:PATH = "${ProtocDir}\bin;$env:PATH"
+          [Environment]::SetEnvironmentVariable("PATH", $env:PATH, "Process")
+          Write-Host "protoc path: $(Join-Path $ProtocDir 'bin\protoc.exe')"
+          & "${ProtocDir}\bin\protoc.exe" --version
 
       - name: Install protoc (macOS)
         if: runner.os == 'macOS'
@@ -130,6 +145,7 @@ jobs:
         run: npm ci
 
       - name: Build Tauri bundles
+        if: github.event.inputs.platform == 'all' || (github.event.inputs.platform == 'windows' && startsWith(matrix.label, 'windows')) || (github.event.inputs.platform == 'linux' && startsWith(matrix.label, 'linux')) || (github.event.inputs.platform == 'macos' && startsWith(matrix.label, 'macos'))
         working-directory: im-app
         run: npm run build:${{ inputs.environment }} -- --target ${{ matrix.target }}
 
