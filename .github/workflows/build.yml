@@ -72,9 +72,9 @@ jobs:
         run: |
           PROTOC_VERSION="29.3"
           curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-win64.zip" -o /tmp/protoc.zip
-          unzip -o /tmp/protoc.zip -d protoc
+          unzip -o /tmp/protoc.zip -d /tmp/protoc
           rm /tmp/protoc.zip
-          echo "PROTOC=C:/tmp/protoc/bin/protoc.exe" >> "$GITHUB_ENV"
+          echo "/tmp/protoc/bin" >> "$GITHUB_PATH"
 
       - name: Install protoc (macOS)
         if: runner.os == 'macOS'
