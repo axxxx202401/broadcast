@@ -63,6 +63,7 @@ jobs:
 
     steps:
       - name: Skip non-selected platform
+        shell: bash
         run: |
           platform="${{ inputs.platform }}"
           label="${{ matrix.label }}"
