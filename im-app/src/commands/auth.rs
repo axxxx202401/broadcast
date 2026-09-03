@@ -98,6 +98,22 @@ impl From<crate::account::AccountError> for AuthCommandError {
     }
 }
 
+/// 前端可见的账号摘要，不含 Token 或密码。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSummaryDto {
+    /// 十进制字符串形式的用户 ID，避免跨 Tauri 边界时丢失整数精度。
+    pub uid: String,
+    /// 用户输入的邮箱或手机号，仅用于展示和回填。
+    pub display_account: String,
+    /// 首次主登录使用的登录方式标识。
+    pub login_type: i32,
+    /// 系统凭据库是否已保存该账号登录密码；摘要本身不存密码。
+    pub has_saved_password: bool,
+    /// 该账号是否为当前已发布会话对应的账号。
+    pub is_current: bool,
+}
+
 /// 登录命令返回给前端的结果。
 #[derive(Debug, serde::Serialize)]
 #[serde(
@@ -112,6 +128,10 @@ pub enum LoginResultDto {
         uid: String,
         /// 本次远程快照同步后得到的本地群组列表。
         groups: Vec<crate::commands::groups::GroupDto>,
+        /// 当前账号摘要，供前端展示而不回传密钥。
+        account: AccountSummaryDto,
+        /// 非阻塞提示；凭据保存失败时只放普通用户文案。
+        warnings: Vec<String>,
     },
     /// 服务端要求继续完成校验，尚未发布本地认证会话。
     Challenge {
@@ -134,6 +154,237 @@ enum RemoteLogin {
     Success { uid: Option<i64>, token: String },
     /// 远程认证要求完成额外校验。
     Challenge(LoginChallenge),
+}
+
+impl RemoteLogin {
+    /// 构造已带 uid 的成功结果，供测试注入而不发起真实 HTTP。
+    #[cfg(test)]
+    fn success(uid: i64, token: impl Into<String>) -> Self {
+        Self::Success {
+            uid: Some(uid),
+            token: token.into(),
+        }
+    }
+
+    /// 构造仅包含下一挑战令牌的校验结果，供测试注入。
+    #[cfg(test)]
+    fn challenge(next_token: impl Into<String>) -> Self {
+        Self::Challenge(LoginChallenge {
+            code: 3114179,
+            validate_token: next_token.into(),
+            message: "secondary validation required".to_string(),
+            pending: None,
+        })
+    }
+}
+
+/// 凭据或账号索引无法安全写入时返回给前端的普通文案。
+const CREDENTIAL_SAVE_WARNING: &str = "本次无法安全保存登录信息";
+
+/// 统一登录收尾完成后的内部结果。
+struct LoginCompletion {
+    uid: i64,
+    groups: Vec<crate::commands::groups::GroupDto>,
+    account: AccountSummaryDto,
+    warnings: Vec<String>,
+}
+
+/// 读取请求中的非空 `validateToken`；缺失或空白时返回 `None`。
+fn request_validate_token(request: &im_http::openchat_user::LoginReq) -> Option<&str> {
+    request
+        .validate_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+}
+
+/// 从登录请求回退显示账号：优先邮箱，其次手机号。
+fn display_account_from_request(request: &im_http::openchat_user::LoginReq) -> String {
+    request
+        .email
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            request
+                .phone
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
+/// 处理已分类的远程登录结果：挑战只迁移待登录缓存，成功才完成本地收尾。
+///
+/// `remote_groups` 为 `Some` 时跳过远端群组拉取，供测试注入空快照。
+/// 挑战路径不得写入 Token 或密码；请求没有 `validateToken` 时跳过缓存迁移。
+/// 成功路径在缺少 uid 时通过用户详情补取，随后调用 [`complete_account_login`]。
+async fn handle_remote_login_result(
+    state: &AppState,
+    generation: u64,
+    request: &im_http::openchat_user::LoginReq,
+    remote_login: RemoteLogin,
+    remote_groups: Option<Vec<im_store::group::GroupRow>>,
+) -> Result<LoginResultDto, AuthCommandError> {
+    match remote_login {
+        RemoteLogin::Challenge(challenge) => {
+            if let Some(old_token) = request_validate_token(request) {
+                if let Err(error) = state
+                    .pending_login
+                    .move_token(old_token, &challenge.validate_token)
+                    .await
+                {
+                    tracing::debug!(error = %error, "pending login cache move skipped");
+                }
+            }
+            Ok(LoginResultDto::Challenge {
+                code: challenge.code,
+                validate_token: challenge.validate_token,
+                message: challenge.message,
+                pending: challenge.pending,
+            })
+        }
+        RemoteLogin::Success { uid, token } => {
+            let token = zeroize::Zeroizing::new(token);
+            let uid = match uid {
+                Some(uid) => uid,
+                None => state
+                    .http
+                    .openchat_user
+                    .user_detail(&token)
+                    .await?
+                    .user_base
+                    .uid
+                    .ok_or("User detail response missing userBase.uid")?,
+            };
+            let remote_groups = match remote_groups {
+                Some(groups) => groups,
+                None => crate::commands::groups::fetch_remote_groups(state, &token).await?,
+            };
+            let completion =
+                complete_account_login(state, generation, uid, token, request, remote_groups)
+                    .await?;
+            Ok(LoginResultDto::Success {
+                uid: completion.uid.to_string(),
+                groups: completion.groups,
+                account: completion.account,
+                warnings: completion.warnings,
+            })
+        }
+    }
+}
+
+/// 在远端登录已成功后，按固定顺序完成本地账号收尾。
+///
+/// 顺序为：旧库迁移、打开 UID 数据库、同步远端群组并恢复监控、经 generation
+/// 门禁发布 `AuthSession`、取出待登录上下文、保存 Token（存在登录密码时再保存密码）、
+/// 写入账号索引并更新秘密存在标志、启动自动连接。
+///
+/// 凭据或账号索引写入失败不会撤销已经成功的远端登录，只向 `warnings` 追加
+/// 「本次无法安全保存登录信息」。打开数据库之后的失败仅在活动 UID 仍是本账号时关闭数据库。
+/// 测试状态没有 Tauri 句柄时跳过自动连接，避免后台任务访问空句柄。
+async fn complete_account_login(
+    state: &AppState,
+    generation: u64,
+    uid: i64,
+    token: zeroize::Zeroizing<String>,
+    request: &im_http::openchat_user::LoginReq,
+    remote_groups: Vec<im_store::group::GroupRow>,
+) -> Result<LoginCompletion, AuthCommandError> {
+    state.legacy_migrator.migrate_if_needed(uid).await?;
+    let db = state.account_db.open(uid).await?;
+    let groups =
+        finish_login_after_opening_account(state, generation, uid, token.to_string(), async {
+            crate::commands::groups::apply_remote_groups(&db, &remote_groups).await
+        })
+        .await?;
+
+    let pending = match request_validate_token(request) {
+        Some(request_token) => state.pending_login.take(request_token).await,
+        None => None,
+    };
+    let display_account = pending
+        .as_ref()
+        .map(|pending| pending.display_account.clone())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| display_account_from_request(request));
+    let login_type = pending
+        .as_ref()
+        .map(|pending| pending.primary_login_type)
+        .unwrap_or(request.login_type as i32);
+    let pending_password = pending.and_then(|pending| pending.password);
+
+    let mut warnings = Vec::new();
+    let mut has_token = false;
+    match state.credentials.set_token(uid, &token).await {
+        Ok(()) => has_token = true,
+        Err(error) => {
+            tracing::warn!(error = %error, uid, "failed to persist login token");
+            warnings.push(CREDENTIAL_SAVE_WARNING.to_string());
+        }
+    }
+
+    let mut has_saved_password = false;
+    if let Some(password) = pending_password {
+        match state.credentials.set_password(uid, &password).await {
+            Ok(()) => has_saved_password = true,
+            Err(error) => {
+                tracing::warn!(error = %error, uid, "failed to persist login password");
+                if warnings.is_empty() {
+                    warnings.push(CREDENTIAL_SAVE_WARNING.to_string());
+                }
+            }
+        }
+    }
+
+    let last_used_at = chrono::Utc::now().timestamp_millis();
+    if let Err(error) = state
+        .account_index
+        .upsert(crate::account::index::AccountRecord::new(
+            uid,
+            display_account.clone(),
+            login_type,
+            last_used_at,
+        ))
+        .await
+    {
+        tracing::warn!(error = %error, uid, "failed to upsert account index");
+        if warnings.is_empty() {
+            warnings.push(CREDENTIAL_SAVE_WARNING.to_string());
+        }
+    } else if let Err(error) = state
+        .account_index
+        .set_secret_flags(uid, has_saved_password, has_token)
+        .await
+    {
+        tracing::warn!(error = %error, uid, "failed to set account secret flags");
+        if warnings.is_empty() {
+            warnings.push(CREDENTIAL_SAVE_WARNING.to_string());
+        }
+    }
+
+    if state.app_handle.is_some() {
+        crate::commands::chat::start_automatic_connection(state, generation);
+    }
+
+    Ok(LoginCompletion {
+        uid,
+        groups: groups
+            .into_iter()
+            .map(crate::commands::groups::GroupDto::from)
+            .collect(),
+        account: AccountSummaryDto {
+            uid: uid.to_string(),
+            display_account,
+            login_type,
+            has_saved_password,
+            is_current: true,
+        },
+        warnings,
+    })
 }
 
 /// 从业务错误中提取的登录校验挑战。
@@ -397,8 +648,7 @@ pub(crate) async fn verify_validations_inner(
         let mut request = resolved.request;
         hash_verify_passwords(&mut request);
         let http_result = state.http.openchat_user.verify(&request).await;
-        finish_verify_after_http(state, &token, reuse_requested, first_primary, http_result)
-            .await
+        finish_verify_after_http(state, &token, reuse_requested, first_primary, http_result).await
     }
 }
 
@@ -517,10 +767,7 @@ async fn finish_verify_after_http(
 
 /// 判断远程校验是否已经让服务端见到请求：成功响应、业务错误或可解码失败都算。
 fn verify_reached_server(
-    result: &Result<
-        im_http::openchat_user::VerifyResp,
-        im_http::openchat_user::OpenChatUserError,
-    >,
+    result: &Result<im_http::openchat_user::VerifyResp, im_http::openchat_user::OpenChatUserError>,
 ) -> bool {
     match result {
         Ok(_) => true,
@@ -683,11 +930,13 @@ pub async fn list_pending_validations(
 /// 登录并在本地发布可连接的认证会话。
 ///
 /// `request` 先执行本地校验；随后 [`begin_auth_transition`] 取消旧连接并清理旧会话，
-/// 再调用远程登录。遇到挑战时返回 [`LoginResultDto::Challenge`]；成功响应缺少 uid
-/// 时通过用户详情接口补取。之后在锁外拉取远程群组，在 `group_ops` 下同步数据库并恢复
-/// 监控快照，最后按 generation 检查后发布会话及群组内存状态。群组同步失败不会留下
-/// 半成品会话；过期 generation 不能覆盖较新的登录状态。成功发布后后台启动 TCP
-/// 自动连接与重试，因此 HTTP 登录成功不表示 TCP 已经连接。
+/// 再调用远程登录。遇到挑战时先把待登录缓存从旧 `validateToken` 迁到新令牌，返回
+/// [`LoginResultDto::Challenge`] 且不保存凭据。成功时由 [`handle_remote_login_result`]
+/// 补取 uid、拉取群组并调用 [`complete_account_login`]：迁移旧库、打开 UID 数据库、
+/// 同步群组、发布会话、保存凭据与账号索引，再启动自动连接。
+///
+/// 群组同步失败不会留下半成品会话；过期 generation 不能覆盖较新的登录状态。凭据保存
+/// 失败不撤销已经成功的远端登录。HTTP 登录成功不表示 TCP 已经连接。
 ///
 /// 远程登录、用户详情和群组查询都会发起网络请求；错误可能来自请求校验、HTTP、群组
 /// 同步、旧连接清理或并发状态切换。远程登录可能创建服务端认证状态，而用户详情和群组
@@ -715,61 +964,7 @@ pub async fn login(
 
     // 远程认证、群组同步和旧连接清理完成前，不发布新的认证会话。
     let remote_login = classify_remote_login(state.http.openchat_user.login(&request).await)?;
-    let RemoteLogin::Success { uid, token } = remote_login else {
-        let RemoteLogin::Challenge(challenge) = remote_login else {
-            unreachable!()
-        };
-        return Ok(LoginResultDto::Challenge {
-            code: challenge.code,
-            validate_token: challenge.validate_token,
-            message: challenge.message,
-            pending: challenge.pending,
-        });
-    };
-    let uid = match uid {
-        Some(uid) => uid,
-        None => state
-            .http
-            .openchat_user
-            .user_detail(&token)
-            .await?
-            .user_base
-            .uid
-            .ok_or("User detail response missing userBase.uid")?,
-    };
-    let remote_groups = crate::commands::groups::fetch_remote_groups(&state, &token).await?;
-
-    // 远端 UID 已知后先迁移旧单库，再打开该账号的隔离数据库。此时尚未发布
-    // AuthSession，不能使用 require。
-    state
-        .legacy_migrator
-        .migrate_if_needed(uid)
-        .await
-        .map_err(|error| error.to_string())?;
-    let db = state
-        .account_db
-        .open(uid)
-        .await
-        .map_err(|error| error.to_string())?;
-
-    // 在发布新认证会话前写入远程群组快照，并恢复数据库中保留的监控选择。
-    let groups =
-        finish_login_after_opening_account(&state, generation, uid, token.clone(), async {
-            crate::commands::groups::apply_remote_groups(&db, &remote_groups).await
-        })
-        .await?;
-
-    // HTTP 登录保持成功返回；TCP 连接及重试在后台继续。
-    crate::commands::chat::start_automatic_connection(&state, generation);
-
-    // 仅在 Tauri 边界把 i64 标识符转换成十进制字符串。
-    Ok(LoginResultDto::Success {
-        uid: uid.to_string(),
-        groups: groups
-            .into_iter()
-            .map(crate::commands::groups::GroupDto::from)
-            .collect(),
-    })
+    handle_remote_login_result(&state, generation, &request, remote_login, None).await
 }
 
 /// 在群组操作锁内准备群组状态，并在 generation 仍有效时发布登录状态。
@@ -810,10 +1005,11 @@ where
     Ok(result)
 }
 
-/// 在已打开的账号库上同步群组并发布会话；失败时关闭活动库。
+/// 在已打开的账号库上同步群组并发布会话；失败时按 UID 关闭活动库。
 ///
 /// 打开成功后若群组同步或会话发布失败，调用方不得留下“无会话却占用活动库”的状态。
-/// 此函数在返回错误前关闭 [`crate::account::AccountDatabaseManager`]。
+/// 仅当活动 UID 仍是本次登录账号时才关闭数据库，避免并发登录或切换已经打开另一
+/// UID 后被误关。
 async fn finish_login_after_opening_account<T, F>(
     state: &AppState,
     generation: u64,
@@ -838,7 +1034,7 @@ where
     )
     .await;
     if result.is_err() {
-        state.account_db.close().await;
+        state.account_db.close_if_uid(uid).await;
     }
     result
 }
@@ -934,8 +1130,8 @@ mod tests {
     use super::{
         begin_auth_transition, classify_remote_login, clear_session_state,
         finish_login_after_opening_account, finish_login_after_sync, hash_verify_passwords,
-        verify_validations_inner, verify_validations_inner_with_http, AuthCommandError,
-        LoginResultDto, LoginStateRefs, PendingValidationInputDto, RemoteLogin,
+        verify_validations_inner, verify_validations_inner_with_http, AccountSummaryDto,
+        AuthCommandError, LoginResultDto, LoginStateRefs, PendingValidationInputDto, RemoteLogin,
         VerifyValidationsDto,
     };
 
@@ -951,25 +1147,182 @@ mod tests {
         (state, temp)
     }
 
+    /// 构造使用内存凭据库的账号基础设施测试状态。
+    ///
+    /// 调用方必须持有返回的临时目录，直到测试结束，避免账号数据根被提前删除。
+    async fn test_state_with_memory_credentials() -> (crate::state::AppState, tempfile::TempDir) {
+        crate::state::test_state_with_account_foundation().await
+    }
+
+    /// 向待登录缓存写入一条带密码的上下文，供挑战与最终成功路径复用。
+    async fn seed_pending_password(
+        state: &crate::state::AppState,
+        token: &str,
+        display_account: &str,
+        login_type: i32,
+        password: &str,
+    ) {
+        state
+            .pending_login
+            .insert(
+                token,
+                crate::account::pending_login::PendingLogin {
+                    display_account: display_account.into(),
+                    primary_login_type: login_type,
+                    password: Some(zeroize::Zeroizing::new(password.into())),
+                    password_reused: false,
+                },
+            )
+            .await;
+    }
+
+    /// 用注入的远程登录结果驱动本地收尾，避免真实 HTTP。
+    ///
+    /// 挑战路径只迁移待登录缓存；成功路径走 [`super::handle_remote_login_result`]，
+    /// 并注入空群组快照以跳过远端群组拉取。
+    async fn finish_remote_login_for_test(
+        state: &crate::state::AppState,
+        request_token: &str,
+        remote: RemoteLogin,
+    ) -> Result<LoginResultDto, AuthCommandError> {
+        let request = im_http::openchat_user::LoginReq {
+            login_type: im_http::openchat_user::LoginType::EmailPassword,
+            email: Some("a@example.com".into()),
+            validate_token: Some(request_token.to_string()),
+            ..Default::default()
+        };
+        let generation = begin_auth_transition(
+            &state.connection_coordinator,
+            &state.chat_client,
+            &state.auth_session,
+            &state.monitoring_groups,
+            &state.connected,
+            None,
+        )
+        .await?;
+        super::handle_remote_login_result(state, generation, &request, remote, Some(Vec::new()))
+            .await
+    }
+
+    /// 挑战响应不得写入密码或 Token；只有最终登录成功才同时保存二者。
+    #[tokio::test]
+    async fn credentials_are_persisted_only_after_final_login_success() {
+        let (state, _temp) = test_state_with_memory_credentials().await;
+        seed_pending_password(&state, "issued", "a@example.com", 4, "secret").await;
+        let challenge =
+            finish_remote_login_for_test(&state, "issued", RemoteLogin::challenge("next")).await;
+        assert!(challenge.is_ok());
+        assert_eq!(state.credentials.password(42).await.unwrap(), None);
+        assert_eq!(state.credentials.token(42).await.unwrap(), None);
+        assert!(state
+            .account_index
+            .load()
+            .await
+            .unwrap()
+            .accounts
+            .is_empty());
+
+        finish_remote_login_for_test(&state, "next", RemoteLogin::success(42, "token"))
+            .await
+            .unwrap();
+        assert_eq!(
+            state.credentials.password(42).await.unwrap().as_deref(),
+            Some("secret")
+        );
+        assert_eq!(
+            state.credentials.token(42).await.unwrap().as_deref(),
+            Some("token")
+        );
+        let index = state.account_index.load().await.unwrap();
+        let record = index
+            .accounts
+            .iter()
+            .find(|item| item.uid == 42)
+            .expect("最终成功必须写入账号索引");
+        assert!(record.has_saved_password);
+        assert!(record.has_token);
+        assert_eq!(index.last_used_uid, Some(42));
+    }
+
+    /// 验证码登录没有缓存密码时，最终成功仍保存 Token，且不得写入密码。
+    #[tokio::test]
+    async fn code_login_persists_token_without_password() {
+        let (state, _temp) = test_state_with_memory_credentials().await;
+        state
+            .pending_login
+            .insert(
+                "issued",
+                crate::account::pending_login::PendingLogin {
+                    display_account: "a@example.com".into(),
+                    primary_login_type: 2,
+                    password: None,
+                    password_reused: false,
+                },
+            )
+            .await;
+
+        let result =
+            finish_remote_login_for_test(&state, "issued", RemoteLogin::success(42, "token"))
+                .await
+                .unwrap();
+        let LoginResultDto::Success {
+            account, warnings, ..
+        } = result
+        else {
+            panic!("验证码登录成功应返回 Success");
+        };
+        assert_eq!(account.display_account, "a@example.com");
+        assert_eq!(account.login_type, 2);
+        assert!(!account.has_saved_password);
+        assert!(account.is_current);
+        assert!(warnings.is_empty());
+        assert_eq!(
+            state.credentials.token(42).await.unwrap().as_deref(),
+            Some("token")
+        );
+        assert_eq!(state.credentials.password(42).await.unwrap(), None);
+    }
+
+    /// 系统凭据库不可用时登录仍成功，只返回普通用户可理解的警告。
+    #[tokio::test]
+    async fn credential_save_failure_does_not_undo_successful_login() {
+        let (state, _temp) = crate::state::test_state_with_credentials(std::sync::Arc::new(
+            crate::account::credentials::UnavailableCredentialStore,
+        ))
+        .await;
+        seed_pending_password(&state, "issued", "a@example.com", 4, "secret").await;
+
+        let result =
+            finish_remote_login_for_test(&state, "issued", RemoteLogin::success(42, "token"))
+                .await
+                .unwrap();
+        let LoginResultDto::Success {
+            uid,
+            account,
+            warnings,
+            ..
+        } = result
+        else {
+            panic!("凭据保存失败不得撤销已经成功的远端登录");
+        };
+        assert_eq!(uid, "42");
+        assert_eq!(account.uid, "42");
+        assert!(!account.has_saved_password);
+        assert_eq!(warnings, vec!["本次无法安全保存登录信息".to_string()]);
+        assert!(state.auth_session.read().await.is_some());
+    }
+
     /// 已保存密码必须在 Rust 侧解析并写入待登录缓存，且验证响应不得回传密码。
     #[tokio::test]
     async fn saved_password_is_resolved_in_rust_and_never_returned() {
         let (state, _temp) = test_state_with_password(42, "saved-secret").await;
-        let request = VerifyValidationsDto::saved_password(
-            "issued-token",
-            42,
-            "a@example.com",
-            21,
-        );
+        let request = VerifyValidationsDto::saved_password("issued-token", 42, "a@example.com", 21);
         let response = verify_validations_inner(&state, request).await.unwrap();
         let pending = state.pending_login.take("issued-token").await.unwrap();
         assert_eq!(pending.display_account, "a@example.com");
         assert!(pending.password.is_some());
         let body = serde_json::to_string(&response).unwrap();
-        assert!(
-            !body.contains("saved-secret"),
-            "验证响应不得返回已保存密码"
-        );
+        assert!(!body.contains("saved-secret"), "验证响应不得返回已保存密码");
     }
 
     /// 同一待验证项不得同时携带手输密码和已保存密码 UID。
@@ -1027,11 +1380,8 @@ mod tests {
                 },
             )
             .await;
-        let request = VerifyValidationsDto::reuse_login_password(
-            "issued-token",
-            "a***@example.com",
-            21,
-        );
+        let request =
+            VerifyValidationsDto::reuse_login_password("issued-token", "a***@example.com", 21);
         let transport = Err(im_http::openchat_user::OpenChatUserError::Transport(
             im_common::error::AppError::Http("simulated transport failure".into()),
         ));
@@ -1042,7 +1392,14 @@ mod tests {
             matches!(error, AuthCommandError::Other { ref message } if message.contains("HTTP")),
             "传输失败应原样返回，不得伪装成已复用"
         );
-        assert!(!state.pending_login.get("issued-token").await.unwrap().password_reused);
+        assert!(
+            !state
+                .pending_login
+                .get("issued-token")
+                .await
+                .unwrap()
+                .password_reused
+        );
 
         verify_validations_inner_with_http(
             &state,
@@ -1063,7 +1420,14 @@ mod tests {
             ),
             "成功验证后第二次复用必须映射为 PasswordAlreadyReused"
         );
-        assert!(state.pending_login.get("issued-token").await.unwrap().password_reused);
+        assert!(
+            state
+                .pending_login
+                .get("issued-token")
+                .await
+                .unwrap()
+                .password_reused
+        );
     }
 
     /// `reuseLoginPassword` 只能成功消费一次，第二次必须返回已复用错误。
@@ -1082,12 +1446,11 @@ mod tests {
                 },
             )
             .await;
-        let request = VerifyValidationsDto::reuse_login_password(
-            "issued-token",
-            "a***@example.com",
-            21,
-        );
-        verify_validations_inner(&state, request.clone()).await.unwrap();
+        let request =
+            VerifyValidationsDto::reuse_login_password("issued-token", "a***@example.com", 21);
+        verify_validations_inner(&state, request.clone())
+            .await
+            .unwrap();
         let error = verify_validations_inner(&state, request).await.unwrap_err();
         assert!(
             matches!(
@@ -1163,11 +1526,25 @@ mod tests {
         let dto = LoginResultDto::Success {
             uid: i64::MAX.to_string(),
             groups: Vec::new(),
+            account: AccountSummaryDto {
+                uid: i64::MAX.to_string(),
+                display_account: "a@example.com".to_string(),
+                login_type: 4,
+                has_saved_password: true,
+                is_current: true,
+            },
+            warnings: Vec::new(),
         };
 
         let value = serde_json::to_value(dto).unwrap();
         assert_eq!(value["status"], "success");
         assert_eq!(value["uid"], i64::MAX.to_string());
+        assert_eq!(value["warnings"], serde_json::json!([]));
+        assert_eq!(value["account"]["uid"], i64::MAX.to_string());
+        assert_eq!(value["account"]["displayAccount"], "a@example.com");
+        assert_eq!(value["account"]["loginType"], 4);
+        assert_eq!(value["account"]["hasSavedPassword"], true);
+        assert_eq!(value["account"]["isCurrent"], true);
     }
 
     #[test]
@@ -1449,6 +1826,28 @@ mod tests {
             error,
             crate::account::AccountError::NoActiveDatabase
         ));
+    }
+
+    /// 打开后同步失败时，不得关闭已经被其他账号占用的活动库。
+    #[tokio::test]
+    async fn failed_group_sync_after_open_does_not_close_other_account_database() {
+        let (state, _temp) = crate::state::test_state_with_account_foundation().await;
+        state.account_db.open(42).await.unwrap();
+        state.account_db.open(84).await.unwrap();
+
+        let result: Result<(), String> =
+            finish_login_after_opening_account(&state, 0, 42, "session-token".to_string(), async {
+                Err("group sync failed".to_string())
+            })
+            .await;
+
+        assert_eq!(result.unwrap_err(), "group sync failed");
+        assert_eq!(*state.auth_session.read().await, None);
+        state
+            .account_db
+            .require(84)
+            .await
+            .expect("其他账号的活动库不得被失败的旧登录关闭");
     }
 
     #[tokio::test]

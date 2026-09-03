@@ -759,17 +759,14 @@ pub struct AppState {
     #[allow(dead_code)]
     pub paths: crate::account::AppPaths,
     /// 非敏感账号索引；不保存 Token 或密码。
-    #[allow(dead_code)]
     pub account_index: Arc<crate::account::AccountIndexStore>,
     /// 系统凭据库；Token 与密码只经此接口读写。
-    #[allow(dead_code)]
     pub credentials: Arc<dyn crate::account::CredentialStore>,
     /// 当前活动账号的 SQLite 管理器；未登录时没有打开的业务库。
     pub account_db: Arc<crate::account::AccountDatabaseManager>,
     /// 旧单库一次性迁移器；仅在登录成功且已知 UID 后调用。
     pub legacy_migrator: Arc<crate::account::LegacyDatabaseMigrator>,
     /// 尚未完成二次验证的短期登录秘密缓存；仅驻留内存，不落盘。
-    #[allow(dead_code)]
     pub pending_login: Arc<crate::account::PendingLoginCache>,
     /// 保护当前已安装聊天客户端及其尝试所有者。
     pub chat_client: Arc<ClientSlot>,
@@ -825,9 +822,22 @@ impl AppState {
 /// 返回的 [`tempfile::TempDir`] 必须由调用方持有到测试结束，避免数据根目录被提前删除。
 /// 凭据走内存替身；该状态不注入 Tauri 句柄，也不预置认证会话或监控群组。
 pub(crate) async fn test_state_with_account_foundation() -> (AppState, tempfile::TempDir) {
+    test_state_with_credentials(Arc::new(
+        crate::account::credentials::MemoryCredentialStore::default(),
+    ))
+    .await
+}
+
+#[cfg(test)]
+/// 使用指定凭据仓储构造账号基础设施测试状态。
+///
+/// 调用方必须持有返回的临时目录，直到测试结束。该状态不注入 Tauri 句柄。
+pub(crate) async fn test_state_with_credentials(
+    credentials: Arc<dyn crate::account::CredentialStore>,
+) -> (AppState, tempfile::TempDir) {
     use crate::account::{
-        credentials::MemoryCredentialStore, AccountDatabaseManager, AccountIndexStore, AppPaths,
-        LegacyDatabaseMigrator, PendingLoginCache,
+        AccountDatabaseManager, AccountIndexStore, AppPaths, LegacyDatabaseMigrator,
+        PendingLoginCache,
     };
 
     let temp = tempfile::tempdir().expect("创建账号测试临时目录");
@@ -842,7 +852,7 @@ pub(crate) async fn test_state_with_account_foundation() -> (AppState, tempfile:
         config: Arc::new(tokio::sync::RwLock::new(config)),
         paths: paths.clone(),
         account_index: Arc::new(AccountIndexStore::new(paths.index_file())),
-        credentials: Arc::new(MemoryCredentialStore::default()),
+        credentials,
         account_db: Arc::new(AccountDatabaseManager::new(paths.clone())),
         legacy_migrator: Arc::new(LegacyDatabaseMigrator::new(paths)),
         pending_login: Arc::new(PendingLoginCache::default()),

@@ -127,6 +127,20 @@ impl AccountDatabaseManager {
             previous.store.pool.close().await;
         }
     }
+
+    /// 仅当活动库属于 `uid` 时关闭连接池；其他账号已占用活动库时不关闭。
+    ///
+    /// 登录失败收尾必须使用本方法，避免并发登录或账号切换已经打开另一 UID 后被误关。
+    pub async fn close_if_uid(&self, uid: i64) {
+        let _switch = self.switch_lock.lock().await;
+        let mut active = self.active.write().await;
+        if active.as_ref().is_some_and(|database| database.uid == uid) {
+            if let Some(previous) = active.take() {
+                drop(active);
+                previous.store.pool.close().await;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -230,6 +244,27 @@ mod tests {
         assert!(std::sync::Arc::ptr_eq(&first, &second));
         assert_eq!(first.groups.list_all().await.unwrap().len(), 1);
         assert_eq!(first.groups.list_all().await.unwrap()[0].name, "账号一");
+    }
+
+    /// 活动库已切到其他 UID 时，`close_if_uid` 不得关闭当前库。
+    #[tokio::test]
+    async fn close_if_uid_leaves_other_active_database_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = AccountDatabaseManager::new(AppPaths::new(temp.path().to_path_buf()));
+        manager.open(42).await.unwrap();
+        manager.open(84).await.unwrap();
+
+        manager.close_if_uid(42).await;
+        manager
+            .require(84)
+            .await
+            .expect("关闭旧 UID 不得影响当前活动库");
+        manager.close_if_uid(84).await;
+        let error = match manager.active().await {
+            Err(error) => error,
+            Ok(_) => panic!("匹配 UID 时必须关闭活动库"),
+        };
+        assert!(matches!(error, AccountError::NoActiveDatabase));
     }
 
     /// 未打开任何账号数据库时，活动句柄与按 UID 索取都必须拒绝访问。

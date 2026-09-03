@@ -235,6 +235,20 @@ export interface LoginRequest {
   credentials?: string
 }
 
+/** 前端可见的账号摘要；字段名与 Rust `AccountSummaryDto` 的 camelCase serde 输出一致。 */
+export interface AccountSummary {
+  /** 用户 ID 的十进制字符串表示。 */
+  uid: string
+  /** 用户输入的邮箱或手机号，仅用于展示和回填。 */
+  displayAccount: string
+  /** 首次主登录使用的登录方式标识。 */
+  loginType: number
+  /** 系统凭据库是否已保存该账号登录密码。 */
+  hasSavedPassword: boolean
+  /** 该账号是否为当前已发布会话对应的账号。 */
+  isCurrent: boolean
+}
+
 /** 登录 IPC 的带判别字段结果；字段名与 Rust `LoginResultDto` 的 camelCase serde 输出一致。 */
 export type LoginResult =
   | {
@@ -244,6 +258,10 @@ export type LoginResult =
       uid: string
       /** 本次远程快照同步后得到的本地群组列表。 */
       groups: GroupDto[]
+      /** 当前账号摘要；旧前端在字段尚未接入前可忽略。 */
+      account?: AccountSummary
+      /** 非阻塞提示，例如本次无法安全保存登录信息。 */
+      warnings?: string[]
     }
   | {
       /** 表示服务端要求继续校验，本地认证会话尚未发布。 */
