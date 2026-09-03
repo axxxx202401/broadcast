@@ -185,6 +185,56 @@ mod tests {
         ));
     }
 
+    /// 未调用 close 直接打开另一 UID 时，必须切到空库并禁止旧会话继续 require 原账号。
+    #[tokio::test]
+    async fn open_switches_active_database_without_explicit_close() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = AccountDatabaseManager::new(AppPaths::new(temp.path().to_path_buf()));
+        let first = manager.open(42).await.unwrap();
+        first
+            .groups
+            .insert_or_update(&group_row(7, "账号一"))
+            .await
+            .unwrap();
+
+        let second = manager.open(84).await.unwrap();
+        assert!(second.groups.list_all().await.unwrap().is_empty());
+
+        let error = match manager.require(42).await {
+            Err(error) => error,
+            Ok(_) => panic!("未关闭即切换后，旧会话不得取得新账号数据库"),
+        };
+        assert!(matches!(
+            error,
+            AccountError::ActiveUidMismatch {
+                active: 84,
+                requested: 42
+            }
+        ));
+        assert!(
+            first.groups.list_all().await.is_err(),
+            "切换后旧连接池应已关闭，不能继续查询上一账号"
+        );
+    }
+
+    /// 同一 UID 再次打开必须复用原 Arc，且第一次拿到的句柄仍能读到已写入群组。
+    #[tokio::test]
+    async fn open_reuses_store_for_the_same_uid() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = AccountDatabaseManager::new(AppPaths::new(temp.path().to_path_buf()));
+        let first = manager.open(42).await.unwrap();
+        first
+            .groups
+            .insert_or_update(&group_row(7, "账号一"))
+            .await
+            .unwrap();
+
+        let second = manager.open(42).await.unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert_eq!(first.groups.list_all().await.unwrap().len(), 1);
+        assert_eq!(first.groups.list_all().await.unwrap()[0].name, "账号一");
+    }
+
     /// 未打开任何账号数据库时，活动句柄与按 UID 索取都必须拒绝访问。
     #[tokio::test]
     async fn active_database_requires_authenticated_account() {
