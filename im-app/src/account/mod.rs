@@ -19,11 +19,15 @@ pub mod database;
 /// 旧单库一次性迁移。
 pub mod migration;
 
+/// 尚未完成二次验证的短期登录秘密缓存。
+pub mod pending_login;
+
 pub use credentials::{CredentialStore, KeyringCredentialStore};
 pub use database::AccountDatabaseManager;
 pub use index::AccountIndexStore;
 pub use migration::LegacyDatabaseMigrator;
 pub use paths::AppPaths;
+pub use pending_login::PendingLoginCache;
 
 /// 账号持久化与会话切换过程中可能出现的统一错误。
 ///
@@ -59,11 +63,15 @@ pub enum AccountError {
     #[error("账号数据库操作失败: {0}")]
     Database(#[from] sqlx::Error),
     /// 登录流程缺少尚待完成的登录上下文。
-    #[allow(dead_code)]
+    ///
+    /// 变体已由 [`pending_login`] 构造；生产命令接入前二进制目标仍视为未使用。
+    #[cfg_attr(not(test), allow(dead_code))]
     #[error("不存在待完成的登录")]
     MissingPendingLogin,
     /// 登录流程试图再次消费已经使用过的密码。
-    #[allow(dead_code)]
+    ///
+    /// 变体已由 [`pending_login`] 构造；生产命令接入前二进制目标仍视为未使用。
+    #[cfg_attr(not(test), allow(dead_code))]
     #[error("登录密码已被使用，禁止重复消费")]
     PasswordAlreadyReused,
 }

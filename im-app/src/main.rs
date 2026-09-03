@@ -48,6 +48,7 @@ async fn main() {
                 Arc::new(account::KeyringCredentialStore);
             let account_db = Arc::new(account::AccountDatabaseManager::new(paths.clone()));
             let legacy_migrator = Arc::new(account::LegacyDatabaseMigrator::new(paths.clone()));
+            let pending_login = Arc::new(account::PendingLoginCache::default());
             let http = Arc::new(im_http::http_clients::AppHttpClients::new(&config)?);
             // AppState 按配置、账号服务、会话与连接协作组件的依赖顺序组装；
             // Arc 让 Tauri 命令及其后台任务共享同一份客户端、锁和协调器。
@@ -58,6 +59,7 @@ async fn main() {
                 credentials,
                 account_db,
                 legacy_migrator,
+                pending_login,
                 chat_client: Arc::new(tokio::sync::Mutex::new(None)),
                 auth_session: Arc::new(tokio::sync::RwLock::new(None)),
                 monitoring_groups: Arc::new(tokio::sync::RwLock::new(

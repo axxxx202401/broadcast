@@ -768,6 +768,9 @@ pub struct AppState {
     pub account_db: Arc<crate::account::AccountDatabaseManager>,
     /// 旧单库一次性迁移器；仅在登录成功且已知 UID 后调用。
     pub legacy_migrator: Arc<crate::account::LegacyDatabaseMigrator>,
+    /// 尚未完成二次验证的短期登录秘密缓存；仅驻留内存，不落盘。
+    #[allow(dead_code)]
+    pub pending_login: Arc<crate::account::PendingLoginCache>,
     /// 保护当前已安装聊天客户端及其尝试所有者。
     pub chat_client: Arc<ClientSlot>,
     /// 保护从登录成功到登出之间的可选认证会话。
@@ -824,7 +827,7 @@ impl AppState {
 pub(crate) async fn test_state_with_account_foundation() -> (AppState, tempfile::TempDir) {
     use crate::account::{
         credentials::MemoryCredentialStore, AccountDatabaseManager, AccountIndexStore, AppPaths,
-        LegacyDatabaseMigrator,
+        LegacyDatabaseMigrator, PendingLoginCache,
     };
 
     let temp = tempfile::tempdir().expect("创建账号测试临时目录");
@@ -842,6 +845,7 @@ pub(crate) async fn test_state_with_account_foundation() -> (AppState, tempfile:
         credentials: Arc::new(MemoryCredentialStore::default()),
         account_db: Arc::new(AccountDatabaseManager::new(paths.clone())),
         legacy_migrator: Arc::new(LegacyDatabaseMigrator::new(paths)),
+        pending_login: Arc::new(PendingLoginCache::default()),
         chat_client: Arc::new(tokio::sync::Mutex::new(None)),
         auth_session: Arc::new(tokio::sync::RwLock::new(None)),
         monitoring_groups: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
