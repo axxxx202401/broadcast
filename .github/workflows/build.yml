@@ -56,6 +56,33 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          PROTOC_VERSION="29.3"
+          curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o /tmp/protoc.zip
+          unzip -o /tmp/protoc.zip -d /tmp/protoc
+          rm /tmp/protoc.zip
+          echo "/tmp/protoc/bin" >> "$GITHUB_PATH"
+
+      - name: Install protoc (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          PROTOC_VERSION="29.3"
+          curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-win64.zip" -o /tmp/protoc.zip
+          unzip -o /tmp/protoc.zip -d protoc
+          rm /tmp/protoc.zip
+          echo "PROTOC=C:/tmp/protoc/bin/protoc.exe" >> "$GITHUB_ENV"
+
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew install protobuf
+          echo "PROTOC=/opt/homebrew/bin/protoc" >> "$GITHUB_ENV"
+
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         shell: bash
@@ -74,29 +101,6 @@ jobs:
             patchelf \
             libfuse2 \
             xdg-utils
-          # protoc 未预装在 ubuntu-22.04 runner 上
-          PROTOC_VERSION="29.3"
-          curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o /tmp/protoc.zip
-          unzip /tmp/protoc.zip -d /usr/local
-          rm /tmp/protoc.zip
-
-      - name: Install Windows system dependencies
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          # protoc 未预装在 windows-latest runner 上
-          PROTOC_VERSION="29.3"
-          curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-win64.zip" -o /tmp/protoc.zip
-          cd /tmp && unzip protoc.zip -d protoc
-          echo "/tmp/protoc/bin" >> "$GITHUB_PATH"
-
-      - name: Install macOS system dependencies
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          brew install protobuf
-          sudo xcode-select --switch /Library/Developer/CommandLineTools
-          sudo xcodebuild -license accept
 
       - name: Install Node.js
         uses: actions/setup-node@v4
