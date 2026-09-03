@@ -357,11 +357,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        state
-            .account_index
-            .touch_last_used(1)
-            .await
-            .unwrap();
+        state.account_index.touch_last_used(1).await.unwrap();
         *state.auth_session.write().await = Some(AuthSession {
             uid: 1,
             token: "token-1".into(),
@@ -373,7 +369,11 @@ mod tests {
         let index = state.account_index.load().await.unwrap();
         assert_eq!(index.last_used_uid, Some(2));
         assert_eq!(
-            index.accounts.iter().map(|item| item.uid).collect::<Vec<_>>(),
+            index
+                .accounts
+                .iter()
+                .map(|item| item.uid)
+                .collect::<Vec<_>>(),
             vec![3, 2],
             "列表写入顺序仍以 C 在前，不得把 next_uid 误当成 accounts[0]"
         );
