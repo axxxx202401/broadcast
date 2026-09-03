@@ -25,28 +25,29 @@ on:
 permissions:
   contents: read
 
-# 将 env 提高到顶层，解决 Job 级别读取不到 secrets 的问题
-env:
-  IM_OPENCHAT_USER_URL: ${{ secrets.IM_OPENCHAT_USER_URL }}
-  IM_BIZ_URL: ${{ secrets.IM_BIZ_URL }}
-  IM_CHAT_HOST: ${{ secrets.IM_CHAT_HOST }}
-  IM_CHAT_PORT: ${{ secrets.IM_CHAT_PORT }}
-  IM_VERSION_SECRET_NAME: ${{ secrets.IM_VERSION_SECRET_NAME }}
-  IM_BODY_AES_KEY: ${{ secrets.IM_BODY_AES_KEY }}
-  IM_HEADER_AES_KEY: ${{ secrets.IM_HEADER_AES_KEY }}
-  IM_APP_VER: ${{ secrets.IM_APP_VER }}
-  IM_PACKAGE_CODE: ${{ secrets.IM_PACKAGE_CODE }}
-  IM_PLAT: ${{ secrets.IM_PLAT }}
-  IM_LANGUAGE: ${{ secrets.IM_LANGUAGE }}
-  IM_SYS_MODEL: ${{ secrets.IM_SYS_MODEL }}
-  VITE_GT4_CAPTCHA_ID: ${{ secrets.VITE_GT4_CAPTCHA_ID }}
-
+# Environment Secrets 只在 Job 声明 environment 后可用；workflow 顶层 env
+# 只能看到仓库级 Secrets，读不到 test/production Environment 里的配置。
 jobs:
   # ================= Windows Build =================
   build-windows:
     name: ${{ inputs.environment }} / windows-x86_64
     runs-on: windows-latest
     if: inputs.platform == 'all' || inputs.platform == 'windows'
+    environment: ${{ inputs.environment }}
+    env:
+      IM_OPENCHAT_USER_URL: ${{ secrets.IM_OPENCHAT_USER_URL }}
+      IM_BIZ_URL: ${{ secrets.IM_BIZ_URL }}
+      IM_CHAT_HOST: ${{ secrets.IM_CHAT_HOST }}
+      IM_CHAT_PORT: ${{ secrets.IM_CHAT_PORT }}
+      IM_VERSION_SECRET_NAME: ${{ secrets.IM_VERSION_SECRET_NAME }}
+      IM_BODY_AES_KEY: ${{ secrets.IM_BODY_AES_KEY }}
+      IM_HEADER_AES_KEY: ${{ secrets.IM_HEADER_AES_KEY }}
+      IM_APP_VER: ${{ secrets.IM_APP_VER }}
+      IM_PACKAGE_CODE: ${{ secrets.IM_PACKAGE_CODE }}
+      IM_PLAT: ${{ secrets.IM_PLAT }}
+      IM_LANGUAGE: ${{ secrets.IM_LANGUAGE }}
+      IM_SYS_MODEL: ${{ secrets.IM_SYS_MODEL }}
+      VITE_GT4_CAPTCHA_ID: ${{ secrets.VITE_GT4_CAPTCHA_ID }}
 
     steps:
       - name: Check out source
@@ -57,6 +58,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           version: "29.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -102,6 +104,7 @@ jobs:
     name: ${{ inputs.environment }} / ${{ matrix.label }}
     runs-on: macos-latest
     if: inputs.platform == 'all' || inputs.platform == 'macos'
+    environment: ${{ inputs.environment }}
     strategy:
       fail-fast: false
       matrix:
@@ -110,6 +113,20 @@ jobs:
             target: x86_64-apple-darwin
           - label: macos-arm64
             target: aarch64-apple-darwin
+    env:
+      IM_OPENCHAT_USER_URL: ${{ secrets.IM_OPENCHAT_USER_URL }}
+      IM_BIZ_URL: ${{ secrets.IM_BIZ_URL }}
+      IM_CHAT_HOST: ${{ secrets.IM_CHAT_HOST }}
+      IM_CHAT_PORT: ${{ secrets.IM_CHAT_PORT }}
+      IM_VERSION_SECRET_NAME: ${{ secrets.IM_VERSION_SECRET_NAME }}
+      IM_BODY_AES_KEY: ${{ secrets.IM_BODY_AES_KEY }}
+      IM_HEADER_AES_KEY: ${{ secrets.IM_HEADER_AES_KEY }}
+      IM_APP_VER: ${{ secrets.IM_APP_VER }}
+      IM_PACKAGE_CODE: ${{ secrets.IM_PACKAGE_CODE }}
+      IM_PLAT: ${{ secrets.IM_PLAT }}
+      IM_LANGUAGE: ${{ secrets.IM_LANGUAGE }}
+      IM_SYS_MODEL: ${{ secrets.IM_SYS_MODEL }}
+      VITE_GT4_CAPTCHA_ID: ${{ secrets.VITE_GT4_CAPTCHA_ID }}
 
     steps:
       - name: Check out source
@@ -119,6 +136,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           version: "29.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -164,6 +182,21 @@ jobs:
     name: ${{ inputs.environment }} / linux-x86_64
     runs-on: ubuntu-22.04
     if: inputs.platform == 'all' || inputs.platform == 'linux'
+    environment: ${{ inputs.environment }}
+    env:
+      IM_OPENCHAT_USER_URL: ${{ secrets.IM_OPENCHAT_USER_URL }}
+      IM_BIZ_URL: ${{ secrets.IM_BIZ_URL }}
+      IM_CHAT_HOST: ${{ secrets.IM_CHAT_HOST }}
+      IM_CHAT_PORT: ${{ secrets.IM_CHAT_PORT }}
+      IM_VERSION_SECRET_NAME: ${{ secrets.IM_VERSION_SECRET_NAME }}
+      IM_BODY_AES_KEY: ${{ secrets.IM_BODY_AES_KEY }}
+      IM_HEADER_AES_KEY: ${{ secrets.IM_HEADER_AES_KEY }}
+      IM_APP_VER: ${{ secrets.IM_APP_VER }}
+      IM_PACKAGE_CODE: ${{ secrets.IM_PACKAGE_CODE }}
+      IM_PLAT: ${{ secrets.IM_PLAT }}
+      IM_LANGUAGE: ${{ secrets.IM_LANGUAGE }}
+      IM_SYS_MODEL: ${{ secrets.IM_SYS_MODEL }}
+      VITE_GT4_CAPTCHA_ID: ${{ secrets.VITE_GT4_CAPTCHA_ID }}
 
     steps:
       - name: Check out source
@@ -173,6 +206,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           version: "29.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Linux system dependencies
         shell: bash
