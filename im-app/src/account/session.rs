@@ -4,11 +4,16 @@
 //! Token 由用户详情接口校验：业务拒绝或本地校验失败会要求重新登录，传输失败则保留 Token 供重试。
 //! 成功路径复用登录收尾的 generation 门禁，但不得再次写入密码。
 
+use std::sync::Arc;
 use std::{future::Future, pin::Pin};
 
 use crate::account::index::AccountRecord;
-use crate::commands::auth::{AccountSummaryDto, AuthCommandError, CREDENTIAL_SAVE_WARNING};
+use crate::commands::auth::{
+    ensure_login_generation_current, AccountSummaryDto, AuthCommandError,
+    CREDENTIAL_LOGOUT_UNCONFIRMED, CREDENTIAL_SAVE_WARNING,
+};
 use crate::state::AppState;
+use im_store::SqliteStore;
 
 /// 启动恢复或切换账号后返回给前端的会话结果。
 ///
@@ -110,12 +115,19 @@ pub async fn restore_uid(
 /// 没有最后账号或索引为空时返回 [`RestoreSessionDto::NoAccount`]。
 /// 最后账号存在但已退出（`has_token == false`）时直接返回
 /// [`RestoreSessionDto::NeedsLogin`]，不得读取或校验凭据库中可能残留的 Token。
+/// 若该账号刚经历一次未能确认的退出（索引改写失败且 Token 可能仍在），
+/// 返回错误而不是 Success，避免前端把它当成可自动进入主界面。
 pub async fn restore_session(state: &AppState) -> Result<RestoreSessionDto, AuthCommandError> {
     let generation = begin_restore_transition(state).await?;
     match last_restore_target(state).await? {
         LastRestoreTarget::NoAccount => Ok(RestoreSessionDto::NoAccount),
         LastRestoreTarget::NeedsLogin(record) => Ok(needs_login(&record)),
-        LastRestoreTarget::Restore(uid) => restore_uid(state, generation, uid).await,
+        LastRestoreTarget::Restore(uid) => {
+            if state.account_index.has_unconfirmed_logout(uid) {
+                return Err(CREDENTIAL_LOGOUT_UNCONFIRMED.into());
+            }
+            restore_uid(state, generation, uid).await
+        }
     }
 }
 
@@ -307,9 +319,11 @@ async fn delete_rejected_token(state: &AppState, uid: i64) {
 
 /// 在 Token 已校验通过后打开账号库、发布会话并刷新最后使用记录。
 ///
-/// 打库前先确认当前 generation 仍有效。群组同步或会话发布失败时，
+/// 打库前先确认当前 generation 仍有效；迁移后再核一次，避免慢迁移窗口内用过期
+/// 代际替换已经打开的较新账号库。群组同步或会话发布失败时，
 /// [`crate::commands::auth::finish_login_after_opening_account`] 会按打开代际关闭活动库。
-/// 本函数不再无条件 `close`。成功后不写入密码。
+/// 本函数不再无条件 `close`。成功发布后必须再次确认代际与会话仍属于本 UID，
+/// 才允许写入 `last_used` 或启动自动连接。成功后不写入密码。
 async fn finish_successful_restore(
     state: &AppState,
     generation: u64,
@@ -326,8 +340,7 @@ async fn finish_successful_restore(
         return Err("Connection generation changed before opening account database".into());
     }
 
-    state.legacy_migrator.migrate_if_needed(uid).await?;
-    let db = state.account_db.open(uid, generation).await?;
+    let db = open_restored_account(state, uid, generation).await?;
     let remote_groups = match group_fetch(token).await {
         Ok(groups) => groups,
         Err(error) => {
@@ -344,15 +357,7 @@ async fn finish_successful_restore(
     )
     .await?;
 
-    let mut warnings = Vec::new();
-    if let Err(error) = state.account_index.touch_last_used(uid).await {
-        tracing::warn!(error = %error, uid, "failed to touch last used account");
-        warnings.push(CREDENTIAL_SAVE_WARNING.to_string());
-    }
-
-    if state.app_handle.is_some() {
-        crate::commands::chat::start_automatic_connection(state, generation);
-    }
+    let warnings = persist_restore_if_current(state, generation, uid).await?;
 
     Ok(RestoreSessionDto::Success {
         account: AccountSummaryDto {
@@ -370,11 +375,54 @@ async fn finish_successful_restore(
     })
 }
 
-/// 开始一次恢复过渡，并清理旧运行时状态。
+/// 迁移旧库后再次核对代际，仍有效才打开账号库。
+///
+/// 本函数不再重复迁移前的代际检查，便于测试单独覆盖“迁移完成后、打开前”的窗口：
+/// 较新账号已经打开且协调器已推进时，过期恢复不得替换活动连接池。
+pub(crate) async fn open_restored_account(
+    state: &AppState,
+    uid: i64,
+    generation: u64,
+) -> Result<Arc<SqliteStore>, AuthCommandError> {
+    state.legacy_migrator.migrate_if_needed(uid).await?;
+    if !state
+        .connection_coordinator
+        .is_generation_current(generation)
+        .await
+    {
+        return Err("Connection generation changed before opening account database".into());
+    }
+    Ok(state.account_db.open(uid, generation).await?)
+}
+
+/// 会话已发布后，仅在代际与会话仍属于本 UID 时更新最后使用记录并启动自动连接。
+///
+/// 过期恢复不得覆盖较新账号已经写入的 `last_used`，也不得为过期会话启动连接。
+/// 返回错误时不撤销已经发布的较新会话。
+pub(crate) async fn persist_restore_if_current(
+    state: &AppState,
+    generation: u64,
+    uid: i64,
+) -> Result<Vec<String>, AuthCommandError> {
+    ensure_login_generation_current(state, generation, uid).await?;
+
+    let mut warnings = Vec::new();
+    if let Err(error) = state.account_index.touch_last_used(uid).await {
+        tracing::warn!(error = %error, uid, "failed to touch last used account");
+        warnings.push(CREDENTIAL_SAVE_WARNING.to_string());
+    }
+
+    if state.app_handle.is_some() {
+        crate::commands::chat::start_automatic_connection(state, generation);
+    }
+    Ok(warnings)
+}
+
+/// 开始一次恢复或切换过渡，并清理旧运行时状态。
 ///
 /// 启动恢复与账号切换一样，都必须先推进 generation，再清理消息密钥、待登录缓存和旧库，
 /// 让晚到的旧恢复结果无法借用较新的代际完成发布。
-async fn begin_restore_transition(state: &AppState) -> Result<u64, AuthCommandError> {
+pub(crate) async fn begin_restore_transition(state: &AppState) -> Result<u64, AuthCommandError> {
     let generation = crate::commands::auth::begin_auth_transition(
         &state.connection_coordinator,
         &state.chat_client,
@@ -438,8 +486,9 @@ impl UserDetailOutcome {
 #[cfg(test)]
 mod tests {
     use super::{
-        begin_restore_transition, restore_session, restore_uid_with_injected_group_fetch,
-        restore_uid_with_user_detail, RestoreSessionDto, UserDetailOutcome,
+        begin_restore_transition, open_restored_account, persist_restore_if_current,
+        restore_session, restore_uid_with_injected_group_fetch, restore_uid_with_user_detail,
+        RestoreSessionDto, UserDetailOutcome,
     };
 
     /// 为恢复测试准备带账号索引和 Token 的状态。
@@ -712,5 +761,96 @@ mod tests {
         assert!(!record.has_token);
         assert!(state.credentials.token(42).await.unwrap().is_some());
         assert!(state.auth_session.read().await.is_none());
+    }
+
+    /// 较新会话已经把 last_used 写成 84 后，过期恢复不得再 touch 回 42。
+    #[tokio::test]
+    async fn stale_restore_does_not_overwrite_newer_last_used() {
+        let (state, _temp) = crate::state::test_state_with_account_foundation().await;
+        seed_restore_account(&state, 42, "a@example.com", 4, true, true, true).await;
+        seed_restore_account(&state, 84, "b@example.com", 4, true, true, true).await;
+
+        let stale_generation = begin_restore_transition(&state).await.unwrap();
+        restore_uid_with_user_detail(
+            &state,
+            stale_generation,
+            42,
+            move |_token| async move { UserDetailOutcome::Success.into_result() },
+            Some(Vec::new()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            state.account_index.load().await.unwrap().last_used_uid,
+            Some(42)
+        );
+
+        let newer_generation = begin_restore_transition(&state).await.unwrap();
+        restore_uid_with_user_detail(
+            &state,
+            newer_generation,
+            84,
+            move |_token| async move { UserDetailOutcome::Success.into_result() },
+            Some(Vec::new()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            state.account_index.load().await.unwrap().last_used_uid,
+            Some(84)
+        );
+        assert_eq!(
+            state
+                .auth_session
+                .read()
+                .await
+                .as_ref()
+                .map(|session| session.uid),
+            Some(84)
+        );
+
+        let result = persist_restore_if_current(&state, stale_generation, 42).await;
+        assert!(result.is_err(), "过期恢复在较新会话发布后不得继续落盘");
+        assert_eq!(
+            state.account_index.load().await.unwrap().last_used_uid,
+            Some(84),
+            "过期 touch_last_used 不得覆盖较新账号"
+        );
+        assert_eq!(
+            state
+                .auth_session
+                .read()
+                .await
+                .as_ref()
+                .map(|session| session.uid),
+            Some(84),
+            "过期恢复失败不得撤销已经发布的较新会话"
+        );
+    }
+
+    /// 迁移完成后、打开前若代际已过期，不得替换已经打开的另一账号库。
+    #[tokio::test]
+    async fn stale_open_restored_account_does_not_replace_already_open_account_database() {
+        let (state, _temp) = crate::state::test_state_with_account_foundation().await;
+        state.account_db.open(99, 0).await.unwrap();
+        assert!(state.account_db.require(99).await.is_ok());
+
+        crate::commands::auth::begin_auth_transition(
+            &state.connection_coordinator,
+            &state.chat_client,
+            &state.auth_session,
+            &state.monitoring_groups,
+            &state.connected,
+            None,
+        )
+        .await
+        .unwrap();
+        let result = open_restored_account(&state, 42, 0).await;
+        assert!(result.is_err(), "过期代际在迁移后仍不得打开账号库");
+        state
+            .account_db
+            .require(99)
+            .await
+            .expect("过期恢复不得替换已经打开的 UID 99 数据库");
     }
 }

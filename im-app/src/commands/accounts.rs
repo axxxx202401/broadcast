@@ -6,11 +6,10 @@
 use tauri::State;
 
 use crate::account::session::{
-    restore_session as restore_session_inner, restore_uid, RestoreSessionDto,
+    begin_restore_transition, restore_session as restore_session_inner, restore_uid,
+    RestoreSessionDto,
 };
-use crate::commands::auth::{
-    begin_auth_transition, AccountSummaryDto, AuthCommandError, CREDENTIAL_CLEAR_WARNING,
-};
+use crate::commands::auth::{AccountSummaryDto, AuthCommandError, CREDENTIAL_CLEAR_WARNING};
 use crate::commands::parse_i64_id;
 use crate::state::AppState;
 
@@ -102,21 +101,9 @@ pub(crate) async fn switch_account_inner(
     restore_uid(state, generation, uid).await
 }
 
-/// 开始账号切换：推进 generation，清空消息密钥和待登录缓存，并关闭旧库。
+/// 开始账号切换：与启动恢复共用同一套代际推进和运行时清理。
 pub(crate) async fn prepare_account_switch(state: &AppState) -> Result<u64, AuthCommandError> {
-    let generation = begin_auth_transition(
-        &state.connection_coordinator,
-        &state.chat_client,
-        &state.auth_session,
-        &state.monitoring_groups,
-        &state.connected,
-        state.app_handle.as_ref(),
-    )
-    .await?;
-    state.message_crypto.clear().await;
-    state.pending_login.clear().await;
-    state.account_db.close().await;
-    Ok(generation)
+    begin_restore_transition(state).await
 }
 
 /// 删除账号索引与凭据；若该 UID 是当前会话则先清理运行时。
@@ -408,6 +395,57 @@ mod tests {
         );
     }
 
+    /// 索引无法标记退出且 Token 删除也失败时，不得报告干净退出，也不得自动恢复进主界面。
+    #[tokio::test]
+    async fn failing_index_mark_logged_out_is_not_clean_logout() {
+        let store = std::sync::Arc::new(
+            crate::account::credentials::FailingDeleteCredentialStore::default(),
+        );
+        let (state, _temp) = crate::state::test_state_with_credentials(store).await;
+        seed_account(&state, 42, "a@example.com", 4, true, Some("token-42")).await;
+        *state.auth_session.write().await = Some(crate::state::AuthSession {
+            uid: 42,
+            token: "token-42".into(),
+            generation: 0,
+        });
+        state.account_index.set_fail_mutates(true);
+
+        let result = logout_inner(&state).await;
+        let error = match result {
+            Err(error) => error,
+            Ok(ok) => panic!("索引未能标记退出时不得返回成功: {ok:?}"),
+        };
+        assert_eq!(error, "本次无法确认已退出，请重试");
+        assert!(
+            !error.contains("无法安全保存"),
+            "退出确认失败不得使用保存失败文案"
+        );
+        assert!(state.auth_session.read().await.is_none());
+        assert!(
+            state.credentials.token(42).await.unwrap().is_some(),
+            "本用例强制 Token 删除失败，残留 Token 仍在"
+        );
+        let record = state
+            .account_index
+            .load()
+            .await
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|item| item.uid == 42)
+            .unwrap();
+        assert!(
+            record.has_token,
+            "索引改写失败后 has_token 必须仍为 true，才能暴露自动恢复风险"
+        );
+
+        let restored = crate::account::session::restore_session(&state).await;
+        assert!(
+            !matches!(restored, Ok(RestoreSessionDto::Success { .. })),
+            "索引未能退出且 Token 仍在时，不得把退出当成可自动登录的 Success"
+        );
+    }
+
     /// 旧切换在较新代际出现后不得借用“当前 generation”发布会话。
     #[tokio::test]
     async fn stale_switch_does_not_publish_after_newer_generation() {
@@ -425,17 +463,22 @@ mod tests {
             Some(99)
         );
 
+        let (prepared_tx, prepared_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         let switch = {
             let state = state.clone();
-            tokio::spawn(async move { switch_account_inner_with_gate(&state, 42).await })
+            tokio::spawn(async move {
+                switch_account_inner_with_gate(&state, 42, prepared_tx, release_rx).await
+            })
         };
 
-        tokio::task::yield_now().await;
+        prepared_rx.await.expect("旧切换必须先完成代际清理");
         let newer_generation = prepare_account_switch(&state).await.unwrap();
         assert!(
             newer_generation >= 2,
             "较新切换必须推进 generation，使旧切换失效"
         );
+        release_tx.send(()).expect("必须放行旧切换继续恢复");
         let result = switch.await.unwrap();
         assert!(result.is_err(), "旧切换在较新代际出现后不得成功发布");
         assert_ne!(
@@ -463,10 +506,12 @@ mod tests {
     async fn switch_account_inner_with_gate(
         state: &crate::state::AppState,
         uid: i64,
+        prepared: tokio::sync::oneshot::Sender<()>,
+        release: tokio::sync::oneshot::Receiver<()>,
     ) -> Result<RestoreSessionDto, crate::commands::auth::AuthCommandError> {
         let generation = prepare_account_switch(state).await?;
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
+        let _ = prepared.send(());
+        release.await.map_err(|_| "stale switch gate dropped")?;
         crate::account::session::restore_uid_with_user_detail(
             state,
             generation,

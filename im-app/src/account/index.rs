@@ -4,9 +4,14 @@
 #![allow(dead_code)]
 
 use super::AccountError;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex as StdMutex;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
+
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 单条账号的非密钥摘要。
 ///
@@ -71,6 +76,11 @@ pub struct AccountIndex {
 pub struct AccountIndexStore {
     path: PathBuf,
     write_lock: Mutex<()>,
+    /// 本次进程内未能确认退出的 UID；启动恢复不得把它们当成可自动登录。
+    unconfirmed_logouts: StdMutex<HashSet<i64>>,
+    /// 测试用：为 `true` 时所有改写立即失败，用于模拟索引无法标记退出。
+    #[cfg(test)]
+    fail_mutates: AtomicBool,
 }
 
 impl AccountIndexStore {
@@ -81,6 +91,9 @@ impl AccountIndexStore {
         Self {
             path: path.into(),
             write_lock: Mutex::new(()),
+            unconfirmed_logouts: StdMutex::new(HashSet::new()),
+            #[cfg(test)]
+            fail_mutates: AtomicBool::new(false),
         }
     }
 
@@ -127,7 +140,9 @@ impl AccountIndexStore {
                 record.has_token = false;
             }
         })
-        .await
+        .await?;
+        self.clear_unconfirmed_logout(uid);
+        Ok(())
     }
 
     /// 读取指定账号是否已标记存在保存密码；未知 UID 视为 `false`。
@@ -195,8 +210,47 @@ impl AccountIndexStore {
         .await
     }
 
+    /// 记录本次进程内未能把指定账号标记为已退出。
+    ///
+    /// 磁盘索引可能仍是 `has_token = true`，因此启动恢复必须先看这个内存标记，
+    /// 不得把“退出失败 + Token 仍在”当成可自动进入主界面。
+    pub(crate) fn note_unconfirmed_logout(&self, uid: i64) {
+        self.unconfirmed_logouts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(uid);
+    }
+
+    /// 索引已成功标记退出后，清除该 UID 的未确认退出标记。
+    pub(crate) fn clear_unconfirmed_logout(&self, uid: i64) {
+        self.unconfirmed_logouts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&uid);
+    }
+
+    /// 指定账号是否仍有一次未确认的退出，恢复路径不得对这类账号返回 Success。
+    pub(crate) fn has_unconfirmed_logout(&self, uid: i64) -> bool {
+        self.unconfirmed_logouts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains(&uid)
+    }
+
+    /// 测试辅助：让后续所有索引改写失败，用于验证退出在无法落盘时不得报告成功。
+    #[cfg(test)]
+    pub(crate) fn set_fail_mutates(&self, fail: bool) {
+        self.fail_mutates.store(fail, Ordering::SeqCst);
+    }
+
     /// 在写锁保护下读取、修改并原子写回索引，避免并发读改写丢失更新。
     async fn mutate(&self, update: impl FnOnce(&mut AccountIndex)) -> Result<(), AccountError> {
+        #[cfg(test)]
+        if self.fail_mutates.load(Ordering::SeqCst) {
+            return Err(AccountError::Io(std::io::Error::other(
+                "simulated account index mutate failure",
+            )));
+        }
         let _guard = self.write_lock.lock().await;
         let mut index = self.load().await?;
         update(&mut index);

@@ -184,6 +184,9 @@ pub(crate) const CREDENTIAL_SAVE_WARNING: &str = "本次无法安全保存登录
 /// 凭据删除失败时返回给前端的普通文案；不得包含 Token 或密码。
 pub(crate) const CREDENTIAL_CLEAR_WARNING: &str = "本次无法完全清除登录信息";
 
+/// 退出时索引未能确认已退出，前端不得把本次操作当成干净退出。
+pub(crate) const CREDENTIAL_LOGOUT_UNCONFIRMED: &str = "本次无法确认已退出，请重试";
+
 /// 退出登录命令返回给前端的结果。
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -241,10 +244,11 @@ async fn existing_saved_password(state: &AppState, uid: i64) -> bool {
     matches!(state.credentials.password(uid).await, Ok(Some(_)))
 }
 
-/// 确认本次登录的 generation 仍持有当前会话，否则不得继续落盘或返回 Success。
+/// 确认本次登录或恢复的 generation 仍持有当前会话，否则不得继续落盘或返回 Success。
 ///
-/// 同时检查协调器代际与 `auth_session` 的 uid/generation，避免过期登录覆盖较新账号。
-async fn ensure_login_generation_current(
+/// 同时检查协调器代际与 `auth_session` 的 uid/generation，避免过期恢复覆盖较新账号的
+/// `last_used` 或启动自动连接。过期时只返回错误，不得撤销已经发布的较新会话。
+pub(crate) async fn ensure_login_generation_current(
     state: &AppState,
     generation: u64,
     uid: i64,
@@ -1159,7 +1163,10 @@ where
 /// `has_saved_password` 与 `last_used_uid`），再清理运行时会话、连接、消息密钥、
 /// 待登录缓存和活动数据库，最后删除系统凭据库中的 Token。删除 Token 失败只返回
 /// 非敏感 warning：索引已经退出，后续 [`crate::account::session::restore_session`]
-/// 不得自动使用残留 Token。没有当前会话时仍清理运行时状态，但不改索引或凭据。
+/// 不得自动使用残留 Token。`mark_logged_out` 失败时仍清理运行时并尝试删除 Token，
+/// 删除后再重试标记；若最终仍无法确认索引已退出，返回
+/// [`CREDENTIAL_LOGOUT_UNCONFIRMED`]，不得使用保存失败警告，也不得报告干净退出。
+/// 没有当前会话时仍清理运行时状态，但不改索引或凭据。
 /// 清理发生在本地，不调用远程登出接口。
 #[tauri::command]
 pub async fn logout(state: State<'_, AppState>) -> Result<LogoutResultDto, String> {
@@ -1175,10 +1182,12 @@ pub(crate) async fn logout_inner(state: &AppState) -> Result<LogoutResultDto, St
         .as_ref()
         .map(|session| session.uid);
     let mut warnings = Vec::new();
+    let mut mark_logged_out_failed = false;
     if let Some(uid) = uid {
         if let Err(error) = state.account_index.mark_logged_out(uid).await {
             tracing::warn!(error = %error, uid, "failed to mark account logged out");
-            warnings.push(CREDENTIAL_SAVE_WARNING.to_string());
+            mark_logged_out_failed = true;
+            state.account_index.note_unconfirmed_logout(uid);
         }
     }
 
@@ -1200,6 +1209,14 @@ pub(crate) async fn logout_inner(state: &AppState) -> Result<LogoutResultDto, St
             tracing::warn!(error = %error, uid, "failed to delete login token");
             warnings.push(CREDENTIAL_CLEAR_WARNING.to_string());
         }
+        if mark_logged_out_failed {
+            if let Err(error) = state.account_index.mark_logged_out(uid).await {
+                tracing::warn!(error = %error, uid, "failed to retry mark account logged out");
+                mark_logged_out_failed = true;
+            } else {
+                mark_logged_out_failed = false;
+            }
+        }
     }
 
     publish_disconnected_status_if_current(
@@ -1209,6 +1226,9 @@ pub(crate) async fn logout_inner(state: &AppState) -> Result<LogoutResultDto, St
         &state.connected,
     )
     .await;
+    if mark_logged_out_failed {
+        return Err(CREDENTIAL_LOGOUT_UNCONFIRMED.to_string());
+    }
     Ok(LogoutResultDto { warnings })
 }
 

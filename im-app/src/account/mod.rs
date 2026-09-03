@@ -77,4 +77,14 @@ pub enum AccountError {
     #[cfg_attr(not(test), allow(dead_code))]
     #[error("登录密码已被使用，禁止重复消费")]
     PasswordAlreadyReused,
+    /// 过期代际试图打开另一 UID 并替换已经打开的较新活动库。
+    #[error("打开账号库的代际 {incoming} 已落后于活动账号 {active_uid} 的代际 {active_generation}")]
+    StaleOpenGeneration {
+        /// 本次过期打开使用的认证代际。
+        incoming: u64,
+        /// 当前活动库所属的 UID。
+        active_uid: i64,
+        /// 当前活动库记录的认证代际。
+        active_generation: u64,
+    },
 }

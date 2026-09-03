@@ -55,6 +55,8 @@ impl AccountDatabaseManager {
     /// `generation` 记录本次打开所属的认证代际，供失败收尾判断是否仍可关闭。
     /// 同 UID 复用时只允许把代际推进到 `max(当前, 本次)`，不得回退，否则过期
     /// `open` 会让随后的 `close_if_opened_by` 关掉已经发布的较新活动库。
+    /// 若当前活动库属于另一 UID，且本次 `generation` 已经落后，则拒绝替换，
+    /// 避免过期恢复覆盖较新账号已经打开的连接池。
     pub async fn open(&self, uid: i64, generation: u64) -> Result<Arc<SqliteStore>, AccountError> {
         let _switch = self.switch_lock.lock().await;
         let db_path = self.database_path(uid)?;
@@ -65,6 +67,13 @@ impl AccountDatabaseManager {
                 if current.uid == uid {
                     current.generation = current.generation.max(generation);
                     return Ok(current.store.clone());
+                }
+                if generation < current.generation {
+                    return Err(AccountError::StaleOpenGeneration {
+                        incoming: generation,
+                        active_uid: current.uid,
+                        active_generation: current.generation,
+                    });
                 }
             }
         }
@@ -318,6 +327,31 @@ mod tests {
             Ok(_) => panic!("较新 generation 仍应能关闭活动库"),
         };
         assert!(matches!(error, AccountError::NoActiveDatabase));
+    }
+
+    /// 过期代际不得打开另一 UID 并替换已经打开的较新活动库。
+    #[tokio::test]
+    async fn open_refuses_older_generation_for_different_uid() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = AccountDatabaseManager::new(AppPaths::new(temp.path().to_path_buf()));
+        manager.open(99, 5).await.unwrap();
+
+        let error = match manager.open(42, 3).await {
+            Err(error) => error,
+            Ok(_) => panic!("过期代际不得替换较新活动库"),
+        };
+        assert!(matches!(
+            error,
+            AccountError::StaleOpenGeneration {
+                incoming: 3,
+                active_uid: 99,
+                active_generation: 5
+            }
+        ));
+        manager
+            .require(99)
+            .await
+            .expect("过期打开失败后必须保留 UID 99 的活动库");
     }
 
     /// 活动库已切到其他 UID 时，按旧 UID 关闭不得影响当前库。
