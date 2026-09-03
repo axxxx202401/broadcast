@@ -406,9 +406,9 @@ mod tests {
         assert_eq!(marker.outcome, MigrationOutcome::TargetAlreadyExists);
     }
 
-    /// 复制或校验失败时不得落下 `migration.json`，以便下次登录可以重试。
+    /// 账号目录无法创建时不得落下 `migration.json`；该失败发生在 `copy_and_verify` 之前。
     #[tokio::test]
-    async fn migrate_if_needed_does_not_write_marker_when_copy_or_verify_fails() {
+    async fn migrate_if_needed_does_not_write_marker_when_account_directory_cannot_be_created() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::new(temp.path().to_path_buf());
         seed_legacy_database(&paths.legacy_db()).await;
@@ -425,8 +425,44 @@ mod tests {
         );
         assert!(
             !paths.migration_marker().exists(),
+            "创建账号目录失败时不得写入 migration.json"
+        );
+    }
+
+    /// 旧库不是 SQLite 时必须进入 `copy_and_verify` 并失败：不写标记，也不留下临时库或 WAL 旁路。
+    #[tokio::test]
+    async fn migrate_if_needed_does_not_write_marker_when_copy_or_verify_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().to_path_buf());
+        std::fs::write(paths.legacy_db(), b"this is not a sqlite database").unwrap();
+        let migrator = LegacyDatabaseMigrator::new(paths.clone());
+
+        assert!(
+            migrator.migrate_if_needed(42).await.is_err(),
+            "非 SQLite 旧库必须使打开或 VACUUM 失败"
+        );
+        assert!(
+            !paths.migration_marker().exists(),
             "复制或校验失败时不得写入 migration.json"
         );
+
+        let account_dir = paths
+            .account_db(42)
+            .unwrap()
+            .parent()
+            .expect("账号库路径必须包含父目录")
+            .to_path_buf();
+        for leftover in [
+            account_dir.join("im_monitor.migrating.db"),
+            account_dir.join("im_monitor.migrating.db-wal"),
+            account_dir.join("im_monitor.migrating.db-shm"),
+        ] {
+            assert!(
+                !leftover.exists(),
+                "复制失败后不得留下临时库或旁路文件: {}",
+                leftover.display()
+            );
+        }
     }
 
     /// 非正 UID 必须走路径模型的 `InvalidUid`，不得开始迁移或写标记。
