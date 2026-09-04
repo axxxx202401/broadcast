@@ -4,12 +4,14 @@ import type { ConnectionStatus } from '../types/im'
 
 const props = defineProps<{ status: ConnectionStatus }>()
 
-// 将断开、连接中、已连接三态映射为面向操作员的状态文案；样式类沿用原始状态值。
-const label = computed(() => ({
-  disconnected: '链路离线',
-  connecting: '链路建立中',
-  connected: '链路在线',
-})[props.status])
+/** 连接三态的普通用户文案；样式类仍使用协议状态值。 */
+const connectionLabels = {
+  disconnected: '已断开',
+  connecting: '连接中',
+  connected: '已连接',
+} as const
+
+const label = computed(() => connectionLabels[props.status])
 </script>
 
 <template>

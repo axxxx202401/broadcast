@@ -124,7 +124,7 @@ describe('MessagePanel', () => {
     const rows = wrapper.findAll('.message-log > li')
     expect(rows.length).toBeGreaterThan(0)
     expect(rows.length).toBeLessThan(100)
-    expect(wrapper.text()).toContain('1000 条已载入')
+    expect(wrapper.text()).toContain('1000 条消息')
   })
 
   it('虚拟行带索引、位移和动态尺寸测量接入', async () => {
@@ -427,6 +427,8 @@ describe('MessagePanel', () => {
     await settleVirtualizer()
     expect(wrapper.find('.message-log').exists()).toBe(false)
     expect(wrapper.text()).toContain('暂无已存储消息')
+    expect(wrapper.text()).toContain('选择需要监控的群后，新消息会显示在这里')
+    expect(wrapper.text()).not.toContain('正文和附件由 Rust 解密')
   })
 
   it('全部消息模式显示每条消息所属群组', async () => {

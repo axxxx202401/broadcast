@@ -118,9 +118,9 @@ const removeCurrentAccount = async (uid: string) => {
 </script>
 
 <template>
-  <!-- 警告独立于登录状态展示，允许操作员关闭；错误则在控制台内作为命令失败反馈。 -->
+  <!-- 警告独立于登录状态展示，允许用户关闭；错误则在已登录控制台内反馈。 -->
   <div v-if="monitor.warning.value" class="global-error global-warning" role="status">
-    <span>COMMAND WARNING</span>
+    <span>警告</span>
     <p>{{ monitor.warning.value }}</p>
     <button type="button" aria-label="关闭警告" @click="monitor.warning.value = ''">×</button>
   </div>
@@ -166,7 +166,6 @@ const removeCurrentAccount = async (uid: string) => {
         <span class="brand-mark" aria-hidden="true">IM</span>
         <div>
           <strong>实时监控控制台</strong>
-          <small>INDUSTRIAL MESSAGE OBSERVATORY</small>
         </div>
       </div>
       <div class="topbar-actions">
@@ -187,7 +186,7 @@ const removeCurrentAccount = async (uid: string) => {
           type="button"
           :disabled="!!monitor.pending.value"
           @click="monitor.disconnect"
-        >断开链路</button>
+        >断开连接</button>
         <button
           v-else
           class="button primary compact"
@@ -198,9 +197,9 @@ const removeCurrentAccount = async (uid: string) => {
       </div>
     </header>
 
-    <!-- 命令错误仅属于已登录控制台，由操作员确认后关闭。 -->
+    <!-- 错误仅属于已登录控制台，由用户确认后关闭。 -->
     <div v-if="monitor.error.value" class="global-error" role="alert">
-      <span>COMMAND ERROR</span>
+      <span>错误</span>
       <p>{{ monitor.error.value }}</p>
       <button type="button" aria-label="关闭错误" @click="monitor.error.value = ''">×</button>
     </div>

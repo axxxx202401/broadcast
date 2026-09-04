@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
 import type { AccountSummary, RestoreSessionResult } from './types/im'
@@ -525,6 +525,73 @@ describe('App 消息分页接线', () => {
     expect(mocks.monitor.loadOlderMessages).toHaveBeenCalledOnce()
     await wrapper.get('.older-settled').trigger('click')
     expect(mocks.monitor.handleOlderSettled).toHaveBeenCalledWith(7)
+    wrapper.unmount()
+  })
+})
+
+/**
+ * 已登录主界面必须挂载真实 GroupSidebar、MessagePanel、StatusBadge，
+ * 才能把侧栏和消息区文案纳入断言；LoginPanel 仍用桩，避免不完整 useAuth mock。
+ */
+async function mountAuthenticatedApp() {
+  const wrapper = mount(App, {
+    global: {
+      stubs: {
+        LoginPanel: {
+          name: 'LoginPanel',
+          props: ['auth', 'accounts', 'selectedAccountUid'],
+          template: '<div class="login-panel-stub" />',
+        },
+      },
+    },
+  })
+  await flushPromises()
+  return wrapper
+}
+
+describe('App 普通用户文案', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.monitor.loggedIn.value = true
+    mocks.monitor.warning.value = ''
+    mocks.monitor.error.value = ''
+    mocks.monitor.connectionStatus.value = 'connected'
+    mocks.monitor.selectedGroup.value = null
+    mocks.monitor.messages.value = []
+    mocks.monitor.filteredGroups.value = []
+    mocks.restoreSession.mockResolvedValue({
+      status: 'success',
+      account: restoredAccount,
+      groups: [],
+      warnings: [],
+    } satisfies RestoreSessionResult)
+    mocks.listAccounts.mockResolvedValue([restoredAccount])
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('主界面不显示开发术语', async () => {
+    const wrapper = await mountAuthenticatedApp()
+    const visible = wrapper.text()
+    for (const forbidden of [
+      'ALL CHANNELS',
+      'ALL MONITORED CHANNELS',
+      'LIVE MESSAGE STREAM',
+      'CHANNEL /',
+      'UID /',
+      '链路在线',
+      '断开链路',
+      '正文和附件由 Rust 解密',
+    ]) {
+      expect(visible).not.toContain(forbidden)
+    }
     wrapper.unmount()
   })
 })

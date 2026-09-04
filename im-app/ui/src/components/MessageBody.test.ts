@@ -43,6 +43,68 @@ describe('MessageBody', () => {
     expect(wrapper.text()).toContain('可读正文')
   })
 
+  it('文本消息不显示类型标签', () => {
+    const wrapper = mount(MessageBody, {
+      props: { message: message({ kind: 'text', text: '可读正文' }) },
+    })
+
+    expect(wrapper.text()).toContain('可读正文')
+    expect(wrapper.text()).not.toContain('文本')
+    expect(wrapper.find('.message-kind').exists()).toBe(false)
+  })
+
+  it('媒体按钮没有解密字样', () => {
+    const cases: Array<{ content: NonNullable<MessageDto['decoded_content']>; label: string }> = [
+      {
+        content: {
+          kind: 'image',
+          url: 'https://cdn.test/i',
+          thumbnail_url: '',
+          file_size: 1,
+          width: 1,
+          height: 1,
+        },
+        label: '打开图片',
+      },
+      {
+        content: { kind: 'audio', url: 'https://cdn.test/a', duration: 3, file_size: 1 },
+        label: '打开音频',
+      },
+      {
+        content: {
+          kind: 'video',
+          url: 'https://cdn.test/v',
+          thumbnail_url: '',
+          duration: 3,
+          file_size: 1,
+          width: 1,
+          height: 1,
+        },
+        label: '打开视频',
+      },
+      {
+        content: {
+          kind: 'file',
+          url: 'https://cdn.test/f',
+          name: '报告.pdf',
+          mime_type: 'application/pdf',
+          file_size: 1024,
+        },
+        label: '打开文件',
+      },
+    ]
+
+    for (const item of cases) {
+      const wrapper = mount(MessageBody, {
+        props: { message: message(item.content) },
+      })
+      expect(wrapper.text()).toContain(item.label)
+      expect(wrapper.text()).not.toContain('解密')
+      expect(wrapper.find('.message-kind').exists()).toBe(false)
+      wrapper.unmount()
+    }
+  })
+
   it('按需解密文件并提供原始文件名下载', async () => {
     mocks.download.mockResolvedValueOnce({
       path: '/tmp/report.pdf',

@@ -167,16 +167,16 @@ watch(
     <!-- 标题区随群组选择更新，并持续展示当前载入数量。 -->
     <header class="message-header">
       <div v-if="group">
-        <p class="eyebrow">LIVE MESSAGE STREAM</p>
+        <p class="eyebrow">群消息</p>
         <h2>{{ group.name || `群组 ${group.group_id}` }}</h2>
       </div>
       <div v-else>
-        <p class="eyebrow">ALL MONITORED CHANNELS</p>
+        <p class="eyebrow">全部监控群聊</p>
         <h2>全部群消息</h2>
       </div>
       <div class="stream-meta">
-        <span><i class="pulse-dot"></i>只读采集</span>
-        <span>{{ messages.length }} 条已载入</span>
+        <span><i class="pulse-dot"></i>正在接收</span>
+        <span>{{ messages.length }} 条消息</span>
       </div>
     </header>
 
@@ -189,7 +189,7 @@ watch(
       <div v-else-if="messages.length === 0" class="panel-empty">
         <span class="empty-glyph" aria-hidden="true">Ø</span>
         <strong>暂无已存储消息</strong>
-        <p>开启群监控并连接聊天链路后等待新消息</p>
+        <p>选择需要监控的群后，新消息会显示在这里</p>
       </div>
       <!-- 状态条覆盖在虚拟容器顶部，不参与列表高度和虚拟行索引。 -->
       <div v-else class="history-status" role="status">
@@ -216,7 +216,7 @@ watch(
             <span v-if="!group" class="message-group">
               {{ messages[item.index].group_name || `群组 ${messages[item.index].group_id}` }} <small>#{{ messages[item.index].group_id }}</small>
             </span>
-            <span class="sender-id">UID {{ messages[item.index].send_uid }}</span>
+            <span class="sender-id">用户 {{ messages[item.index].send_uid }}</span>
             <MessageBody :message="messages[item.index]" />
           </template>
         </li>
@@ -224,9 +224,8 @@ watch(
     </div>
 
     <footer class="message-footer">
-      <span>正文和附件由 Rust 解密，失败时保留原始内容提示</span>
-      <span v-if="group">CHANNEL / {{ group.group_id }}</span>
-      <span v-else>ALL MONITORED CHANNELS</span>
+      <span v-if="group">群 ID：{{ group.group_id }}</span>
+      <span v-else>全部监控群聊</span>
     </footer>
   </section>
 </template>
