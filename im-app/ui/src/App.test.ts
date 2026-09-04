@@ -589,6 +589,7 @@ describe('App 普通用户文案', () => {
       '链路在线',
       '断开链路',
       '正文和附件由 Rust 解密',
+      'NO MATCH',
     ]) {
       expect(visible).not.toContain(forbidden)
     }

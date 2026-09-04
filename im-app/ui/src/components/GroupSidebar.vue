@@ -89,7 +89,7 @@ defineEmits<{
         ><i></i></button>
       </li>
       <li v-if="groups.length === 0" class="compact-empty">
-        <span>NO MATCH</span>
+        <span>没有匹配的群</span>
         <p>没有匹配的群组</p>
       </li>
     </ul>
