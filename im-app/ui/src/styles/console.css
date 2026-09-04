@@ -12,6 +12,7 @@
   display: grid;
   gap: 16px;
   width: 100%;
+  max-height: calc(100vh - 80px);
   padding: 42px 36px;
   background: var(--ink-900);
   border: 1px solid var(--ink-600);
@@ -375,6 +376,8 @@
 .operations-shell {
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  min-height: 0;
   height: 100%;
   background: var(--ink-900);
 }
@@ -584,6 +587,7 @@
 .workspace {
   display: grid;
   grid-template-columns: 330px minmax(0, 1fr);
+  min-width: 0;
   min-height: 0;
   flex: 1;
 }
@@ -1126,6 +1130,55 @@
   letter-spacing: 0.04em;
 }
 
+/* 业务滚动区：仅群列表、消息视口与登录表单可纵向滚动；Firefox 与 WebKit 共用低对比深色细滚动条，悬停/拖动提高对比度，不隐藏滚动条。 */
+.group-list,
+.message-viewport,
+.login-console,
+.login-card {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(132, 149, 149, 0.55) rgba(10, 15, 16, 0.35);
+}
+
+.group-list::-webkit-scrollbar,
+.message-viewport::-webkit-scrollbar,
+.login-console::-webkit-scrollbar,
+.login-card::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.group-list::-webkit-scrollbar-track,
+.message-viewport::-webkit-scrollbar-track,
+.login-console::-webkit-scrollbar-track,
+.login-card::-webkit-scrollbar-track {
+  background: rgba(10, 15, 16, 0.35);
+}
+
+.group-list::-webkit-scrollbar-thumb,
+.message-viewport::-webkit-scrollbar-thumb,
+.login-console::-webkit-scrollbar-thumb,
+.login-card::-webkit-scrollbar-thumb {
+  background-color: rgba(132, 149, 149, 0.55);
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background-clip: padding-box;
+}
+
+.group-list::-webkit-scrollbar-thumb:hover,
+.message-viewport::-webkit-scrollbar-thumb:hover,
+.login-console::-webkit-scrollbar-thumb:hover,
+.login-card::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(176, 192, 192, 0.88);
+}
+
+.group-list::-webkit-scrollbar-thumb:active,
+.message-viewport::-webkit-scrollbar-thumb:active,
+.login-console::-webkit-scrollbar-thumb:active,
+.login-card::-webkit-scrollbar-thumb:active {
+  background-color: rgba(196, 208, 208, 0.95);
+}
+
 /* 动画：页面进入、连接状态、刷新与加载提示。 */
 @keyframes console-enter {
   from { opacity: 0; transform: translateY(8px); }
@@ -1153,6 +1206,7 @@
   }
 
   .login-card {
+    max-height: calc(100vh - 24px);
     padding: 30px 24px;
   }
 
@@ -1186,7 +1240,6 @@
   }
 
   .login-console {
-    overflow: visible;
     padding: 30px 32px;
   }
 
