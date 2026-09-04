@@ -1,4 +1,4 @@
-//! 账号列表、启动恢复、切换和移除等 Tauri 命令。
+//! 账号列表、启动恢复、切换、暂停会话和移除等 Tauri 命令。
 //!
 //! 这些命令只返回账号摘要与恢复结果，不得把 Token 或密码送出 IPC。
 //! 切换与移除当前账号时复用认证代际推进，避免旧连接或旧数据库污染新账号。
@@ -12,6 +12,15 @@ use crate::account::session::{
 use crate::commands::auth::{AccountSummaryDto, AuthCommandError, CREDENTIAL_CLEAR_WARNING};
 use crate::commands::parse_i64_id;
 use crate::state::AppState;
+
+/// 暂停当前会话后返回给前端的结果；不得包含 Token 或密码。
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PauseSessionDto {
+    /// 暂停前的会话 UID；无活动会话时为 `None`。
+    /// 前端用它在添加账号登录页提供返回，不得当作已删除 Token 的信号。
+    pub uid: Option<String>,
+}
 
 /// 移除账号后返回给前端的结果。
 #[derive(Debug, serde::Serialize)]
@@ -56,6 +65,17 @@ pub async fn switch_account(
 ) -> Result<RestoreSessionDto, AuthCommandError> {
     let uid = parse_i64_id(&uid, "uid")?;
     switch_account_inner(&state, uid).await
+}
+
+/// 暂停当前会话：断开 TCP 并清理运行时，但保留 Token 与 `has_token`。
+///
+/// 供「添加账号」进入登录页使用。返回暂停前的 UID，前端可用它返回上一账号。
+/// 本命令不得删除凭据或把索引标成已退出。
+#[tauri::command]
+pub async fn pause_session(
+    state: State<'_, AppState>,
+) -> Result<PauseSessionDto, AuthCommandError> {
+    pause_session_inner(&state).await
 }
 
 /// 移除指定账号的索引与凭据，但保留该 UID 的 SQLite 文件。
@@ -109,6 +129,22 @@ pub(crate) async fn prepare_account_switch(state: &AppState) -> Result<u64, Auth
     begin_restore_transition(state).await
 }
 
+/// 断开当前连接并清理运行时，保留所有账号的 Token 与退出标志。
+pub(crate) async fn pause_session_inner(
+    state: &AppState,
+) -> Result<PauseSessionDto, AuthCommandError> {
+    let uid = state
+        .auth_session
+        .read()
+        .await
+        .as_ref()
+        .map(|session| session.uid);
+    begin_restore_transition(state).await?;
+    Ok(PauseSessionDto {
+        uid: uid.map(|value| value.to_string()),
+    })
+}
+
 /// 删除账号索引与凭据；若该 UID 是当前会话则先清理运行时。
 pub(crate) async fn remove_account_inner(
     state: &AppState,
@@ -147,7 +183,9 @@ pub(crate) async fn remove_account_inner(
 
 #[cfg(test)]
 mod tests {
-    use super::{list_accounts_inner, prepare_account_switch, remove_account_inner};
+    use super::{
+        list_accounts_inner, pause_session_inner, prepare_account_switch, remove_account_inner,
+    };
     use crate::account::session::{
         restore_uid_with_user_detail, RestoreSessionDto, UserDetailOutcome,
     };
@@ -233,6 +271,99 @@ mod tests {
         assert!(!body.contains("token-42"));
         assert!(!body.contains("token-84"));
         assert!(!body.contains("saved-secret"));
+    }
+
+    /// 切换只断开来源运行时，必须保留来源账号 Token，切回时才能用原 Token 恢复。
+    #[tokio::test]
+    async fn switch_account_keeps_source_token_and_can_switch_back() {
+        let (state, _temp) = crate::state::test_state_with_account_foundation().await;
+        seed_account(&state, 42, "a@example.com", 4, true, Some("token-42")).await;
+        seed_account(&state, 84, "b@example.com", 4, false, Some("token-84")).await;
+        restore_for_test(&state, 42, UserDetailOutcome::Success).await;
+
+        let switched = switch_account_inner_for_test(&state, 84, UserDetailOutcome::Success).await;
+        assert!(matches!(
+            switched,
+            RestoreSessionDto::Success { ref account, .. } if account.uid == "84"
+        ));
+        assert_eq!(
+            state.credentials.token(42).await.unwrap().as_deref(),
+            Some("token-42"),
+            "切走时不得删除来源 Token"
+        );
+        let source = state
+            .account_index
+            .load()
+            .await
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|item| item.uid == 42)
+            .expect("来源账号索引必须保留");
+        assert!(source.has_token, "切走时不得把来源标记为已退出");
+
+        let back = switch_account_inner_for_test(&state, 42, UserDetailOutcome::Success).await;
+        assert!(matches!(
+            back,
+            RestoreSessionDto::Success { ref account, .. } if account.uid == "42"
+        ));
+        assert_eq!(
+            state
+                .auth_session
+                .read()
+                .await
+                .as_ref()
+                .map(|session| session.uid),
+            Some(42)
+        );
+    }
+
+    /// 添加账号只断开当前 TCP/会话，不得删除 Token 或把索引标成已退出。
+    #[tokio::test]
+    async fn pause_session_disconnects_without_deleting_token() {
+        let (state, _temp) = crate::state::test_state_with_account_foundation().await;
+        seed_account(&state, 42, "a@example.com", 4, true, Some("token-42")).await;
+        restore_for_test(&state, 42, UserDetailOutcome::Success).await;
+        state
+            .pending_login
+            .insert(
+                "issued",
+                crate::account::pending_login::PendingLogin {
+                    display_account: "a@example.com".into(),
+                    primary_login_type: 4,
+                    password: Some(zeroize::Zeroizing::new("secret".into())),
+                    password_reused: false,
+                },
+            )
+            .await;
+
+        let result = pause_session_inner(&state).await.unwrap();
+        assert_eq!(result.uid.as_deref(), Some("42"));
+        assert_eq!(
+            state.credentials.token(42).await.unwrap().as_deref(),
+            Some("token-42")
+        );
+        let record = state
+            .account_index
+            .load()
+            .await
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|item| item.uid == 42)
+            .unwrap();
+        assert!(record.has_token);
+        assert!(state.auth_session.read().await.is_none());
+        assert!(state.pending_login.take("issued").await.is_none());
+        let error = match state.account_db.require(42).await {
+            Err(error) => error,
+            Ok(_) => panic!("暂停会话后不得保留活动账号数据库"),
+        };
+        assert!(matches!(
+            error,
+            crate::account::AccountError::NoActiveDatabase
+                | crate::account::AccountError::ActiveUidMismatch { .. }
+        ));
     }
 
     /// 切换必须推进代际、清理待登录缓存和消息密钥、关闭旧库，再恢复目标 UID。

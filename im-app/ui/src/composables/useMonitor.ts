@@ -373,6 +373,23 @@ export function useMonitor() {
     })
 
   /**
+   * 只清理前端会话视图，不请求退出、不删除 Token。
+   * 供添加账号进入登录页时与后端 `pause_session` 配合使用。
+   */
+  function detachLocalSession() {
+    connectionStatusVersion += 1
+    loggedIn.value = false
+    uid.value = null
+    groups.value = []
+    clearMessages()
+    resetMessagePagination()
+    selectedGroupId.value = null
+    messageRequestId += 1
+    messagesLoading.value = false
+    connectionStatus.value = 'disconnected'
+  }
+
+  /**
    * 尝试取得 `run` 的 pending 执行权后请求远程退出。
    * 若已有动作占用 pending，本次调用直接返回，不请求后端也不清理本地状态；若已开始执行，
    * 即使远程 logout 失败也会在 finally 清理本地会话。成功路径展示后端 warnings；
@@ -391,16 +408,7 @@ export function useMonitor() {
           ? text
           : `已退出，但断开聊天链路时出现问题：${text}`
       } finally {
-        connectionStatusVersion += 1
-        loggedIn.value = false
-        uid.value = null
-        groups.value = []
-        clearMessages()
-        resetMessagePagination()
-        selectedGroupId.value = null
-        messageRequestId += 1
-        messagesLoading.value = false
-        connectionStatus.value = 'disconnected'
+        detachLocalSession()
       }
     })
 
@@ -509,5 +517,6 @@ export function useMonitor() {
     connect,
     disconnect,
     logout,
+    detachLocalSession,
   }
 }

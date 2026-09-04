@@ -41,6 +41,7 @@ function setupAccounts() {
     listAccounts: vi.fn().mockResolvedValue([]),
     switchAccount: vi.fn(),
     removeAccount: vi.fn().mockResolvedValue({ warnings: [], nextUid: null }),
+    pauseSession: vi.fn().mockResolvedValue({ uid: '42' }),
   }
   let accounts!: ReturnType<typeof useAccounts>
   const wrapper = mount(defineComponent({
@@ -274,6 +275,70 @@ describe('useAccounts', () => {
     expect(accounts.phase.value).toBe('needsLogin')
     expect(accounts.selectedAccount.value).toBeNull()
     expect(accounts.retryableMessage.value).toBe('')
+    wrapper.unmount()
+  })
+
+  it('添加账号暂停会话并记住可返回 UID，不进入 recovering', async () => {
+    const { accounts, backend, wrapper } = setupAccounts()
+    backend.restoreSession.mockResolvedValueOnce({
+      status: 'success',
+      account: account42,
+      groups: [],
+      warnings: [],
+    } satisfies RestoreSessionResult)
+    backend.listAccounts.mockResolvedValue([account42])
+    await accounts.restore()
+
+    await accounts.beginAddAccount()
+
+    expect(backend.pauseSession).toHaveBeenCalledTimes(1)
+    expect(accounts.phase.value).toBe('needsLogin')
+    expect(accounts.selectedAccount.value).toBeNull()
+    expect(accounts.returnToUid.value).toBe('42')
+    expect(accounts.busy.value).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('返回添加账号前的会话会切换回记住的 UID 并清空返回目标', async () => {
+    const { accounts, backend, wrapper } = setupAccounts()
+    backend.restoreSession.mockResolvedValueOnce({
+      status: 'success',
+      account: account42,
+      groups: [],
+      warnings: [],
+    } satisfies RestoreSessionResult)
+    backend.switchAccount.mockResolvedValueOnce({
+      status: 'success',
+      account: account42,
+      groups: [],
+      warnings: [],
+    } satisfies RestoreSessionResult)
+    await accounts.restore()
+    await accounts.beginAddAccount()
+
+    const result = await accounts.returnFromAddAccount()
+
+    expect(backend.switchAccount).toHaveBeenCalledWith('42')
+    expect(result).toMatchObject({ status: 'success', account: account42 })
+    expect(accounts.returnToUid.value).toBeNull()
+    expect(accounts.phase.value).toBe('ready')
+    wrapper.unmount()
+  })
+
+  it('手动登录成功后清空添加账号的返回目标', async () => {
+    const { accounts, backend, wrapper } = setupAccounts()
+    backend.restoreSession.mockResolvedValueOnce({
+      status: 'success',
+      account: account42,
+      groups: [],
+      warnings: [],
+    } satisfies RestoreSessionResult)
+    await accounts.restore()
+    await accounts.beginAddAccount()
+
+    accounts.applyManualLogin(account84)
+
+    expect(accounts.returnToUid.value).toBeNull()
     wrapper.unmount()
   })
 

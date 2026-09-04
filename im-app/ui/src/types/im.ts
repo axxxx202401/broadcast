@@ -344,6 +344,12 @@ export type RestoreSessionResult =
       message: string
     }
 
+/** 暂停当前会话后的结果；字段名与 Rust `PauseSessionDto` 的 camelCase 输出一致。 */
+export interface PauseSessionResult {
+  /** 暂停前的会话 UID；无活动会话时为 `null`。不得据此判断 Token 已被删除。 */
+  uid: string | null
+}
+
 /** 退出登录命令返回的非阻塞提示；字段名与 Rust `LogoutResultDto` 一致。 */
 export interface LogoutResult {
   /** 删除 Token 失败等情况下的普通用户文案。 */

@@ -51,6 +51,54 @@
   gap: 6px;
 }
 
+.login-back {
+  justify-self: start;
+}
+
+.code-input-row {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  background: var(--ink-900);
+  border: 1px solid var(--ink-600);
+  border-radius: var(--radius);
+}
+
+.code-input-row:hover {
+  border-color: #445155;
+}
+
+.code-input-row:focus-within {
+  border-color: var(--amber-soft);
+}
+
+.code-input-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  border-radius: var(--radius) 0 0 var(--radius);
+}
+
+.code-input-row input:hover,
+.code-input-row input:focus {
+  border-color: transparent;
+}
+
+.code-send-inline {
+  flex: 0 0 auto;
+  align-self: stretch;
+  min-height: 0;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  border-width: 0 0 0 1px;
+  white-space: nowrap;
+}
+
+.other-methods-panel {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .challenge-step {
   display: grid;
   gap: 12px;
@@ -368,7 +416,7 @@
 
 .login-submit {
   width: 100%;
-  justify-content: space-between;
+  justify-content: center;
   margin-top: 18px;
 }
 

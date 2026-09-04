@@ -17,7 +17,7 @@ export type AccountOp = 'restore' | 'switch'
 /** 账号组合式函数实际使用的后端能力子集。 */
 type AccountsApi = Pick<
   typeof api,
-  'restoreSession' | 'listAccounts' | 'switchAccount' | 'removeAccount'
+  'restoreSession' | 'listAccounts' | 'switchAccount' | 'removeAccount' | 'pauseSession'
 >
 
 /** 账号组合式函数的可注入依赖，便于替换 IPC 边界。 */
@@ -93,6 +93,11 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
   const lastAccountOp = ref<AccountOp>('restore')
   /** 切换进入 retryable 时记住目标 UID，供 `retryRestore` 再次 switch。 */
   let pendingSwitchUid: string | null = null
+  /**
+   * 从主界面「添加账号」进入登录页时记住上一账号 UID。
+   * 返回时用该 UID 走 Token 恢复，不得在暂停会话时删除 Token。
+   */
+  const returnToUid = ref<string | null>(null)
   let operationToken = 0
 
   /** 在当前代次仍有效时刷新非密钥账号列表；列表失败不得把恢复打成 retryable。 */
@@ -114,6 +119,7 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
         selectedAccount.value = normalizeAccountSummary(result.account)
         retryableMessage.value = ''
         pendingSwitchUid = null
+        returnToUid.value = null
         void refreshAccounts(token)
         return result
       case 'needsLogin':
@@ -242,7 +248,45 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
     selectedAccount.value = { ...normalizeAccountSummary(account), isCurrent: true }
     retryableMessage.value = ''
     pendingSwitchUid = null
+    returnToUid.value = null
     void refreshAccounts(operationToken)
+  }
+
+  /**
+   * 添加账号：暂停当前会话（只断 TCP，保留 Token），进入空白登录页。
+   * 记住当前 UID，供登录页返回时用原 Token 恢复。
+   */
+  async function beginAddAccount(): Promise<void> {
+    const previousUid = selectedAccount.value?.uid ?? null
+    const token = ++operationToken
+    busy.value = 'add'
+    returnToUid.value = previousUid
+    try {
+      await backend.pauseSession()
+      if (token !== operationToken) return
+      phase.value = 'needsLogin'
+      selectedAccount.value = null
+      retryableMessage.value = ''
+      pendingSwitchUid = null
+    } catch {
+      if (token !== operationToken) return
+      phase.value = 'needsLogin'
+      selectedAccount.value = null
+      retryableMessage.value = ''
+    } finally {
+      if (token === operationToken) busy.value = null
+    }
+  }
+
+  /**
+   * 从添加账号登录页回到上一账号：用记住的 UID 走切换恢复。
+   * 没有可返回 UID 时不发请求。
+   */
+  function returnFromAddAccount(): Promise<RestoreSessionResult | null> {
+    const uid = returnToUid.value
+    if (!uid) return Promise.resolve(null)
+    returnToUid.value = null
+    return switchAccount(uid)
   }
 
   return {
@@ -258,11 +302,15 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
     busy,
     /** 最近一次恢复类操作，供可重试界面区分文案与重试目标。 */
     lastAccountOp,
+    /** 添加账号登录页可返回的上一账号 UID；无返回上下文时为 null。 */
+    returnToUid,
     restore,
     retryRestore,
     switchAccount,
     removeAccount,
     useOtherAccount,
     applyManualLogin,
+    beginAddAccount,
+    returnFromAddAccount,
   }
 }

@@ -263,6 +263,7 @@ export function useAuth(
             gt4DTO: fields,
           })
         }
+        error.value = ''
         notice.value = '验证码已发送'
         gt4.destroy()
       } catch (reason) {
@@ -271,6 +272,8 @@ export function useAuth(
       } finally {
         busy.value = null
       }
+    }, () => {
+      if (busy.value === 'captcha') busy.value = null
     })
     if (!shown) {
       busy.value = null
@@ -784,6 +787,7 @@ export function useAuth(
             gt4DTO: fields,
           })
         }
+        error.value = ''
         notice.value = '二次验证验证码已发送'
         startResendCountdown()
         gt4.destroy()
@@ -793,6 +797,8 @@ export function useAuth(
       } finally {
         busy.value = null
       }
+    }, () => {
+      if (busy.value === 'challenge-captcha') busy.value = null
     })
     if (!shown) {
       busy.value = null
@@ -812,6 +818,7 @@ export function useAuth(
   }, { flush: 'sync' })
 
   watch(gt4.error, (gt4Error) => {
+    // 滑块失败不再写入 gt4.error；此处只承接 SDK 异常等仍需展示的错误。
     if (gt4Error && (busy.value === 'captcha' || busy.value === 'challenge-captcha')) {
       busy.value = null
       error.value = gt4Error

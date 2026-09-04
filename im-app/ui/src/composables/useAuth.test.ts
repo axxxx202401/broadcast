@@ -93,7 +93,11 @@ describe('useAuth', () => {
     await succeedGt4()
     await succeedGt4()
 
-    expect(gt4.show).toHaveBeenCalledWith('13800138000', expect.any(Function))
+    expect(gt4.show).toHaveBeenCalledWith(
+      '13800138000',
+      expect.any(Function),
+      expect.any(Function),
+    )
     expect(backend.sendSmsCode).toHaveBeenCalledTimes(1)
     expect(backend.sendSmsCode).toHaveBeenCalledWith({
       phone: '13800138000',
@@ -248,7 +252,11 @@ describe('useAuth', () => {
     await succeedGt4()
 
     expect(gt4.initialize).toHaveBeenCalledTimes(1)
-    expect(gt4.show).toHaveBeenLastCalledWith('operator@example.com', expect.any(Function))
+    expect(gt4.show).toHaveBeenLastCalledWith(
+      'operator@example.com',
+      expect.any(Function),
+      expect.any(Function),
+    )
     expect(backend.sendEmailCode).toHaveBeenCalledWith({
       email: 'operator@example.com',
       codeType: 1,
@@ -871,7 +879,11 @@ describe('useAuth', () => {
     await succeedGt4()
     await flushPromises()
 
-    expect(gt4.show).toHaveBeenLastCalledWith('operator@example.com', expect.any(Function))
+    expect(gt4.show).toHaveBeenLastCalledWith(
+      'operator@example.com',
+      expect.any(Function),
+      expect.any(Function),
+    )
     expect(backend.sendEmailCode).toHaveBeenCalledWith({
       email: 'operator@example.com',
       codeType: 1,

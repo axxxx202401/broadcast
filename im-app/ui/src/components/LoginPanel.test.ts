@@ -182,18 +182,53 @@ describe('LoginPanel', () => {
     expect(panelSource).not.toContain('GT4 READY')
   })
 
-  it('默认使用邮箱密码并折叠其他方式', async () => {
+  it('默认使用邮箱密码并始终展示其他方式', async () => {
     const auth = authStub()
     const wrapper = mountPanel(auth)
 
     expect(auth.loginMethod.value).toBe(4)
     expect(wrapper.find('input[type="email"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('其他登录方式')
-    expect(wrapper.text()).not.toContain('手机号验证码')
+    expect(wrapper.text()).not.toContain('其他登录方式')
+    expect(wrapper.find('[data-test="toggle-other-methods"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('手机号密码')
+    expect(wrapper.text()).toContain('手机号验证码')
+    expect(wrapper.text()).toContain('邮箱验证码')
     const submit = wrapper.get('.login-submit').element
-    const other = wrapper.get('[data-test="toggle-other-methods"]').element
-    expect(submit.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING)
+    const emailCode = [...wrapper.findAll('button')].find((button) =>
+      button.text() === '邮箱验证码',
+    )?.element
+    expect(emailCode).toBeTruthy()
+    expect(submit.compareDocumentPosition(emailCode!) & Node.DOCUMENT_POSITION_FOLLOWING)
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+  })
+
+  it('验证码发送按钮嵌在输入框右侧', async () => {
+    const auth = authStub()
+    auth.loginMethod.value = 2
+    const wrapper = mountPanel(auth)
+    const row = wrapper.get('.code-input-row')
+    expect(row.find('input').exists()).toBe(true)
+    expect(row.get('[data-test="send-code"]').text()).toContain('发送验证码')
+  })
+
+  it('添加账号进入的登录页显示返回，普通登录页不显示', async () => {
+    const auth = authStub()
+    const withoutBack = mountPanel(auth)
+    expect(withoutBack.find('[data-test="login-back"]').exists()).toBe(false)
+    withoutBack.unmount()
+
+    const withBack = mount(LoginPanel, {
+      props: {
+        auth: auth as never,
+        accounts: [],
+        selectedAccountUid: null,
+        canReturn: true,
+      },
+    })
+    expect(withBack.get('[data-test="login-back"]').text()).toBe('返回')
+    await withBack.get('[data-test="login-back"]').trigger('click')
+    expect(withBack.emitted('back')).toHaveLength(1)
+    withBack.unmount()
   })
 
   it('主登录表单展示认证错误', async () => {

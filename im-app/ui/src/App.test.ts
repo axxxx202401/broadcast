@@ -11,8 +11,9 @@ let onLoginCb: ((payload: { account: AccountSummary; groups: unknown[]; warnings
 const mocks = vi.hoisted(() => ({
   restoreSession: vi.fn(),
   listAccounts: vi.fn(),
-  switchAccount: vi.fn(),
-  removeAccount: vi.fn(),
+    switchAccount: vi.fn(),
+    pauseSession: vi.fn(),
+    removeAccount: vi.fn(),
   selectSavedAccount: vi.fn(),
   resetAuthForm: vi.fn(),
   monitor: {
@@ -37,6 +38,7 @@ const mocks = vi.hoisted(() => ({
     disconnect: vi.fn(),
     connect: vi.fn(),
     logout: vi.fn(),
+    detachLocalSession: vi.fn(),
     selectGroup: vi.fn(),
     showAllMessages: vi.fn(),
     toggleGroup: vi.fn(),
@@ -53,6 +55,7 @@ vi.mock('./services/tauri', () => ({
     restoreSession: mocks.restoreSession,
     listAccounts: mocks.listAccounts,
     switchAccount: mocks.switchAccount,
+    pauseSession: mocks.pauseSession,
     removeAccount: mocks.removeAccount,
   },
 }))
@@ -144,7 +147,7 @@ function mountApp() {
       stubs: {
         LoginPanel: {
           name: 'LoginPanel',
-          props: ['auth', 'accounts', 'selectedAccountUid'],
+          props: ['auth', 'accounts', 'selectedAccountUid', 'canReturn'],
           template: '<div class="login-panel-stub" />',
         },
       },
@@ -168,6 +171,10 @@ describe('App 启动恢复', () => {
     mocks.monitor.logout.mockImplementation(async () => {
       mocks.monitor.loggedIn.value = false
     })
+    mocks.monitor.detachLocalSession.mockImplementation(() => {
+      mocks.monitor.loggedIn.value = false
+    })
+    mocks.pauseSession.mockResolvedValue({ uid: '42' })
   })
 
   it('恢复完成前只显示启动状态', async () => {
@@ -322,6 +329,10 @@ describe('App 头部账号菜单', () => {
     mocks.monitor.logout.mockImplementation(async () => {
       mocks.monitor.loggedIn.value = false
     })
+    mocks.monitor.detachLocalSession.mockImplementation(() => {
+      mocks.monitor.loggedIn.value = false
+    })
+    mocks.pauseSession.mockResolvedValue({ uid: '42' })
   })
 
   it('顶栏展示当前邮箱且不再显示 UID /', async () => {
@@ -355,7 +366,11 @@ describe('App 头部账号菜单', () => {
     await flushPromises()
 
     expect(wrapper.findComponent(LoginPanel).exists()).toBe(true)
+    expect(api.pauseSession).toHaveBeenCalled()
+    expect(mocks.monitor.logout).not.toHaveBeenCalled()
+    expect(mocks.monitor.detachLocalSession).toHaveBeenCalled()
     expect(mocks.resetAuthForm).toHaveBeenCalledWith({ preserveSelectedAccount: false })
+    expect(wrapper.findComponent(LoginPanel).props('canReturn')).toBe(true)
     expect(api.listAccounts).toHaveBeenCalled()
     expect(wrapper.findComponent(LoginPanel).props('accounts')).toEqual(
       expect.arrayContaining([
@@ -363,6 +378,26 @@ describe('App 头部账号菜单', () => {
         expect.objectContaining({ uid: '84' }),
       ]),
     )
+    wrapper.unmount()
+  })
+
+  it('添加账号登录页返回时用原账号 Token 恢复', async () => {
+    mocks.switchAccount.mockResolvedValueOnce({
+      status: 'success',
+      account: restoredAccount,
+      groups: [],
+      warnings: [],
+    } satisfies RestoreSessionResult)
+    const wrapper = mountApp()
+    await flushPromises()
+    await wrapper.get('[data-test="add-account"]').trigger('click')
+    await flushPromises()
+
+    wrapper.findComponent(LoginPanel).vm.$emit('back')
+    await flushPromises()
+
+    expect(api.switchAccount).toHaveBeenCalledWith('42')
+    expect(mocks.monitor.acceptLogin).toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -537,6 +572,10 @@ describe('App 消息分页接线', () => {
     mocks.monitor.logout.mockImplementation(async () => {
       mocks.monitor.loggedIn.value = false
     })
+    mocks.monitor.detachLocalSession.mockImplementation(() => {
+      mocks.monitor.loggedIn.value = false
+    })
+    mocks.pauseSession.mockResolvedValue({ uid: '42' })
   })
 
   it('把分页状态和请求代次传给消息面板并转发双向握手事件', async () => {
@@ -618,7 +657,7 @@ async function mountAuthenticatedApp() {
       stubs: {
         LoginPanel: {
           name: 'LoginPanel',
-          props: ['auth', 'accounts', 'selectedAccountUid'],
+          props: ['auth', 'accounts', 'selectedAccountUid', 'canReturn'],
           template: '<div class="login-panel-stub" />',
         },
       },

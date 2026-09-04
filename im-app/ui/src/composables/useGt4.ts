@@ -167,6 +167,8 @@ export function useGt4(options: UseGt4Options = {}) {
   let pendingSuccess:
     | ((accountSnapshot: string, fields: Gt4Fields) => void | Promise<void>)
     | null = null
+  /** 滑块失败或用户关闭时通知调用方结束忙碌态，不得据此写入界面错误。 */
+  let pendingDismiss: (() => void) | null = null
   let accountSnapshot = ''
 
   /**
@@ -230,6 +232,8 @@ export function useGt4(options: UseGt4Options = {}) {
                     return
                   }
                   successConsumed = true
+                  error.value = ''
+                  pendingDismiss = null
                   const callback = pendingSuccess
                   pendingSuccess = null
                   // SDK 的 snake_case 在边界处转换为应用层 camelCase；同一次 show 仅消费一次。
@@ -242,7 +246,11 @@ export function useGt4(options: UseGt4Options = {}) {
                 })
                 .onFail(() => {
                   if (currentGeneration !== generation) return
-                  error.value = 'GT4 验证失败，请重试'
+                  // 滑块失败由 GT4 控件自身提示，界面不再重复写错误条。
+                  error.value = ''
+                  const dismiss = pendingDismiss
+                  pendingDismiss = null
+                  dismiss?.()
                 })
                 .onError((event) => {
                   if (currentGeneration !== generation) return
@@ -252,7 +260,10 @@ export function useGt4(options: UseGt4Options = {}) {
                 .onClose(() => {
                   if (currentGeneration !== generation) return
                   pendingSuccess = null
-                  error.value = 'GT4 验证已关闭'
+                  error.value = ''
+                  const dismiss = pendingDismiss
+                  pendingDismiss = null
+                  dismiss?.()
                 })
             },
           )
@@ -268,16 +279,19 @@ export function useGt4(options: UseGt4Options = {}) {
 
   /**
    * 展示已就绪的验证码，并冻结账号供成功回调使用。
+   * `onDismiss` 仅在滑块失败或用户关闭时调用，供调用方结束忙碌态，不表示应展示错误。
    * @returns 成功触发展示为 true；未就绪、无实例或已卸载为 false。
    */
   const show = (
     snapshot: string,
     onSuccess: (accountSnapshot: string, fields: Gt4Fields) => void | Promise<void>,
+    onDismiss?: () => void,
   ) => {
     if (!ready.value || !instance || disposed) return false
     error.value = ''
     accountSnapshot = snapshot
     pendingSuccess = onSuccess
+    pendingDismiss = onDismiss ?? null
     successConsumed = false
     instance.showCaptcha()
     return true
@@ -286,6 +300,7 @@ export function useGt4(options: UseGt4Options = {}) {
   /** 清除一次消费状态、账号快照和错误，并重置当前 SDK 实例以便重试。 */
   const reset = () => {
     pendingSuccess = null
+    pendingDismiss = null
     successConsumed = false
     accountSnapshot = ''
     error.value = ''
@@ -299,8 +314,10 @@ export function useGt4(options: UseGt4Options = {}) {
     ready.value = false
     loading.value = false
     pendingSuccess = null
+    pendingDismiss = null
     settleInitialization = null
     initialization = null
+    error.value = ''
     instance?.destroy()
     instance = null
   }

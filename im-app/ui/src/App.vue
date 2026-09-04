@@ -97,15 +97,19 @@ const onSwitchAccount = (uid: string) => {
 }
 
 /**
- * 添加账号：本地退出后进入空白邮箱密码登录页。
- * 不得清除索引中其他已保存账号；`loginMethod` 由 `resetAuthForm` 重置为 4。
+ * 添加账号：只断开当前 TCP，保留 Token，进入空白邮箱密码登录页。
+ * 登录页可返回上一账号并用原 Token 重连；不得调用退出以免删 Token。
  */
 const addAccount = () =>
-  monitor.logout().finally(() => {
-    accounts.phase.value = 'needsLogin'
-    accounts.selectedAccount.value = null
+  accounts.beginAddAccount().finally(() => {
+    monitor.detachLocalSession()
     auth.resetAuthForm({ preserveSelectedAccount: false })
   })
+
+/** 从添加账号登录页返回上一账号；Token 有效则恢复主界面，失效则进入该账号登录页。 */
+const onReturnFromAddAccount = () => {
+  void accounts.returnFromAddAccount().then(applyRestoreOutcome)
+}
 
 /**
  * 移除当前账号：先退出会话，再删除索引与凭据。
@@ -184,6 +188,8 @@ function onShowAllMessages() {
     :auth="auth"
     :accounts="accounts.accounts.value"
     :selectedAccountUid="auth.selectedAccountUid.value"
+    :can-return="!!accounts.returnToUid.value"
+    @back="onReturnFromAddAccount"
   />
 
   <main v-else class="operations-shell">

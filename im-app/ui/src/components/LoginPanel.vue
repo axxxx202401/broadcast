@@ -5,13 +5,20 @@ import type { useAuth } from '../composables/useAuth'
 import type { AccountSummary, PrimaryLoginType } from '../types/im'
 
 /**
- * 登录卡片：展示已保存账号、主登录字段、折叠的其他方式，以及二次验证。
- * 不渲染协议字段名、令牌或常驻 GT4 状态条。
+ * 登录卡片：展示已保存账号、主登录字段、常驻的其他方式，以及二次验证。
+ * 从主界面「添加账号」进入时显示返回；不渲染协议字段名、令牌或滑块失败文案。
  */
 const props = defineProps<{
   auth: ReturnType<typeof useAuth>
   accounts: AccountSummary[]
   selectedAccountUid: string | null
+  /** 仅从已登录主界面添加账号进入时为 true，用于显示返回上一页。 */
+  canReturn?: boolean
+}>()
+
+const emit = defineEmits<{
+  /** 返回添加账号之前的主界面；由根组件用原 Token 恢复会话。 */
+  back: []
 }>()
 
 // 离开登录页时调用 destroyGt4 清理入口；具体实例与 DOM 清理由认证流程负责。
@@ -85,11 +92,10 @@ function onAccountChange(event: Event) {
   if (account) props.auth.selectSavedAccount(account)
 }
 
-/** 展开区选中一种登录方式后收起面板；身份对账由 useAuth 负责，此处不得恢复 saved。 */
+/** 选中一种登录方式；身份对账由 useAuth 负责，此处不得恢复 saved。 */
 function chooseLoginMethod(method: PrimaryLoginType) {
   props.auth.loginMethod.value = method
   props.auth.validateValue.value = ''
-  props.auth.otherMethodsOpen.value = false
 }
 
 const canSubmitPrimary = computed(() => {
@@ -102,9 +108,18 @@ const canSubmitPrimary = computed(() => {
 </script>
 
 <template>
-  <!-- 居中单列登录卡片：Logo、账号、主字段、登录，其他方式折叠在按钮之后。 -->
+  <!-- 居中宽表单登录卡片：Logo、账号、主字段、登录，其他方式始终可见。 -->
   <main class="login-shell">
     <section class="login-card" aria-label="登录">
+      <button
+        v-if="props.canReturn"
+        class="button ghost login-back"
+        data-test="login-back"
+        type="button"
+        @click="emit('back')"
+      >
+        返回
+      </button>
       <header class="login-header">
         <img src="/icon.svg" alt="IM" class="login-logo" />
         <p class="purpose">进入实时监控控制台</p>
@@ -148,27 +163,26 @@ const canSubmitPrimary = computed(() => {
               v-if="!auth.isCodeMode.value && auth.passwordMode.value === 'saved'"
               class="password-sentinel"
             >已保存密码</span>
-            <input
-              v-model.trim="auth.validateValue.value"
-              :type="auth.isCodeMode.value ? 'text' : 'password'"
-              :inputmode="auth.isCodeMode.value ? 'numeric' : 'text'"
-              :autocomplete="auth.isCodeMode.value ? 'one-time-code' : 'current-password'"
-              :required="auth.isCodeMode.value || auth.passwordMode.value !== 'saved'"
-            />
+            <div :class="{ 'code-input-row': auth.isCodeMode.value }">
+              <input
+                v-model.trim="auth.validateValue.value"
+                :type="auth.isCodeMode.value ? 'text' : 'password'"
+                :inputmode="auth.isCodeMode.value ? 'numeric' : 'text'"
+                :autocomplete="auth.isCodeMode.value ? 'one-time-code' : 'current-password'"
+                :required="auth.isCodeMode.value || auth.passwordMode.value !== 'saved'"
+              />
+              <button
+                v-if="auth.isCodeMode.value"
+                class="button secondary code-send-inline"
+                data-test="send-code"
+                type="button"
+                :disabled="!!auth.busy.value || auth.gt4Loading.value || !auth.accountReady.value"
+                @click="auth.sendCode"
+              >
+                {{ auth.busy.value === 'captcha' ? '等待验证…' : auth.busy.value === 'code' ? '发送中…' : '发送验证码' }}
+              </button>
+            </div>
           </label>
-
-          <section v-if="auth.isCodeMode.value" class="code-send">
-            <button
-              class="button secondary"
-              data-test="send-code"
-              type="button"
-              :disabled="!!auth.busy.value || auth.gt4Loading.value || !auth.accountReady.value"
-              @click="auth.sendCode"
-            >
-              {{ auth.busy.value === 'captcha' ? '等待验证…' : auth.busy.value === 'code' ? '发送中…' : '发送验证码' }}
-            </button>
-            <p v-if="auth.gt4Error.value" class="warning-note">{{ auth.gt4Error.value }}</p>
-          </section>
 
           <button
             class="button primary login-submit"
@@ -180,16 +194,7 @@ const canSubmitPrimary = computed(() => {
         </form>
 
         <div class="other-methods">
-          <button
-            type="button"
-            data-test="toggle-other-methods"
-            class="button ghost"
-            @click="auth.toggleOtherMethods"
-          >
-            其他登录方式
-          </button>
-
-          <div v-if="auth.otherMethodsOpen.value" class="other-methods-panel">
+          <div class="other-methods-panel">
             <button type="button" class="button secondary" @click="chooseLoginMethod(3)">手机号密码</button>
             <button type="button" class="button secondary" @click="chooseLoginMethod(1)">手机号验证码</button>
             <button type="button" class="button secondary" @click="chooseLoginMethod(2)">邮箱验证码</button>
@@ -254,25 +259,6 @@ const canSubmitPrimary = computed(() => {
             />
           </label>
 
-          <section v-if="auth.isChallengeCode.value" class="challenge-code">
-            <button
-              class="button secondary"
-              data-test="challenge-send-code"
-              type="button"
-              :disabled="!!auth.busy.value || auth.gt4Loading.value || auth.resendSeconds.value > 0"
-              @click="auth.sendChallengeCode"
-            >
-              {{
-                auth.resendSeconds.value > 0
-                  ? `${auth.resendSeconds.value}s 后可重发`
-                  : auth.selectedChallenge.value?.validateType === 16
-                    ? '发送邮箱验证码'
-                    : '发送手机验证码'
-              }}
-            </button>
-            <p v-if="auth.gt4Error.value" class="warning-note">{{ auth.gt4Error.value }}</p>
-          </section>
-
           <label v-if="showChallengeSecretInput">
             <span>
               {{
@@ -281,13 +267,31 @@ const canSubmitPrimary = computed(() => {
                   : '验证值'
               }}
             </span>
-            <input
-              v-model.trim="auth.challengeValue.value"
-              data-test="challenge-value"
-              :type="isPasswordValidation(auth.selectedChallenge.value?.validateType) ? 'password' : 'text'"
-              :autocomplete="challengeValueAutocomplete"
-              required
-            />
+            <div :class="{ 'code-input-row': auth.isChallengeCode.value }">
+              <input
+                v-model.trim="auth.challengeValue.value"
+                data-test="challenge-value"
+                :type="isPasswordValidation(auth.selectedChallenge.value?.validateType) ? 'password' : 'text'"
+                :autocomplete="challengeValueAutocomplete"
+                required
+              />
+              <button
+                v-if="auth.isChallengeCode.value"
+                class="button secondary code-send-inline"
+                data-test="challenge-send-code"
+                type="button"
+                :disabled="!!auth.busy.value || auth.gt4Loading.value || auth.resendSeconds.value > 0"
+                @click="auth.sendChallengeCode"
+              >
+                {{
+                  auth.resendSeconds.value > 0
+                    ? `${auth.resendSeconds.value}s 后可重发`
+                    : auth.selectedChallenge.value?.validateType === 16
+                      ? '发送邮箱验证码'
+                      : '发送手机验证码'
+                }}
+              </button>
+            </div>
           </label>
 
           <button

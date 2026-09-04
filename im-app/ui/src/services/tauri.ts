@@ -10,6 +10,7 @@ import type {
   LoginRequest,
   LoginResult,
   LogoutResult,
+  PauseSessionResult,
   MessageCursor,
   MessageDto,
   MessagePage,
@@ -90,6 +91,11 @@ export const api = {
    */
   switchAccount: (uid: string) =>
     invoke<RestoreSessionResult>('switch_account', { uid }),
+  /**
+   * 无参数调用 `pause_session`，断开当前 TCP 并清理运行时，但保留 Token。
+   * 成功返回暂停前的 `{ uid }`；失败拒绝为结构化认证错误。不得把 Token 送出 IPC。
+   */
+  pauseSession: () => invoke<PauseSessionResult>('pause_session'),
   /**
    * 调用 `remove_account`，直接包装为 `{ uid }`，成功返回 `{ warnings, nextUid }`。
    * 删除索引与凭据但保留该 UID 的 SQLite 文件；`nextUid` 为删除后的 `last_used_uid`。
