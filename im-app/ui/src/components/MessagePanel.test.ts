@@ -4,9 +4,10 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { MessageDto } from '../types/im'
+import type { GroupDto, MessageDto } from '../types/im'
 import { MessageIndex } from '../utils/message'
 import MessagePanel from './MessagePanel.vue'
+import MonitoredGroupSummary from './MonitoredGroupSummary.vue'
 
 vi.mock('../services/tauri', () => ({
   api: { downloadMessageAttachment: vi.fn() },
@@ -429,6 +430,56 @@ describe('MessagePanel', () => {
     expect(wrapper.text()).toContain('暂无已存储消息')
     expect(wrapper.text()).toContain('选择需要监控的群后，新消息会显示在这里')
     expect(wrapper.text()).not.toContain('正文和附件由 Rust 解密')
+  })
+
+  // 标题区只在全部群消息挂载汇总，并把调用方传入的监控 ID 原样交给子组件。
+  it('全部群消息标题下展示监控群汇总', async () => {
+    const wrapper = mount(MessagePanel, {
+      props: {
+        group: null,
+        loading: false,
+        messages: [],
+        monitoredGroupIds: ['101', '202'],
+      },
+    })
+
+    expect(wrapper.text()).toContain('全部群消息')
+    expect(wrapper.getComponent(MonitoredGroupSummary).props('groupIds')).toEqual(['101', '202'])
+    expect(wrapper.text()).toContain('#101')
+    expect(wrapper.text()).toContain('#202')
+  })
+
+  it('全部群消息未传监控群时显示尚未选择', async () => {
+    const wrapper = mount(MessagePanel, {
+      props: { group: null, loading: false, messages: [] },
+    })
+
+    expect(wrapper.text()).toContain('尚未选择监控群')
+  })
+
+  it('单群消息不展示监控群汇总', async () => {
+    const group: GroupDto = {
+      group_id: '101',
+      name: '运维群',
+      pic: '',
+      host_id: null,
+      member_count: 1,
+      created_at: 0,
+      monitored: 1,
+      updated_at: 0,
+    }
+    const wrapper = mount(MessagePanel, {
+      props: {
+        group,
+        loading: false,
+        messages: [],
+        monitoredGroupIds: ['101', '202'],
+      },
+    })
+
+    expect(wrapper.text()).toContain('运维群')
+    expect(wrapper.findComponent(MonitoredGroupSummary).exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('#202')
   })
 
   it('全部消息模式显示每条消息所属群组', async () => {

@@ -4,7 +4,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
-import type { AccountSummary, RestoreSessionResult } from './types/im'
+import type { AccountSummary, GroupDto, RestoreSessionResult } from './types/im'
 
 let onLoginCb: ((payload: { account: AccountSummary; groups: unknown[]; warnings: string[] }) => void) | null = null
 
@@ -23,9 +23,10 @@ const mocks = vi.hoisted(() => ({
     uid: { value: '42' },
     pending: { value: null },
     connectDisabled: { value: false },
-    filteredGroups: { value: [] },
-    groups: { value: [] },
+    filteredGroups: { value: [] as GroupDto[] },
+    groups: { value: [] as GroupDto[] },
     monitoredCount: { value: 0 },
+    monitoredGroupIds: { value: [] as string[] },
     selectedGroup: { value: null },
     search: { value: '' },
     messages: { value: [] },
@@ -482,6 +483,7 @@ describe('App 消息分页接线', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.monitor.loggedIn.value = true
+    mocks.monitor.monitoredGroupIds.value = []
     mocks.restoreSession.mockResolvedValue({
       status: 'success',
       account: restoredAccount,
@@ -527,6 +529,40 @@ describe('App 消息分页接线', () => {
     expect(mocks.monitor.handleOlderSettled).toHaveBeenCalledWith(7)
     wrapper.unmount()
   })
+
+  // App 必须传 monitoredGroupIds，禁止把受搜索影响的 filteredGroups 当作汇总数据源。
+  it('把完整监控群 ID 传给消息面板而不使用侧栏筛选结果', async () => {
+    mocks.monitor.monitoredGroupIds.value = ['101', '202']
+    mocks.monitor.filteredGroups.value = [{
+      group_id: '101',
+      name: '运维群',
+      pic: '',
+      host_id: null,
+      member_count: 1,
+      created_at: 0,
+      monitored: 1,
+      updated_at: 0,
+    }]
+    const wrapper = mount(App, {
+      global: {
+        stubs: {
+          GroupSidebar: true,
+          LoginPanel: true,
+          StatusBadge: true,
+          MessagePanel: {
+            name: 'MessagePanel',
+            props: ['monitoredGroupIds'],
+            template: '<div />',
+          },
+        },
+      },
+    })
+    await flushPromises()
+
+    const panel = wrapper.getComponent({ name: 'MessagePanel' })
+    expect(panel.props('monitoredGroupIds')).toEqual(['101', '202'])
+    wrapper.unmount()
+  })
 })
 
 /**
@@ -559,6 +595,7 @@ describe('App 普通用户文案', () => {
     mocks.monitor.selectedGroup.value = null
     mocks.monitor.messages.value = []
     mocks.monitor.filteredGroups.value = []
+    mocks.monitor.monitoredGroupIds.value = []
     mocks.restoreSession.mockResolvedValue({
       status: 'success',
       account: restoredAccount,

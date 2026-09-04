@@ -6,6 +6,7 @@ import type { VNodeRef } from 'vue'
 import type { GroupDto, MessageDto } from '../types/im'
 import { formatMessageTime } from '../utils/message'
 import MessageBody from './MessageBody.vue'
+import MonitoredGroupSummary from './MonitoredGroupSummary.vue'
 
 // 父组件提供当前群组、分页状态和消息；面板负责虚拟窗口、顶部触发与前插锚点恢复。
 const props = withDefaults(defineProps<{
@@ -15,10 +16,13 @@ const props = withDefaults(defineProps<{
   hasOlder?: boolean
   loadingOlder?: boolean
   olderRequestToken?: number | null
+  /** 正在监控的群 ID；仅在全部群消息标题下展示，默认空数组。 */
+  monitoredGroupIds?: string[]
 }>(), {
   hasOlder: false,
   loadingOlder: false,
   olderRequestToken: null,
+  monitoredGroupIds: () => [],
 })
 const emit = defineEmits<{
   /** 视口接近顶部且仍有历史时，请求父组件读取下一页。 */
@@ -173,6 +177,8 @@ watch(
       <div v-else>
         <p class="eyebrow">全部监控群聊</p>
         <h2>全部群消息</h2>
+        <!-- 汇总只出现在全部群消息；数据来自完整监控列表，不受侧栏搜索影响。 -->
+        <MonitoredGroupSummary :group-ids="monitoredGroupIds" />
       </div>
       <div class="stream-meta">
         <span><i class="pulse-dot"></i>正在接收</span>

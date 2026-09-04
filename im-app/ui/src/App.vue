@@ -226,6 +226,7 @@ const removeCurrentAccount = async (uid: string) => {
         :has-older="monitor.hasOlder.value"
         :loading-older="monitor.loadingOlder.value"
         :older-request-token="monitor.olderRequestToken.value"
+        :monitored-group-ids="monitor.monitoredGroupIds.value"
         @load-older="monitor.loadOlderMessages"
         @older-settled="monitor.handleOlderSettled"
       />

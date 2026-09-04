@@ -46,14 +46,14 @@ vi.mock('../services/tauri', () => ({
   },
 }))
 
-const group = (id: string): GroupDto => ({
+const group = (id: string, name = `群 ${id}`, monitored = 1): GroupDto => ({
   group_id: id,
-  name: `群 ${id}`,
+  name,
   pic: '',
   host_id: null,
   member_count: 1,
   created_at: 0,
-  monitored: 1,
+  monitored,
   updated_at: 0,
 })
 
@@ -100,6 +100,13 @@ function mountMonitor() {
     }),
   )
   return { monitor, wrapper }
+}
+
+/** 注入完整群列表后返回监控状态，用于断言不受搜索影响的派生值。 */
+function setupMonitor(nextGroups: GroupDto[]) {
+  const { monitor } = mountMonitor()
+  monitor.groups.value = nextGroups
+  return monitor
 }
 
 /** 模拟 MessagePanel 在锚点恢复后回传当前历史轮次 token。 */
@@ -730,6 +737,17 @@ describe('useMonitor', () => {
     expect(monitor.warning.value).toBe('本次无法完全清除登录信息')
     expect(monitor.error.value).toBe('')
     wrapper.unmount()
+  })
+
+  // 汇总必须读完整 groups，避免侧栏搜索把未匹配但仍在监控的群从标题区抹掉。
+  it('监控群 ID 不受侧栏搜索影响', () => {
+    const monitor = setupMonitor([
+      group('101', '运维群', 1),
+      group('202', '研发群', 1),
+      group('303', '其他群', 0),
+    ])
+    monitor.search.value = '运维'
+    expect(monitor.monitoredGroupIds.value).toEqual(['101', '202'])
   })
 
   it('退出未确认的用户文案原样展示', async () => {
