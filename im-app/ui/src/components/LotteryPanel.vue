@@ -195,7 +195,7 @@ function cancelEdit() {
   border: 1px solid var(--ink-600, #48484a);
   border-radius: 4px;
   background: var(--ink-900, #1c1c1e);
-  color: var(--text-200, #ebebf0);
+  color: var(--text-200, #1c1c1e);
   outline: none;
   font-family: "IBM Plex Mono", monospace;
 }
