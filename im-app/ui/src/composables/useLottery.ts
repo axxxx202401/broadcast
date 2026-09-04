@@ -1,0 +1,96 @@
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+
+import { api } from '../services/tauri'
+import type { DrawItem, LotteryConfig } from '../services/tauri'
+import { errorMessage } from '../utils/protocol'
+
+/** 开奖历史轮询间隔（毫秒）。 */
+const POLL_INTERVAL_MS = 30_000
+
+/**
+ * 管理当前账号的开奖配置与开奖历史面板状态。
+ *
+ * - 挂载时自动加载配置并拉取一次历史。
+ * - 每 30 秒轮询一次，并在收到含"开奖"的消息时额外触发一次。
+ * - 历史只显示最新两条（本期 / 上期），配置变更立即生效于消息匹配。
+ */
+export function useLottery() {
+  const config = ref<LotteryConfig>({ api_url: '', current_issue: 0 })
+  const drawHistory = ref<DrawItem[]>([])
+  const loading = ref(false)
+  const error = ref('')
+
+  /** 当前关注的期号；未配置时为 `null`。 */
+  const currentIssue = computed(() =>
+    config.value.current_issue > 0 ? String(config.value.current_issue) : null,
+  )
+
+  /** 加载当前账号的开奖配置。 */
+  async function loadConfig() {
+    try {
+      config.value = await api.getLotteryConfig()
+    } catch (reason) {
+      error.value = `加载开奖配置失败：${errorMessage(reason)}`
+    }
+  }
+
+  /** 保存开奖配置并立即重新拉取历史。 */
+  async function saveConfig(api_url: string, current_issue: number) {
+    try {
+      await api.setLotteryConfig(api_url, current_issue)
+      await loadConfig()
+      await fetchHistory()
+    } catch (reason) {
+      error.value = `保存配置失败：${errorMessage(reason)}`
+    }
+  }
+
+  /** 从远端拉取开奖历史并更新显示。URL 未配置时静默跳过。 */
+  async function fetchHistory() {
+    loading.value = true
+    error.value = ''
+    try {
+      const items = await api.fetchLotteryHistory()
+      // 只显示最新两条。
+      drawHistory.value = items.slice(0, 2)
+    } catch (reason) {
+      // URL 未配置属于正常初始状态，不展示错误。
+      const msg = errorMessage(reason)
+      if (!msg.includes('URL not configured')) {
+        error.value = `拉取开奖历史失败：${msg}`
+      }
+    } finally {
+      loading.value = false
+    }
+  }
+
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  function schedulePoll() {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(async () => {
+      await fetchHistory()
+      schedulePoll()
+    }, POLL_INTERVAL_MS)
+  }
+
+  onMounted(() => {
+    void loadConfig().then(fetchHistory).then(schedulePoll)
+  })
+
+  onBeforeUnmount(() => {
+    if (timer) clearTimeout(timer)
+  })
+
+  return {
+    config,
+    drawHistory,
+    currentIssue,
+    loading,
+    error,
+    saveConfig,
+    fetchHistory,
+    /** 当收到含"开奖"的消息时手动触发一次刷新。 */
+    refreshOnDrawMessage: fetchHistory,
+  }
+}
