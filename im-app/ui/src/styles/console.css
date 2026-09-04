@@ -618,15 +618,10 @@
 }
 
 .brand-mark {
-  display: grid;
-  place-items: center;
+  display: block;
   width: 32px;
   height: 32px;
-  color: #1c1408;
-  background: var(--amber);
-  font-family: Impact, "Avenir Next Condensed", sans-serif;
-  font-size: 13px;
-  letter-spacing: 0.05em;
+  object-fit: contain;
 }
 
 .brand strong,
@@ -1169,6 +1164,14 @@
   color: var(--text-100);
 }
 
+.header-group-ids-empty {
+  margin: 0;
+  padding: 0;
+  color: var(--text-500);
+  font-size: 11px;
+  font-family: "IBM Plex Mono", monospace;
+  background: rgba(255, 0, 0, 0.1);
+}
 
 .message-header-row {
   display: flex;

@@ -210,7 +210,7 @@ function onShowAllMessages() {
         @click="layout.toggleSidebar"
       >群列表</button>
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true">IM</span>
+        <img src="/32x32.png" alt="Logo" class="brand-mark" aria-hidden="true" />
         <div>
           <strong>实时监控控制台</strong>
         </div>
