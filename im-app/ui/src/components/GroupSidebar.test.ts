@@ -27,6 +27,7 @@ describe('GroupSidebar', () => {
         selectedId: null,
         search: '',
         pending: null,
+        showMatchedOnly: true,
       },
     })
 
@@ -46,9 +47,13 @@ describe('GroupSidebar', () => {
         selectedId: null,
         search: '',
         pending: null,
+        showMatchedOnly: true,
       },
     })
-    const list = wrapper.get('ul.group-list')
+    // monitored=0 群组渲染在"未监听"列表中，该列表在 sections.expanded=true 时隐藏。
+    // 点击标题行展开未监听区后查询列表。
+    await wrapper.findAll('div.section-header')[1].trigger('click')
+    const list = wrapper.get('ul.group-list.unmonitored-list')
     const item = list.get('li.group-row')
     const buttons = item.findAll(':scope > button')
 

@@ -2,7 +2,7 @@
 .login-shell {
   display: grid;
   place-content: start center;
-  width: 520px;
+  width: 560px;
   max-width: calc(100% - 48px);
   min-height: calc(100% - 80px);
   margin: 40px auto;
@@ -25,16 +25,17 @@
 
 .login-primary-panel {
   display: grid;
-  grid-template-rows: 42px 234px;
+  grid-template-rows: 42px 260px;
   gap: 12px;
-  height: 288px;
+  height: 312px;
 }
 
 .login-form {
-  display: grid;
-  grid-template-rows: 184px 38px;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
-  height: 234px;
+  flex: 1;
+  min-height: 0;
 }
 
 .account-picker {
@@ -47,18 +48,19 @@
   gap: 6px;
 }
 
-/* 主字段区：按最宽的手机验证码模式锁定尺寸，四个 tab 共用同一几何布局。 */
+/* 主字段区：flex 列，两个字段自然排列，不依赖固定行高。 */
 .login-form-fields {
-  display: grid;
-  grid-template-rows: 76px 96px;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
+  flex: 1;
+  min-height: 0;
 }
 
 .login-form-fields .account-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
-  height: 76px;
+  gap: 6px;
   align-items: end;
 }
 
@@ -66,94 +68,19 @@
   grid-template-columns: 110px minmax(0, 1fr);
 }
 
+/* 秘密字段：label + 输入行，label 可含哨兵。 */
 .login-form-fields .secret-field {
-  height: 96px;
-}
-
-.login-form .field-control:not(.code-input-row) {
-  display: block;
-  width: 100%;
-  height: 40px;
-  padding: 0 11px;
-  background: var(--ink-900);
-  border: 1px solid #3d4e52;
-  border-radius: var(--radius);
-}
-
-.login-form .field-control:not(.code-input-row):hover {
-  border-color: #4e6266;
-}
-
-.login-form .field-control:not(.code-input-row):focus-within {
-  border-color: var(--amber-soft);
-}
-
-.login-form .field-control:not(.code-input-row) input {
-  width: 100%;
-  height: 40px;
-  box-sizing: border-box;
-  border: 0;
-  background: transparent;
-  padding: 0;
-}
-
-.login-form .field-control.code-input-row {
   display: flex;
-  flex-wrap: nowrap;
-  align-items: stretch;
-  width: 100%;
-  min-width: 0;
-  height: 40px;
-  background: var(--ink-900);
-  border: 1px solid #3d4e52;
-  border-radius: var(--radius);
-}
-
-.login-form .field-control.code-input-row:hover {
-  border-color: #4e6266;
-}
-
-.login-form .field-control.code-input-row:focus-within {
-  border-color: var(--amber-soft);
-}
-
-.login-form .field-control.code-input-row input {
-  flex: 1 1 auto;
-  width: auto;
-  min-width: 0;
-  border: 0;
-  border-radius: var(--radius) 0 0 var(--radius);
-}
-
-.login-form .field-control.code-input-row input:hover,
-.login-form .field-control.code-input-row input:focus {
-  border-color: transparent;
-}
-
-.code-send-inline {
-  flex: 0 0 auto;
-  flex-shrink: 0;
-  align-self: stretch;
-  min-height: 0;
-  padding-left: 10px;
-  padding-right: 10px;
-  border-radius: 0 var(--radius) var(--radius) 0;
-  border-width: 0 0 0 1px;
-  border-color: #3d4e52;
-  white-space: nowrap;
-  font-size: 11px;
-}
-
-.login-form-fields > label,
-.login-form-fields .account-row label {
-  display: grid;
+  flex-direction: column;
   gap: 6px;
-  margin: 0;
 }
 
-.login-form-fields > label > span:first-child,
-.login-form-fields .account-row label > span {
-  margin-bottom: 0;
+/* 标签行：字段名 + 已保存密码哨兵并排。 */
+.login-form-fields .secret-field > span:first-child {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
   color: var(--text-500);
   font-family: inherit;
   font-size: 12px;
@@ -162,23 +89,101 @@
   text-transform: none;
 }
 
-.login-form-fields input {
-  height: 40px;
-  padding-top: 0;
-  padding-bottom: 0;
+/* 登录表单所有 label：覆盖 base.css 的 mono/10px/uppercase 默认风格。 */
+.login-form-fields label > span,
+.login-form-fields .account-row label > span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-500);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  line-height: 1.4;
 }
 
+/* 所有登录表单 input：统一 40px 高、11px 内边距、基础边框。 */
+.login-form-fields input {
+  height: 40px;
+  padding: 10px 11px;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--ink-600);
+  border-radius: var(--radius);
+}
+
+.login-form-fields input:hover {
+  border-color: #445155;
+}
+
+.login-form-fields input:focus {
+  outline: none;
+  border-color: var(--amber-soft);
+}
+
+.code-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+/* 发送验证码按钮：嵌在输入框右侧。 */
+.code-send-inline {
+  position: absolute;
+  right: 8px;
+  flex: 0 0 auto;
+  flex-shrink: 0;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 2px;
+  border-width: 0;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+/* 验证码模式 input 右侧留白给按钮，自带边框与其他输入框一致。 */
+.login-form-fields .secret-field.is-code input {
+  padding-right: 90px;
+  border: 1px solid var(--ink-600);
+  border-radius: var(--radius);
+}
+
+.login-form-fields .secret-field.is-code input:hover {
+  border-color: #445155;
+}
+
+.login-form-fields .secret-field.is-code input:focus {
+  outline: none;
+  border-color: var(--amber-soft);
+}
+
+/* 已保存密码哨兵：内联在 label 行右侧，不占额外布局空间。 */
 .password-sentinel {
-  visibility: hidden;
-  height: 18px;
-  margin: 0;
+  display: none;
   color: var(--text-500);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* 普通密码模式的 input：带边框，由自身负责边框。 */
+.login-form-fields .secret-field:not(.is-code) input {
+  border: 1px solid var(--ink-600);
+  border-radius: var(--radius);
+}
+
+.login-form-fields .secret-field:not(.is-code) input:hover {
+  border-color: #445155;
+}
+
+.login-form-fields .secret-field:not(.is-code) input:focus {
+  outline: none;
+  border-color: var(--amber-soft);
 }
 
 .password-sentinel.is-visible {
-  visibility: visible;
+  display: inline;
 }
 
 .login-method-tabs {
@@ -258,9 +263,6 @@
   justify-self: start;
 }
 
-
-
-
 .challenge-step {
   display: grid;
   gap: 12px;
@@ -298,7 +300,7 @@
   overflow: hidden;
   padding: 56px 48px;
   background:
-    linear-gradient(145deg, rgba(240, 169, 58, 0.08), transparent 45%),
+    linear-gradient(145deg, rgba(184, 134, 11, 0.08), transparent 45%),
     var(--ink-850);
   border-right: 1px solid var(--ink-600);
 }
@@ -314,6 +316,10 @@
   letter-spacing: 0.04em;
   transform: rotate(-90deg) translateX(100%);
   transform-origin: right bottom;
+}
+
+[data-theme="light"] .login-intro::after {
+  color: rgba(0, 0, 0, 0.06);
 }
 
 .login-intro h1 {
@@ -453,7 +459,7 @@
 
 .pending-option:has(input:checked) {
   border-color: var(--amber-soft);
-  background: rgba(240, 169, 58, 0.06);
+  background: rgba(184, 134, 11, 0.06);
 }
 
 .pending-option input {
@@ -523,7 +529,7 @@
 }
 
 .warning-note {
-  color: #c89d63;
+  color: #b8860b;
   border-left: 2px solid var(--amber-soft);
   padding-left: 9px;
 }
@@ -549,9 +555,9 @@
 
 .business-processing {
   margin-top: 14px;
-  color: #f2d7a1;
-  background: rgba(240, 169, 58, 0.09);
-  border: 1px solid rgba(240, 169, 58, 0.45);
+  color: #9a7209;
+  background: rgba(184, 134, 11, 0.08);
+  border: 1px solid rgba(184, 134, 11, 0.35);
   padding: 10px 12px;
 }
 
@@ -616,7 +622,7 @@
   place-items: center;
   width: 32px;
   height: 32px;
-  color: #18140c;
+  color: #1c1408;
   background: var(--amber);
   font-family: Impact, "Avenir Next Condensed", sans-serif;
   font-size: 13px;
@@ -773,9 +779,9 @@
 }
 
 .global-warning {
-  color: #f2d7a1;
+  color: #b8860b;
   background: #241f14;
-  border-color: rgba(216, 164, 70, 0.5);
+  border-color: rgba(184, 134, 11, 0.5);
 }
 
 .global-warning span {
@@ -828,7 +834,7 @@
   display: flex;
   min-height: 0;
   flex-direction: column;
-  background: #0d1112;
+  background: var(--ink-800);
   border-right: 1px solid var(--ink-600);
 }
 
@@ -965,7 +971,7 @@
 }
 
 .all-messages.selected {
-  background: rgba(240, 169, 58, 0.07);
+  background: rgba(184, 134, 11, 0.07);
   box-shadow: inset 2px 0 var(--amber);
 }
 
@@ -988,7 +994,7 @@
 }
 
 .group-row.selected {
-  background: rgba(240, 169, 58, 0.07);
+  background: rgba(184, 134, 11, 0.07);
   box-shadow: inset 2px 0 var(--amber);
 }
 
@@ -1062,14 +1068,31 @@
   transition: transform 150ms ease, background 150ms ease;
 }
 
+/* 监控开关：活跃时为明亮绿，文字区用 CSS 变量保持可替换性 */
 .monitor-switch.active {
   background: rgba(84, 201, 147, 0.15);
   border-color: rgba(84, 201, 147, 0.5);
 }
 
+/* 暗色与亮色激活态：背景用绿色系，不依赖 --green（亮色下太深），直接用绿色 hex。 */
+.monitor-switch.active {
+  background: rgba(42, 138, 92, 0.12);
+  border-color: rgba(42, 138, 92, 0.55);
+}
+
 .monitor-switch.active i {
   background: var(--green);
   transform: translateX(14px);
+}
+
+/* 亮色主题下确保激活开关显示绿色背景与绿色圆点 */
+[data-theme="light"] .monitor-switch.active {
+  background: rgba(42, 138, 92, 0.12);
+  border-color: rgba(42, 138, 92, 0.55);
+}
+
+[data-theme="light"] .monitor-switch.active i {
+  background: #2a8a5c;
 }
 
 .compact-empty {
@@ -1236,7 +1259,7 @@
 
 /* 新尾消息只改背景，1.2s 后由脚本去掉该类；减少动态偏好下关闭过渡。 */
 .message-card--new {
-  background-color: rgba(240, 169, 58, 0.14);
+  background-color: rgba(184, 134, 11, 0.14);
 }
 
 .message-source,
@@ -1544,4 +1567,286 @@
   .message-card {
     transition: none;
   }
+}
+
+/* ============================================= */
+/* 亮色主题完整覆盖 — 为每个关键元素指定明亮配色 */
+/* ============================================= */
+
+/* 画布背景 */
+[data-theme="light"] .operations-shell {
+  background: #fafbfb;
+}
+
+/* 顶栏：浅灰带微暖，分隔线用中性灰 */
+[data-theme="light"] .topbar {
+  background: #f0f2f4;
+  border-bottom-color: #d8dce0;
+}
+
+[data-theme="light"] .brand small {
+  color: #6e7f8a;
+}
+
+/* 图标按钮：白色底 + 柔和边框 */
+[data-theme="light"] .icon-button {
+  background: #ffffff;
+  border-color: #d0d5da;
+  color: #3a4a54;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .icon-button:hover:not(:disabled) {
+  background: #f6f7f8;
+  border-color: #b8bec4;
+}
+
+/* 账号菜单 */
+[data-theme="light"] .account-menu-panel {
+  background: #ffffff;
+  border-color: #d0d5da;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.10), 0 2px 6px rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .account-menu-item:hover:not(:disabled) {
+  background: #f4f6f8;
+}
+
+/* 群组侧栏：层级递进 */
+[data-theme="light"] .group-sidebar {
+  background: #f4f6f8;
+  border-right-color: #d8dce0;
+}
+
+[data-theme="light"] .sidebar-metrics {
+  border-bottom-color: #d8dce0;
+}
+
+[data-theme="light"] .sidebar-metrics div + div {
+  border-left-color: #d8dce0;
+}
+
+/* 消息头 */
+[data-theme="light"] .message-header {
+  background: #f0f2f4;
+  border-bottom-color: #d8dce0;
+}
+
+/* 消息视口：干净画布 */
+[data-theme="light"] .message-viewport {
+  background: #fafbfb;
+}
+
+/* 消息卡片 */
+[data-theme="light"] .message-card {
+  background: #ffffff;
+  border-color: #e0e4e8;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+[data-theme="light"] .message-card:hover {
+  border-color: #c8cdd2;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.07);
+}
+
+[data-theme="light"] .message-card--new {
+  background-color: rgba(184, 134, 11, 0.07);
+  border-color: rgba(184, 134, 11, 0.20);
+}
+
+/* 历史状态徽章 */
+[data-theme="light"] .history-status {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: #d0d5da;
+  color: #6e7f8a;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+/* 消息页脚 */
+[data-theme="light"] .message-footer {
+  background: #f0f2f4;
+  border-top-color: #d8dce0;
+  color: #8a9aa4;
+}
+
+/* 媒体图片/视频 */
+[data-theme="light"] .message-body img,
+[data-theme="light"] .message-body video {
+  background: #f4f6f8;
+  border-color: #d8dce0;
+}
+
+/* 媒体链接按钮 */
+[data-theme="light"] .media-load,
+[data-theme="light"] .message-body a {
+  border-color: #d0d5da;
+  color: #3d8088;
+  background: #f4f6f8;
+}
+
+/* 全部消息按钮 */
+[data-theme="light"] .all-messages {
+  border-top-color: #e4e7ea;
+}
+
+[data-theme="light"] .all-messages:hover {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+[data-theme="light"] .all-messages.selected {
+  background: rgba(184, 134, 11, 0.07);
+  box-shadow: inset 2px 0 var(--amber);
+}
+
+/* 群列表行 */
+[data-theme="light"] .group-row {
+  border-top-color: #e4e7ea;
+}
+
+[data-theme="light"] .group-row:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+[data-theme="light"] .group-row.selected {
+  background: rgba(184, 134, 11, 0.07);
+  box-shadow: inset 2px 0 var(--amber);
+}
+
+/* 监控开关 */
+[data-theme="light"] .monitor-switch {
+  background: #d8dce0;
+  border-color: #c0c6cc;
+}
+
+[data-theme="light"] .monitor-switch i {
+  background: #8a9aa4;
+}
+
+/* 空状态 glyph */
+[data-theme="light"] .empty-glyph {
+  border-color: #d0d5da;
+  color: #c4841e;
+  background: #f6f7f8;
+}
+
+/* 加载动画 */
+[data-theme="light"] .loader-grid i {
+  background: #c4841e;
+}
+
+/* 登录卡片 */
+[data-theme="light"] .login-card {
+  background: #ffffff;
+  border-color: #d0d5da;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.08), 0 4px 12px rgba(0, 0, 0, 0.04);
+}
+
+/* 登录 tab 栏 */
+[data-theme="light"] .login-method-tabs {
+  background: #e8ebee;
+  border-color: #d0d5da;
+}
+
+[data-theme="light"] .login-method-tab:hover:not(.is-active) {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .login-method-tab.is-active {
+  background: #ffffff;
+}
+
+/* 登录 intro */
+[data-theme="light"] .login-intro {
+  background:
+    linear-gradient(145deg, rgba(184, 134, 11, 0.06), transparent 45%),
+    #f0f2f4;
+  border-right-color: #d8dce0;
+}
+
+/* 登录控制台 */
+[data-theme="light"] .login-console {
+  background: #ffffff;
+}
+
+/* 协议列表 */
+[data-theme="light"] .protocol-track li {
+  border-top-color: #e0e4e8;
+  color: #6e7f8a;
+}
+
+/* 全局错误/警告 */
+[data-theme="light"] .global-error {
+  background: #fdf2f1;
+  border-color: rgba(168, 62, 54, 0.30);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  color: #8a3028;
+}
+
+[data-theme="light"] .global-error span {
+  color: #a83e36;
+}
+
+[data-theme="light"] .global-warning {
+  background: #fdf6ea;
+  border-color: rgba(184, 134, 11, 0.35);
+  color: #8a6010;
+}
+
+[data-theme="light"] .global-warning span {
+  color: #c4841e;
+}
+
+/* 侧栏遮罩 */
+[data-theme="light"] .sidebar-mask {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="light"] .sidebar-drawer {
+  box-shadow: 16px 0 40px rgba(0, 0, 0, 0.08);
+}
+
+/* 列表标签 */
+[data-theme="light"] .list-label {
+  color: #8a9aa4;
+}
+
+/* 连接状态指示点阴影 */
+[data-theme="light"] .status-badge i {
+  box-shadow: 0 0 0 3px rgba(110, 127, 138, 0.12);
+}
+
+/* 滚动条（亮色） */
+[data-theme="light"] .group-list,
+[data-theme="light"] .message-viewport,
+[data-theme="light"] .login-console,
+[data-theme="light"] .login-card {
+  scrollbar-color: rgba(140, 154, 164, 0.45) rgba(240, 242, 244, 0.60);
+}
+
+[data-theme="light"] .group-list::-webkit-scrollbar-track,
+[data-theme="light"] .message-viewport::-webkit-scrollbar-track,
+[data-theme="light"] .login-console::-webkit-scrollbar-track,
+[data-theme="light"] .login-card::-webkit-scrollbar-track {
+  background: rgba(240, 242, 244, 0.70);
+}
+
+[data-theme="light"] .group-list::-webkit-scrollbar-thumb,
+[data-theme="light"] .message-viewport::-webkit-scrollbar-thumb,
+[data-theme="light"] .login-console::-webkit-scrollbar-thumb,
+[data-theme="light"] .login-card::-webkit-scrollbar-thumb {
+  background-color: rgba(140, 154, 164, 0.50);
+}
+
+[data-theme="light"] .group-list::-webkit-scrollbar-thumb:hover,
+[data-theme="light"] .message-viewport::-webkit-scrollbar-thumb:hover,
+[data-theme="light"] .login-console::-webkit-scrollbar-thumb:hover,
+[data-theme="light"] .login-card::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(120, 136, 148, 0.70);
+}
+
+[data-theme="light"] .group-list::-webkit-scrollbar-thumb:active,
+[data-theme="light"] .message-viewport::-webkit-scrollbar-thumb:active,
+[data-theme="light"] .login-console::-webkit-scrollbar-thumb:active,
+[data-theme="light"] .login-card::-webkit-scrollbar-thumb:active {
+  background-color: rgba(100, 118, 130, 0.85);
 }

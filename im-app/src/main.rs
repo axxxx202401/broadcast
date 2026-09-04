@@ -9,8 +9,62 @@ mod state;
 
 use account::CredentialStore;
 use state::AppState;
+use std::io::Write;
 use std::sync::Arc;
 use tauri::Manager;
+
+/// 从本机硬件信息生成确定性设备标识。
+///
+/// - macOS：`system_profiler SPHardwareDataType` 的 Hardware UUID
+/// - Linux：`/sys/class/dmi/id/product_uuid`
+/// - Windows：WMI `Win32_ComputerSystemProduct.UUID`
+///
+/// 任一方式失败时返回 `None`，由调用方回退到随机 UUID 并写入磁盘。
+fn hardware_device_id() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("system_profiler")
+            .arg("SPHardwareDataType")
+            .output()
+            .ok()?;
+        String::from_utf8(output.stdout)
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.contains("Hardware UUID"))
+                    .and_then(|l| l.split(':').nth(1).map(|v| v.trim().to_string()))
+            })
+            .filter(|v| !v.is_empty())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/sys/class/dmi/id/product_uuid")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|v| !v.is_empty())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let output = std::process::Command::new("wmic")
+            .args(["computersystemproduct", "get", "uuid"])
+            .output()
+            .ok()?;
+        String::from_utf8(output.stdout)
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .skip(1)
+                    .next()
+                    .map(|v| v.trim().to_string())
+            })
+            .filter(|v| !v.is_empty())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        let _ = ();
+        None
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -41,12 +95,37 @@ async fn main() {
             .unwrap_or_else(|error| panic!("failed to open credential store: {error}")),
     );
 
+    // sys_mac 持久化到磁盘，保证同一设备重装后仍使用相同设备标识。
+    // 优先级：IM_SYS_MAC 环境变量 > 磁盘文件 > 硬件标识 > 随机 fallback。
+    let sys_mac_path = paths.credential_key_file().with_file_name("sys_mac");
+    let persisted_mac =
+        std::fs::read_to_string(&sys_mac_path).ok().filter(|s| !s.trim().is_empty());
+    let sys_mac = if let Some(mac) = std::env::var("IM_SYS_MAC").ok().filter(|s| !s.is_empty()) {
+        mac
+    } else if let Some(mac) = persisted_mac {
+        mac
+    } else {
+        // 用硬件信息生成确定性 ID，删除文件后重新生成仍与原来相同。
+        hardware_device_id()
+            .or_else(|| Some(uuid::Uuid::new_v4().to_string()))
+            .inspect(|mac| {
+                if let Ok(mut file) = std::fs::File::create(&sys_mac_path) {
+                    let _ = write!(file, "{mac}");
+                }
+            })
+            .unwrap_or_default()
+    };
+
     tauri::Builder::default()
         .setup(move |app| {
             let app_handle = app.app_handle();
             // 真实服务参数来自构建时环境快照；缺项或格式错误时拒绝启动，避免安装包
             // 静默连接测试环境或使用历史密钥。
-            let config = im_common::config::AppConfig::from_build_env()?;
+            let mut config = im_common::config::AppConfig::from_build_env()?;
+            // 构建时未注入 IM_SYS_MAC 时，用运行时持久化值覆盖，保证设备标识稳定。
+            if option_env!("IM_SYS_MAC").is_none() {
+                config.device.sys_mac = sys_mac.clone();
+            }
             let account_index = Arc::new(account::AccountIndexStore::new(paths.index_file()));
             let account_db = Arc::new(account::AccountDatabaseManager::new(paths.clone()));
             let legacy_migrator = Arc::new(account::LegacyDatabaseMigrator::new(paths.clone()));
@@ -105,6 +184,10 @@ async fn main() {
             commands::chat::get_connection_status,
             commands::chat::get_messages,
             commands::chat::download_message_attachment,
+            // 开奖配置与历史。
+            commands::lottery::get_lottery_config,
+            commands::lottery::set_lottery_config,
+            commands::lottery::fetch_lottery_history,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

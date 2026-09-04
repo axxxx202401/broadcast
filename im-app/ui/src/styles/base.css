@@ -21,6 +21,33 @@
   --radius: 3px;
 }
 
+/* ===== 亮色主题 ===== */
+/*
+ * 配色策略：
+ * - 背景层次：#fafbfb（画布）→ #f0f2f3 → #e4e7e8 → #d8dce0，逐级递进
+ * - 文字层次：#101820（主）→ #3a4a54（次）→ #6e7f8a（弱）
+ * - 强调色：amber #b8860b，green #2a8a5c，cyan #3d8088，red #a83e36
+ * - 描边：#d0d5d9，避免使用纯黑边框
+ */
+[data-theme="light"] {
+  color-scheme: light;
+  --ink-950: #fafbfb;
+  --ink-900: #ffffff;
+  --ink-850: #f0f2f3;
+  --ink-800: #e6e9eb;
+  --ink-700: #d8dce0;
+  --ink-600: #c8cdd2;
+  --text-100: #101820;
+  --text-300: #3a4a54;
+  --text-500: #6e7f8a;
+  --amber: #b8860b;
+  --amber-soft: #9a7209;
+  --green: #2a8a5c;
+  --cyan: #3d8088;
+  --red: #a83e36;
+  --focus: #b8860b;
+}
+
 /* 基础重置与应用画布：根节点锁死视口，禁止整页滚动。 */
 * {
   box-sizing: border-box;
@@ -44,6 +71,14 @@ body {
     var(--ink-950);
   background-size: 24px 24px;
   -webkit-font-smoothing: antialiased;
+}
+
+/* 亮色：极淡网格，与背景融合 */
+[data-theme="light"] body {
+  background:
+    linear-gradient(rgba(0, 0, 0, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.035) 1px, transparent 1px),
+    var(--ink-950);
 }
 
 /* 表单控件：继承排版并统一输入、焦点和标签规则。 */
@@ -90,6 +125,16 @@ select:focus {
   border-color: var(--amber-soft);
 }
 
+/* 亮色：placeholder / hover 边框 */
+[data-theme="light"] input::placeholder {
+  color: #9aa8a2;
+}
+
+[data-theme="light"] input:hover,
+[data-theme="light"] select:hover {
+  border-color: #9aa8a2;
+}
+
 label > span {
   display: block;
   margin-bottom: 6px;
@@ -130,7 +175,7 @@ label > span {
 }
 
 .button.primary:not(:disabled):hover {
-  background: #ffc25e;
+  background: #a07809;
 }
 
 .button.secondary {

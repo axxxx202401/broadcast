@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS messages (
     send_time   INTEGER NOT NULL,
     content_md5 TEXT DEFAULT '',
     stored_at   INTEGER NOT NULL,
-    raw_proto   BLOB
+    raw_proto   BLOB,
+    matched     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS user_key_pairs (
@@ -43,6 +44,13 @@ CREATE TABLE IF NOT EXISTS user_key_pairs (
     private_key  TEXT NOT NULL,
     updated_at   INTEGER NOT NULL,
     PRIMARY KEY (uid, key_version)
+);
+
+CREATE TABLE IF NOT EXISTS lottery_config (
+    uid           INTEGER NOT NULL PRIMARY KEY,
+    api_url       TEXT    NOT NULL DEFAULT '',
+    current_issue INTEGER NOT NULL DEFAULT 0,
+    updated_at    INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_group_time ON messages(group_id, send_time);

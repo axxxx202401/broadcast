@@ -38,6 +38,8 @@ export function useMonitor() {
   const nextMessageCursor = ref<MessageCursor | null>(null)
   const olderRequestToken = ref<number | null>(null)
   const search = ref('')
+  /** 是否只显示匹配开奖规则的消息；默认 `true`（只显示匹配消息）。 */
+  const showMatchedOnly = ref(true)
   const connectionStatus = ref<ConnectionStatus>('disconnected')
   const pending = ref<string | null>(null)
   const error = ref('')
@@ -162,6 +164,12 @@ export function useMonitor() {
       .map(({ group_id }) => group_id),
   )
   const monitoredCount = computed(() => groups.value.filter((group) => group.monitored !== 0).length)
+  /** 根据 `showMatchedOnly` 过滤消息：默认只显示匹配消息。 */
+  const filteredMessages = computed(() =>
+    showMatchedOnly.value
+      ? messages.value.filter((m) => m.matched !== 0)
+      : messages.value,
+  )
   const connectDisabled = computed(
     () => pending.value !== null || connectionStatus.value === 'connecting',
   )
@@ -499,6 +507,10 @@ export function useMonitor() {
     nextMessageCursor,
     olderRequestToken,
     search,
+    /** 是否只显示匹配开奖规则的消息，默认 `true`。 */
+    showMatchedOnly,
+    /** 经过 `showMatchedOnly` 过滤后的消息列表。 */
+    filteredMessages,
     /** 事件与轮询共同维护的聊天连接状态。 */
     connectionStatus,
     monitoredCount,

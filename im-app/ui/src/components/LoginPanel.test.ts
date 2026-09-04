@@ -227,7 +227,7 @@ describe('LoginPanel', () => {
     const auth = authStub()
     const wrapper = mountPanel(auth)
     const accountInput = wrapper.get('.account-cell input').element
-    const passwordInput = wrapper.get('.secret-field .field-control input').element
+    const passwordInput = wrapper.get('.secret-field input').element
     expect(accountInput.getBoundingClientRect().width).toBe(passwordInput.getBoundingClientRect().width)
   })
 
@@ -251,16 +251,16 @@ describe('LoginPanel', () => {
     const auth = authStub()
     auth.loginMethod.value = 2
     const wrapper = mountPanel(auth)
-    const row = wrapper.get('.code-input-row')
-    expect(row.find('input').exists()).toBe(true)
-    expect(row.get('[data-test="send-code"]').text()).toContain('发送验证码')
+    const field = wrapper.get('.secret-field.is-code')
+    expect(field.find('input').exists()).toBe(true)
+    expect(field.get('[data-test="send-code"]').text()).toContain('发送验证码')
   })
 
   it('密码模式不展示发送验证码按钮', async () => {
     const auth = authStub()
     const wrapper = mountPanel(auth)
     expect(wrapper.find('[data-test="send-code"]').exists()).toBe(false)
-    expect(wrapper.find('.field-control.code-input-row').exists()).toBe(false)
+    expect(wrapper.find('.field-control').exists()).toBe(false)
   })
 
   it('添加账号进入的登录页显示返回，普通登录页不显示', async () => {

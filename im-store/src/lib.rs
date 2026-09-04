@@ -5,6 +5,8 @@
 
 /// 群组数据访问类型。
 pub mod group;
+/// 开奖配置数据访问类型。
+pub mod lottery_config;
 /// 当前账号 App 密钥对数据访问类型。
 pub mod key_pair;
 /// 消息数据访问类型。
@@ -23,6 +25,7 @@ use std::time::Duration;
 
 use crate::group::GroupStore;
 use crate::key_pair::UserKeyPairStore;
+use crate::lottery_config::LotteryConfigStore;
 use crate::message::MessageStore;
 
 /// SQLite 存储的总入口。
@@ -37,6 +40,8 @@ pub struct SqliteStore {
     pub groups: GroupStore,
     /// 使用同一连接池的当前账号 App 密钥对访问入口。
     pub key_pairs: UserKeyPairStore,
+    /// 使用同一连接池的开奖配置数据访问入口。
+    pub lottery_config: LotteryConfigStore,
 }
 
 impl SqliteStore {
@@ -69,11 +74,13 @@ impl SqliteStore {
         )
         .execute(&pool)
         .await?;
+        migrate_messages_matched(&pool).await?;
         Ok(Self {
             pool: pool.clone(),
             messages: MessageStore::new(pool.clone()).await,
             groups: GroupStore::new(pool.clone()).await,
             key_pairs: UserKeyPairStore::new(pool.clone()),
+            lottery_config: LotteryConfigStore::new(pool.clone()),
         })
     }
 }
@@ -89,6 +96,21 @@ async fn migrate_groups_available(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     .await?;
     if column_count == 0 {
         sqlx::query("ALTER TABLE groups ADD COLUMN available INTEGER NOT NULL DEFAULT 1")
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
+/// 检查 `messages` 表，并在缺失时补充 `matched` 列。
+async fn migrate_messages_matched(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let column_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'matched'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if column_count == 0 {
+        sqlx::query("ALTER TABLE messages ADD COLUMN matched INTEGER NOT NULL DEFAULT 0")
             .execute(pool)
             .await?;
     }

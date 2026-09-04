@@ -195,14 +195,18 @@ const canSubmitPrimary = computed(() => {
               </label>
             </div>
 
-            <label class="secret-field">
-              <span>{{ auth.isCodeMode.value ? '验证码' : '登录密码' }}</span>
-              <span
-                class="password-sentinel"
-                :class="{ 'is-visible': !auth.isCodeMode.value && auth.passwordMode.value === 'saved' }"
-                aria-hidden="true"
-              >已保存密码</span>
-              <div class="field-control" :class="{ 'code-input-row': auth.isCodeMode.value }">
+            <div class="secret-field" :class="{ 'is-code': auth.isCodeMode.value }">
+              <label>
+                <span>
+                  {{ auth.isCodeMode.value ? '验证码' : '登录密码' }}
+                  <span
+                    class="password-sentinel"
+                    :class="{ 'is-visible': !auth.isCodeMode.value && auth.passwordMode.value === 'saved' }"
+                    aria-hidden="true"
+                  >已保存密码</span>
+                </span>
+              </label>
+              <div class="code-input-wrap">
                 <input
                   v-model.trim="auth.validateValue.value"
                   :type="auth.isCodeMode.value ? 'text' : 'password'"
@@ -221,7 +225,7 @@ const canSubmitPrimary = computed(() => {
                   {{ auth.busy.value === 'captcha' ? '等待验证…' : auth.busy.value === 'code' ? '发送中…' : '发送验证码' }}
                 </button>
               </div>
-            </label>
+            </div>
           </div>
 
           <button

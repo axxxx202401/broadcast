@@ -130,6 +130,7 @@ describe('消息分页 IPC 契约', () => {
       limit: 200,
       beforeSendTime: undefined,
       beforeMsgId: undefined,
+      matchedOnly: false,
     })
   })
 
@@ -147,6 +148,7 @@ describe('消息分页 IPC 契约', () => {
       limit: 50,
       beforeSendTime: 100,
       beforeMsgId: '9007199254740993',
+      matchedOnly: false,
     })
   })
 })

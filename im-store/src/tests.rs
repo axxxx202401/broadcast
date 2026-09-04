@@ -73,7 +73,7 @@ async fn message_batch_upserts_all_rows_in_one_transaction() {
         .await
         .unwrap();
 
-    let page = store.messages.get_by_group(13537, 10, None).await.unwrap();
+    let page = store.messages.get_by_group(13537, 10, None, false).await.unwrap();
     assert_eq!(page.messages.len(), 2);
     assert_eq!(
         page.messages
@@ -222,7 +222,7 @@ async fn test_get_by_group() {
         .await
         .unwrap();
 
-    let first = store.messages.get_by_group(12345, 2, None).await.unwrap();
+    let first = store.messages.get_by_group(12345, 2, None, false).await.unwrap();
     assert_eq!(first.messages.len(), 2);
     // 同一群组内按 (send_time, msg_id) 降序返回，并以本页最老消息作为下一页游标。
     assert_eq!(first.messages[0].msg_id, 2002);
@@ -238,7 +238,7 @@ async fn test_get_by_group() {
 
     let second = store
         .messages
-        .get_by_group(12345, 2, first.next_cursor)
+        .get_by_group(12345, 2, first.next_cursor, false)
         .await
         .unwrap();
     assert_eq!(
@@ -253,7 +253,7 @@ async fn test_get_by_group() {
     assert_eq!(second.next_cursor, None);
 
     // 不存在的群组返回空列表。
-    let page = store.messages.get_by_group(0, 10, None).await.unwrap();
+    let page = store.messages.get_by_group(0, 10, None, false).await.unwrap();
     assert!(page.messages.is_empty());
 }
 
@@ -277,15 +277,15 @@ async fn message_cursor_paginates_equal_send_times_without_duplicates_or_gaps() 
             .unwrap();
     }
 
-    let first = store.messages.get_by_group(7, 2, None).await.unwrap();
+    let first = store.messages.get_by_group(7, 2, None, false).await.unwrap();
     let second = store
         .messages
-        .get_by_group(7, 2, first.next_cursor)
+        .get_by_group(7, 2, first.next_cursor, false)
         .await
         .unwrap();
     let third = store
         .messages
-        .get_by_group(7, 2, second.next_cursor)
+        .get_by_group(7, 2, second.next_cursor, false)
         .await
         .unwrap();
     let ids = first
@@ -345,10 +345,10 @@ async fn test_get_recent_returns_all_groups_with_names() {
         .await
         .unwrap();
 
-    let first = store.messages.get_recent(1, None).await.unwrap();
+    let first = store.messages.get_recent(1, None, false).await.unwrap();
     let second = store
         .messages
-        .get_recent(1, first.next_cursor)
+        .get_recent(1, first.next_cursor, false)
         .await
         .unwrap();
 
@@ -653,7 +653,7 @@ async fn remote_snapshot_hides_missing_group_without_deleting_history_and_restor
     assert_eq!(
         store
             .messages
-            .get_by_group(2, 10, None)
+            .get_by_group(2, 10, None, false)
             .await
             .unwrap()
             .messages
@@ -727,8 +727,8 @@ async fn message_store_rejects_invalid_pagination_limit() {
     let store = SqliteStore::new(":memory:").await.unwrap();
 
     // 游标字段已是 i64；存储层只需拒绝零页长和超过 200 的页长。
-    assert!(store.messages.get_by_group(1, 0, None).await.is_err());
-    assert!(store.messages.get_by_group(1, 201, None).await.is_err());
+    assert!(store.messages.get_by_group(1, 0, None, false).await.is_err());
+    assert!(store.messages.get_by_group(1, 201, None, false).await.is_err());
 }
 
 #[tokio::test]
@@ -795,7 +795,7 @@ async fn test_message_content_and_md5() {
         .await
         .unwrap();
 
-    let page = store.messages.get_by_group(12345, 10, None).await.unwrap();
+    let page = store.messages.get_by_group(12345, 10, None, false).await.unwrap();
     assert_eq!(page.messages.len(), 1);
     assert_eq!(page.messages[0].content, b"binary file content");
     assert_eq!(page.messages[0].content_md5, "abc123");
@@ -823,4 +823,48 @@ async fn creates_missing_database_file() {
 
     store.pool.close().await;
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn lottery_config_upsert_and_get() {
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    let uid = 42i64;
+
+    // 初始为空配置。
+    let row = store.lottery_config.get(uid).await.unwrap();
+    assert_eq!(row.uid, uid);
+    assert_eq!(row.api_url, "");
+    assert_eq!(row.current_issue, 0);
+
+    // 保存配置。
+    store
+        .lottery_config
+        .upsert(&lottery_config::LotteryConfigRow {
+            uid,
+            api_url: "https://example.com/api".to_string(),
+            current_issue: 3477887,
+            updated_at: 1_700_000_000_000,
+        })
+        .await
+        .unwrap();
+
+    let row = store.lottery_config.get(uid).await.unwrap();
+    assert_eq!(row.api_url, "https://example.com/api");
+    assert_eq!(row.current_issue, 3477887);
+
+    // 更新配置。
+    store
+        .lottery_config
+        .upsert(&lottery_config::LotteryConfigRow {
+            uid,
+            api_url: "https://new.com/api".to_string(),
+            current_issue: 9999999,
+            updated_at: 1_700_000_001_000,
+        })
+        .await
+        .unwrap();
+
+    let row = store.lottery_config.get(uid).await.unwrap();
+    assert_eq!(row.api_url, "https://new.com/api");
+    assert_eq!(row.current_issue, 9999999);
 }

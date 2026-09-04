@@ -8,6 +8,8 @@ pub mod auth;
 pub mod chat;
 /// 群组同步、列表查询与监控开关流程。
 pub mod groups;
+/// 开奖配置与历史（3 项）。
+pub mod lottery;
 
 /// 将前端传入的十进制字符串解析为 Rust `i64` 标识符。
 ///

@@ -86,6 +86,9 @@ impl AppConfig {
             ("IM_PACKAGE_CODE", option_env!("IM_PACKAGE_CODE")),
             ("IM_PLAT", option_env!("IM_PLAT")),
             ("IM_LANGUAGE", option_env!("IM_LANGUAGE")),
+            // IM_SYS_MAC 供构建时注入固定设备标识；未设置时由调用方通过
+            // [`DeviceConfig::resolve_sys_mac`] 从磁盘加载或生成新标识。
+            ("IM_SYS_MAC", option_env!("IM_SYS_MAC")),
             ("IM_SYS_MODEL", option_env!("IM_SYS_MODEL")),
         ])
     }
@@ -134,7 +137,7 @@ impl AppConfig {
                 package_code: parse_number(values, "IM_PACKAGE_CODE")?,
                 plat: parse_number(values, "IM_PLAT")?,
                 language: parse_number(values, "IM_LANGUAGE")?,
-                sys_mac: uuid::Uuid::new_v4().to_string(),
+                sys_mac: resolve_sys_mac(values)?,
                 sys_model: required_text(values, "IM_SYS_MODEL")?.to_string(),
             },
         })
@@ -178,6 +181,20 @@ impl Default for DeviceConfig {
             sys_mac: uuid::Uuid::new_v4().to_string(),
             sys_model: "PC-TOOLS".to_string(),
         }
+    }
+}
+
+/// 解析 `sys_mac`：优先取环境变量 `IM_SYS_MAC`，其次使用生成的 UUID。
+///
+/// 磁盘持久化由调用方（`im-app`）负责，此处只处理构建期可选注入。
+fn resolve_sys_mac(values: &[(&str, Option<&str>)]) -> AppResult<String> {
+    let raw = values
+        .iter()
+        .find_map(|(name, value)| (*name == "IM_SYS_MAC").then_some(*value))
+        .flatten();
+    match raw {
+        Some(raw) if !raw.trim().is_empty() => Ok(raw.to_string()),
+        _ => Ok(uuid::Uuid::new_v4().to_string()),
     }
 }
 

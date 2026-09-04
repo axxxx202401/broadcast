@@ -59,6 +59,8 @@ pub struct MessageRow {
     pub raw_proto: Option<Vec<u8>>,
     /// 群组显示名称；群记录不存在时为空字符串。
     pub group_name: String,
+    /// 是否匹配当前账号的开奖规则；`1` 为匹配，`0` 为不匹配。
+    pub matched: i32,
 }
 
 /// 一页按时间倒序排列的消息。
@@ -113,8 +115,8 @@ impl MessageStore {
         for record in records {
             sqlx::query(
                 r#"INSERT INTO messages
-                   (msg_id, group_id, send_uid, msg_type, content, send_time, content_md5, stored_at, raw_proto)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   (msg_id, group_id, send_uid, msg_type, content, send_time, content_md5, stored_at, raw_proto, matched)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
                    ON CONFLICT(msg_id) DO UPDATE SET
                      group_id = excluded.group_id,
                      send_uid = excluded.send_uid,
@@ -145,21 +147,24 @@ impl MessageStore {
     /// 无游标时从最新消息开始；有游标时只读取 `(send_time, msg_id)` 严格更小的行。
     /// 查询固定多读一行判断是否还有更早记录，不使用 `OFFSET`。`limit` 必须位于
     /// `1..=`[`MAX_MESSAGE_PAGE_LIMIT`]；参数越界或 SQL 执行失败时返回对应错误。
+    /// `matched_only` 为 `true` 时只返回 `matched = 1` 的消息。
     pub async fn get_by_group(
         &self,
         group_id: i64,
         limit: usize,
         cursor: Option<MessageCursor>,
+        matched_only: bool,
     ) -> sqlx::Result<MessagePage> {
         let fetch_limit = checked_fetch_limit(limit)?;
         let rows = if let Some(cursor) = cursor {
             sqlx::query(
                 r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
-                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name
+                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched
                    FROM messages m
                    LEFT JOIN groups g ON g.group_id = m.group_id
                    WHERE m.group_id = ?
                      AND (m.send_time < ? OR (m.send_time = ? AND m.msg_id < ?))
+                     AND (m.matched = 1 OR NOT ?)
                    ORDER BY m.send_time DESC, m.msg_id DESC
                    LIMIT ?"#,
             )
@@ -167,20 +172,23 @@ impl MessageStore {
             .bind(cursor.send_time)
             .bind(cursor.send_time)
             .bind(cursor.msg_id)
+            .bind(matched_only)
             .bind(fetch_limit)
             .fetch_all(&self.pool)
             .await?
         } else {
             sqlx::query(
                 r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
-                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name
+                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched
                    FROM messages m
                    LEFT JOIN groups g ON g.group_id = m.group_id
                    WHERE m.group_id = ?
+                     AND (m.matched = 1 OR NOT ?)
                    ORDER BY m.send_time DESC, m.msg_id DESC
                    LIMIT ?"#,
             )
             .bind(group_id)
+            .bind(matched_only)
             .bind(fetch_limit)
             .fetch_all(&self.pool)
             .await?
@@ -192,39 +200,45 @@ impl MessageStore {
     ///
     /// 结果按发送时间和消息 ID 降序排列；没有群记录、已不可用或已关闭监控的消息
     /// 不进入全量监控视图。游标语义和页长边界与 [`Self::get_by_group`] 相同。
+    /// `matched_only` 为 `true` 时只返回 `matched = 1` 的消息。
     pub async fn get_recent(
         &self,
         limit: usize,
         cursor: Option<MessageCursor>,
+        matched_only: bool,
     ) -> sqlx::Result<MessagePage> {
         let fetch_limit = checked_fetch_limit(limit)?;
         let rows = if let Some(cursor) = cursor {
             sqlx::query(
                 r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
-                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name
+                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched
                    FROM messages m
                    JOIN groups g ON g.group_id = m.group_id
                    WHERE g.monitored = 1 AND g.available = 1
                      AND (m.send_time < ? OR (m.send_time = ? AND m.msg_id < ?))
+                     AND (m.matched = 1 OR NOT ?)
                    ORDER BY m.send_time DESC, m.msg_id DESC
                    LIMIT ?"#,
             )
             .bind(cursor.send_time)
             .bind(cursor.send_time)
             .bind(cursor.msg_id)
+            .bind(matched_only)
             .bind(fetch_limit)
             .fetch_all(&self.pool)
             .await?
         } else {
             sqlx::query(
                 r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
-                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name
+                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched
                    FROM messages m
                    JOIN groups g ON g.group_id = m.group_id
                    WHERE g.monitored = 1 AND g.available = 1
+                     AND (m.matched = 1 OR NOT ?)
                    ORDER BY m.send_time DESC, m.msg_id DESC
                    LIMIT ?"#,
             )
+            .bind(matched_only)
             .bind(fetch_limit)
             .fetch_all(&self.pool)
             .await?
@@ -239,7 +253,7 @@ impl MessageStore {
     pub async fn get_by_id(&self, msg_id: i64) -> sqlx::Result<Option<MessageRow>> {
         let row = sqlx::query(
             r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
-                      m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name
+                      m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched
                FROM messages m
                LEFT JOIN groups g ON g.group_id = m.group_id
                WHERE m.msg_id = ?"#,
@@ -259,7 +273,82 @@ impl MessageStore {
             stored_at: row.get("stored_at"),
             raw_proto: row.get("raw_proto"),
             group_name: row.get("group_name"),
+            matched: row.get("matched"),
         }))
+    }
+
+    /// 根据消息内容和开奖配置，批量更新消息的 `matched` 标记。
+    ///
+    /// 解析每条消息的明文内容（UTF-8 或 UTF-8 片段），若内容同时包含"开奖"和
+    /// `current_issue`，则将该消息 `matched` 设为 `1`；否则设为 `0`。只更新
+    /// 指定群组内的消息。SQL 执行失败时返回 [`sqlx::Error`]。
+    pub async fn recompute_matched(
+        &self,
+        group_id: i64,
+        current_issue: i64,
+    ) -> sqlx::Result<usize> {
+        let rows = sqlx::query(
+            r#"SELECT msg_id, content FROM messages WHERE group_id = ?"#,
+        )
+        .bind(group_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut updated = 0usize;
+        for row in rows {
+            let msg_id: i64 = row.get("msg_id");
+            let content: Vec<u8> = row.get("content");
+            let text = String::from_utf8_lossy(&content);
+            let is_matched = text.contains("开奖") && text.contains(&current_issue.to_string());
+            if is_matched {
+                sqlx::query("UPDATE messages SET matched = 1 WHERE msg_id = ?")
+                    .bind(msg_id)
+                    .execute(&self.pool)
+                    .await?;
+                updated += 1;
+            } else {
+                sqlx::query("UPDATE messages SET matched = 0 WHERE msg_id = ?")
+                    .bind(msg_id)
+                    .execute(&self.pool)
+                    .await?;
+            }
+        }
+        Ok(updated)
+    }
+
+    /// 按群组批量重新计算所有消息的 `matched` 标记（全量）。
+    ///
+    /// 与 [`Self::recompute_matched_for_group`] 相同，但接受 `None` 时遍历全部群组。
+    pub async fn recompute_matched_all(
+        &self,
+        current_issue: i64,
+    ) -> sqlx::Result<usize> {
+        let rows = sqlx::query(
+            r#"SELECT msg_id, content FROM messages"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut updated = 0usize;
+        for row in rows {
+            let msg_id: i64 = row.get("msg_id");
+            let content: Vec<u8> = row.get("content");
+            let text = String::from_utf8_lossy(&content);
+            let is_matched = text.contains("开奖") && text.contains(&current_issue.to_string());
+            if is_matched {
+                sqlx::query("UPDATE messages SET matched = 1 WHERE msg_id = ?")
+                    .bind(msg_id)
+                    .execute(&self.pool)
+                    .await?;
+                updated += 1;
+            } else {
+                sqlx::query("UPDATE messages SET matched = 0 WHERE msg_id = ?")
+                    .bind(msg_id)
+                    .execute(&self.pool)
+                    .await?;
+            }
+        }
+        Ok(updated)
     }
 }
 
@@ -291,6 +380,7 @@ fn message_page(rows: Vec<sqlx::sqlite::SqliteRow>, limit: usize) -> MessagePage
             stored_at: row.get("stored_at"),
             raw_proto: row.get("raw_proto"),
             group_name: row.get("group_name"),
+            matched: row.get("matched"),
         })
         .collect::<Vec<_>>();
     let next_cursor = has_more && !messages.is_empty();

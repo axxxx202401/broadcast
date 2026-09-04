@@ -68,6 +68,8 @@ export interface MessageDto {
    * INSERT 时生成的值，故为 `null`，不表示消息尚未落库。历史查询会返回已存的写入时间。
    */
   stored_at: number | null
+  /** 是否匹配当前账号的开奖规则；`1` 为匹配，`0` 为不匹配。 */
+  matched: number
 }
 
 /** 指向一页中最老消息的复合 keyset 游标。 */

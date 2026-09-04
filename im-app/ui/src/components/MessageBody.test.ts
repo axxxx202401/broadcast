@@ -31,6 +31,7 @@ function message(decodedContent: MessageDto['decoded_content']): MessageDto {
     send_time: 1,
     content_md5: '',
     stored_at: null,
+    matched: 0,
   }
 }
 

@@ -20,6 +20,7 @@ const message = (msgId: string, sendTime: number): MessageDto => ({
   send_time: sendTime,
   content_md5: `md5-${msgId}`,
   stored_at: null,
+  matched: 0,
 })
 
 describe('消息正文解码', () => {

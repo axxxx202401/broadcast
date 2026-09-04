@@ -35,6 +35,8 @@ const mocks = vi.hoisted(() => ({
     hasOlder: { value: true },
     loadingOlder: { value: false },
     olderRequestToken: { value: 7 },
+    showMatchedOnly: { value: true },
+    filteredMessages: { value: [] },
     disconnect: vi.fn(),
     connect: vi.fn(),
     logout: vi.fn(),
@@ -805,6 +807,14 @@ describe('App 窄屏群列表抽屉', () => {
         expect(el.attributes('tabindex')).toBe('-1')
       }
     }
+    wrapper.unmount()
+  })
+
+  it('顶栏显示日夜主题切换按钮', async () => {
+    const wrapper = await mountAuthenticatedApp()
+    const themeBtn = wrapper.find('button[aria-label="切换日夜主题"]')
+    expect(themeBtn.exists()).toBe(true)
+    expect(themeBtn.find('span').text()).toContain('☾')
     wrapper.unmount()
   })
 })

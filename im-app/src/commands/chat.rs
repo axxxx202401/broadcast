@@ -97,6 +97,8 @@ pub struct MessageDto {
     /// 数据库写入时间；实时推送未回读 INSERT 生成的值，故为 `None`，但消息已成功落库。
     /// 历史查询会返回已存的写入时间。
     pub stored_at: Option<i64>,
+    /// 是否匹配当前账号的开奖规则；`1` 为匹配，`0` 为不匹配。
+    pub matched: i32,
 }
 
 /// 前端可安全回传的消息分页游标。
@@ -166,6 +168,7 @@ fn stored_message_parts(
         send_time: message.send_time,
         content_md5: message.content_md5.clone(),
         stored_at: None,
+        matched: 0,
     };
     let record = im_store::message::MessageRecord {
         msg_id: message.msg_id,
@@ -193,6 +196,7 @@ fn message_dto_from_row(row: im_store::message::MessageRow) -> MessageDto {
         send_time: row.send_time,
         content_md5: row.content_md5,
         stored_at: Some(row.stored_at),
+        matched: row.matched,
     }
 }
 
@@ -2119,8 +2123,10 @@ pub async fn get_messages(
     limit: Option<usize>,
     before_send_time: Option<i64>,
     before_msg_id: Option<String>,
+    matched_only: Option<bool>,
 ) -> Result<MessagePageDto, String> {
     let (limit, cursor) = validate_message_page(limit, before_send_time, before_msg_id.as_deref())?;
+    let matched_only = matched_only.unwrap_or(false);
     let session = authenticated_session_for_connect(&state.auth_session).await?;
     let db = state
         .account_db
@@ -2130,9 +2136,9 @@ pub async fn get_messages(
     let page = match group_id {
         Some(group_id) => {
             let group_id = super::parse_i64_id(&group_id, "group_id")?;
-            db.messages.get_by_group(group_id, limit, cursor).await
+            db.messages.get_by_group(group_id, limit, cursor, matched_only).await
         }
-        None => db.messages.get_recent(limit, cursor).await,
+        None => db.messages.get_recent(limit, cursor, matched_only).await,
     }
     .map_err(|error| error.to_string())?;
 
@@ -2441,6 +2447,7 @@ mod tests {
                 send_time: 20,
                 content_md5: String::new(),
                 stored_at: None,
+                matched: 0,
             }],
         )
         .await
@@ -4873,6 +4880,7 @@ mod tests {
             content_md5: record.content_md5.clone(),
             stored_at: 5678,
             raw_proto: record.raw_proto.clone(),
+            matched: 0,
             group_name: "测试群".to_string(),
         });
 

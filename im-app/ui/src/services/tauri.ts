@@ -23,6 +23,22 @@ import type {
   VerifyResponse,
 } from '../types/im'
 
+/** 单条开奖历史条目。 */
+export interface DrawItem {
+  /** 期号。 */
+  pre_draw_issue: number
+  /** 开奖时间字符串，格式为 `"YYYY-MM-DD HH:MM:SS"`。 */
+  pre_draw_time: string
+}
+
+/** 当前账号的开奖配置。 */
+export interface LotteryConfig {
+  /** 用户填写的 API URL。 */
+  api_url: string
+  /** 当前关注的期号；`0` 表示尚未设置。 */
+  current_issue: number
+}
+
 /** 前端使用的 Tauri IPC 服务集合；各方法保持后端命令名、参数包装和返回类型契约。 */
 export const api = {
   /**
@@ -140,12 +156,13 @@ export const api = {
    * `groupId` 省略时读取全部受监控群组；查询后端会按需请求群密钥并解密正文，
    * 单条解密失败通过 DTO 返回，不修改连接或原始消息。
    */
-  getMessages: (groupId?: string, cursor?: MessageCursor, limit = 200) =>
+  getMessages: (groupId?: string, cursor?: MessageCursor, limit = 200, matchedOnly = false) =>
     invoke<MessagePage>('get_messages', {
       groupId,
       limit,
       beforeSendTime: cursor?.sendTime,
       beforeMsgId: cursor?.msgId,
+      matchedOnly,
     }),
   /**
    * 下载并解密指定消息的主附件或缩略图，返回可转换为 asset URL 的本地缓存路径。
@@ -153,4 +170,11 @@ export const api = {
    */
   downloadMessageAttachment: (msgId: string, thumbnail = false) =>
     invoke<AttachmentDownloadDto>('download_message_attachment', { msgId, thumbnail }),
+  /** 读取当前账号的开奖配置；未配置时返回空 URL 与 `current_issue = 0`。 */
+  getLotteryConfig: () => invoke<LotteryConfig>('get_lottery_config'),
+  /** 保存当前账号的开奖配置，并触发已有消息重新匹配。 */
+  setLotteryConfig: (apiUrl: string, currentIssue: number) =>
+    invoke<void>('set_lottery_config', { apiUrl, currentIssue }),
+  /** 从远端拉取开奖历史，按期号降序排列；URL 未配置时拒绝。 */
+  fetchLotteryHistory: () => invoke<DrawItem[]>('fetch_lottery_history'),
 }

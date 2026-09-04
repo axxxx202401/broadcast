@@ -1,15 +1,19 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import type { GroupDto } from '../types/im'
 
 // 父组件提供筛选后的群组、统计与当前操作状态；侧栏不自行维护业务数据。
-defineProps<{
+const props = withDefaults(defineProps<{
   groups: GroupDto[]
   total: number
   monitoredCount: number
   selectedId: string | null
   search: string
   pending: string | null
-}>()
+  showMatchedOnly?: boolean
+}>(), {
+  showMatchedOnly: true,
+})
 
 // 搜索采用受控值更新，其余事件把选择、监控切换和刷新意图交还父组件。
 defineEmits<{
@@ -18,7 +22,11 @@ defineEmits<{
   'select-all': []
   toggle: [group: GroupDto]
   refresh: []
+  'update:showMatchedOnly': [value: boolean]
 }>()
+
+/** 各分组的展开/收起状态 */
+const sections = ref<{ id: string, expanded: boolean }>({ id: 'all', expanded: true })
 </script>
 
 <template>
@@ -45,21 +53,27 @@ defineEmits<{
       </button>
     </div>
 
-    <!-- 群组列表保持原生列表语义；选择按钮与监控开关是同级交互控件，结构上避免 nested button。 -->
-    <div class="list-label"><span>全部群聊</span><span>{{ groups.length }}</span></div>
-    <button
-      class="all-messages"
-      :class="{ selected: selectedId === null }"
-      type="button"
-      :aria-pressed="selectedId === null"
-      @click="$emit('select-all')"
-    >
-      <span aria-hidden="true">⌘</span>
-      <span><strong>全部消息</strong><small>所有已监控群组</small></span>
-    </button>
-    <ul class="group-list" aria-label="群组">
+    <!-- 匹配消息开关 -->
+    <div class="matched-toggle">
+      <label class="toggle-label">
+        <span>只显示匹配消息</span>
+        <input
+          type="checkbox"
+          :checked="showMatchedOnly"
+          @change="$emit('update:showMatchedOnly', ($event.target as HTMLInputElement).checked)"
+        />
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+
+    <!-- 群组列表分组显示 -->
+    <div class="section-header" @click="sections.expanded = !sections.expanded">
+      <span>监听中（{{ monitoredCount }}）</span>
+      <span class="chevron" :class="{ collapsed: !sections.expanded }">▼</span>
+    </div>
+    <ul v-if="sections.expanded" class="group-list monitored-list" aria-label="监听中的群组">
       <li
-        v-for="group in groups"
+        v-for="group in groups.filter(g => g.monitored !== 0)"
         :key="group.group_id"
         class="group-row"
         :class="{ selected: selectedId === group.group_id }"
@@ -77,7 +91,6 @@ defineEmits<{
             <small>#{{ group.group_id }} · {{ group.member_count }} 成员</small>
           </span>
         </button>
-        <!-- 同级按钮使两种操作相互独立；click.stop 仅阻止开关点击继续冒泡。 -->
         <button
           class="monitor-switch"
           :class="{ active: group.monitored !== 0 }"
@@ -88,10 +101,143 @@ defineEmits<{
           @click.stop="$emit('toggle', group)"
         ><i></i></button>
       </li>
-      <li v-if="groups.length === 0" class="compact-empty">
-        <span>没有匹配的群</span>
-        <p>没有匹配的群组</p>
+    </ul>
+
+    <div class="section-header" @click="sections.expanded = !sections.expanded">
+      <span>未监听（{{ total - monitoredCount }}）</span>
+      <span class="chevron" :class="{ collapsed: !sections.expanded }">▼</span>
+    </div>
+    <ul v-if="!sections.expanded" class="group-list unmonitored-list" aria-label="未监听的群组">
+      <li
+        v-for="group in groups.filter(g => g.monitored === 0)"
+        :key="group.group_id"
+        class="group-row"
+        :class="{ selected: selectedId === group.group_id }"
+      >
+        <button
+          class="group-select"
+          type="button"
+          :aria-pressed="selectedId === group.group_id"
+          :aria-label="`查看${group.name || `群组 ${group.group_id}`}消息`"
+          @click="$emit('select', group.group_id)"
+        >
+          <span class="group-avatar">{{ group.name.slice(0, 1).toUpperCase() }}</span>
+          <span class="group-identity">
+            <strong>{{ group.name || `群组 ${group.group_id}` }}</strong>
+            <small>#{{ group.group_id }} · {{ group.member_count }} 成员</small>
+          </span>
+        </button>
+        <button
+          class="monitor-switch"
+          :class="{ active: group.monitored !== 0 }"
+          type="button"
+          role="switch"
+          :aria-checked="group.monitored !== 0"
+          :aria-label="`${group.name}监控`"
+          @click.stop="$emit('toggle', group)"
+        ><i></i></button>
       </li>
     </ul>
+
+    <!-- 全部消息按钮 -->
+    <button
+      class="all-messages"
+      :class="{ selected: selectedId === null }"
+      type="button"
+      :aria-pressed="selectedId === null"
+      @click="$emit('select-all')"
+    >
+      <span aria-hidden="true">⌘</span>
+      <span><strong>全部消息</strong><small>所有已监控群组</small></span>
+    </button>
+
+    <div v-if="groups.length === 0" class="compact-empty">
+      <span>没有匹配的群</span>
+      <p>没有匹配的群组</p>
+    </div>
   </aside>
 </template>
+
+<style scoped>
+.matched-toggle {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color, #e2e2e6);
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-primary, #1d1d1f);
+}
+
+.toggle-label input[type="checkbox"] {
+  display: none;
+}
+
+.toggle-slider {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  background: var(--border-color, #e2e2e6);
+  border-radius: 11px;
+  transition: background 0.2s;
+}
+
+.toggle-slider::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+.toggle-label input:checked + .toggle-slider {
+  background: var(--accent-color, #007aff);
+}
+
+.toggle-label input:checked + .toggle-slider::after {
+  transform: translateX(18px);
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary, #6e6e73);
+  cursor: pointer;
+  user-select: none;
+}
+
+.section-header:hover {
+  color: var(--text-primary, #1d1d1f);
+}
+
+.chevron {
+  font-size: 10px;
+  transition: transform 0.2s;
+}
+
+.chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.monitored-list {
+  border-bottom: 1px solid var(--border-color, #e2e2e6);
+  margin-bottom: 8px;
+}
+
+.unmonitored-list {
+  opacity: 0.8;
+}
+</style>

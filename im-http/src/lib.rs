@@ -12,3 +12,5 @@ pub mod http_clients;
 pub mod im_biz;
 /// 基于 JSON 的 OpenChat 用户接口客户端。
 pub mod openchat_user;
+/// 第三方开奖历史 API 客户端。
+pub mod lottery;

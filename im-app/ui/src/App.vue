@@ -3,20 +3,25 @@ import { computed, onMounted, onUnmounted } from 'vue'
 
 import AccountMenu from './components/AccountMenu.vue'
 import GroupSidebar from './components/GroupSidebar.vue'
+import LotteryPanel from './components/LotteryPanel.vue'
 import LoginPanel from './components/LoginPanel.vue'
 import MessagePanel from './components/MessagePanel.vue'
 import StatusBadge from './components/StatusBadge.vue'
 import { useAccounts } from './composables/useAccounts'
 import { useAuth } from './composables/useAuth'
+import { useLottery } from './composables/useLottery'
 import { useMonitor } from './composables/useMonitor'
 import { useResponsiveSidebar } from './composables/useResponsiveSidebar'
+import { useTheme } from './composables/useTheme'
 import type { RestoreSessionResult } from './types/im'
 
 // 根组件编排账号恢复、认证与监控状态。启动时先恢复上次登录，避免闪现登录页。
 const monitor = useMonitor()
+const lottery = useLottery()
 const accounts = useAccounts()
 /** 窄屏把群列表收成抽屉；宽屏保持侧栏展开。仅已登录工作区使用开关与遮罩。 */
 const layout = useResponsiveSidebar()
+const theme = useTheme()
 const auth = useAuth((payload) => {
   accounts.applyManualLogin(payload.account)
   monitor.acceptLogin(payload.groups, payload.account.uid)
@@ -193,6 +198,8 @@ function onShowAllMessages() {
   />
 
   <main v-else class="operations-shell">
+    <!-- 开奖信息面板，始终显示在最顶部。 -->
+    <LotteryPanel />
     <!-- 顶栏集中呈现连接状态、当前账号菜单及连接操作。 -->
     <header class="topbar">
       <!-- 窄屏优先展示消息区，用顶部按钮展开群列表抽屉。 -->
@@ -211,6 +218,15 @@ function onShowAllMessages() {
         </div>
       </div>
       <div class="topbar-actions">
+        <button
+          class="icon-button"
+          type="button"
+          aria-label="切换日夜主题"
+          @click="theme.toggle"
+        >
+          <span v-if="theme.isLight.value" aria-hidden="true">☀</span>
+          <span v-else aria-hidden="true">☾</span>
+        </button>
         <StatusBadge :status="monitor.connectionStatus.value" />
         <AccountMenu
           v-if="accounts.selectedAccount.value"
@@ -272,16 +288,18 @@ function onShowAllMessages() {
           :selected-id="monitor.selectedGroup.value?.group_id ?? null"
           :search="monitor.search.value"
           :pending="monitor.pending.value"
+          :show-matched-only="monitor.showMatchedOnly.value"
           @update:search="monitor.search.value = $event"
           @select="onSelectGroup"
           @select-all="onShowAllMessages"
           @toggle="monitor.toggleGroup"
           @refresh="monitor.refreshGroups"
+          @update:show-matched-only="monitor.showMatchedOnly.value = $event"
         />
       </div>
       <MessagePanel
         :group="monitor.selectedGroup.value"
-        :messages="monitor.messages.value"
+        :messages="monitor.filteredMessages.value"
         :loading="monitor.messagesLoading.value"
         :has-older="monitor.hasOlder.value"
         :loading-older="monitor.loadingOlder.value"
