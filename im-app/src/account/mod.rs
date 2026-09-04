@@ -1,4 +1,4 @@
-//! 账号持久化基础设施，统一管理账号级文件布局、非敏感账号索引、系统凭据库与活动数据库。
+//! 账号持久化基础设施，统一管理账号级文件布局、非敏感账号索引、加密凭据库与活动数据库。
 //!
 //! [`AppState`](crate::state::AppState) 持有这些服务，但未登录时不打开业务 SQLite。
 
@@ -13,6 +13,12 @@ pub mod index;
 /// 系统凭据库封装。
 pub mod credentials;
 
+/// AES-256-GCM 与本机主密钥文件。
+pub mod secret_cipher;
+
+/// 加密 SQLite 凭据仓储。
+pub mod sqlite_credentials;
+
 /// 按 UID 隔离的活动账号数据库。
 pub mod database;
 
@@ -25,7 +31,8 @@ pub mod pending_login;
 /// Token 恢复、会话发布以及启动时的最后账号路由。
 pub mod session;
 
-pub use credentials::{CredentialStore, KeyringCredentialStore};
+pub use credentials::CredentialStore;
+pub use sqlite_credentials::SqliteCredentialStore;
 pub use database::AccountDatabaseManager;
 pub use index::AccountIndexStore;
 pub use migration::LegacyDatabaseMigrator;
@@ -47,9 +54,9 @@ pub enum AccountError {
     /// 账号索引或迁移状态的 JSON 编解码失败。
     #[error("账号 JSON 数据处理失败: {0}")]
     Json(#[from] serde_json::Error),
-    /// 系统凭据存储当前不可用；字符串包含可安全展示的原因摘要。
+    /// 凭据存储不可用时返回安全摘要错误；字符串包含可安全展示的原因摘要。
     #[allow(dead_code)]
-    #[error("系统凭据存储不可用: {0}")]
+    #[error("凭据存储不可用: {0}")]
     CredentialUnavailable(String),
     /// 当前没有已激活的账号数据库。
     #[error("当前没有活动账号数据库")]

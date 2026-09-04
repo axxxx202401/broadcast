@@ -5,7 +5,7 @@ import type { useAuth } from '../composables/useAuth'
 import type { AccountSummary, PrimaryLoginType } from '../types/im'
 
 /**
- * 登录卡片：展示已保存账号、主登录字段、常驻的其他方式，以及二次验证。
+ * 登录卡片：展示已保存账号、单行登录方式 tab、主登录字段与二次验证。
  * 从主界面「添加账号」进入时显示返回；不渲染协议字段名、令牌或滑块失败文案。
  */
 const props = defineProps<{
@@ -45,6 +45,14 @@ const validateTypeLabels: Partial<Record<number, string>> = {
 const isPhoneMethod = computed(() =>
   props.auth.loginMethod.value === 1 || props.auth.loginMethod.value === 3,
 )
+
+/** 主登录方式单行 tab；顺序固定为邮箱优先。 */
+const loginMethodTabs: { method: PrimaryLoginType; label: string }[] = [
+  { method: 4, label: '邮箱密码' },
+  { method: 2, label: '邮箱验证码' },
+  { method: 3, label: '手机密码' },
+  { method: 1, label: '手机验证码' },
+]
 
 /** 多种待验证方式时，展开“改用其他验证方式”后才显示选项列表。 */
 const choosingOtherMethods = ref(false)
@@ -139,50 +147,82 @@ const canSubmitPrimary = computed(() => {
           </label>
         </div>
 
-        <form class="login-form" @submit.prevent="auth.submitLogin">
-          <div class="field-grid">
-            <label v-if="isPhoneMethod">
-              <span>国家区号</span>
-              <input v-model.number="auth.countryCode.value" type="number" inputmode="numeric" />
-            </label>
-            <label>
-              <span>{{ isPhoneMethod ? '手机号' : '邮箱地址' }}</span>
-              <input
-                v-model.trim="auth.account.value"
-                :type="isPhoneMethod ? 'tel' : 'email'"
-                :autocomplete="isPhoneMethod ? 'tel' : 'email'"
-                :placeholder="isPhoneMethod ? '输入手机号' : '输入邮箱地址'"
-                required
-              />
-            </label>
+        <div
+          class="login-primary-panel"
+        >
+          <div
+            class="login-method-tabs"
+            role="tablist"
+            aria-label="登录方式"
+          >
+            <button
+              v-for="tab in loginMethodTabs"
+              :key="tab.method"
+              type="button"
+              role="tab"
+              class="login-method-tab"
+              data-test="login-method-tab"
+              :class="{ 'is-active': auth.loginMethod.value === tab.method }"
+              :aria-selected="auth.loginMethod.value === tab.method"
+              @click="chooseLoginMethod(tab.method)"
+            >
+              {{ tab.label }}
+            </button>
           </div>
 
-          <label>
-            <span>{{ auth.isCodeMode.value ? '验证码' : '登录密码' }}</span>
-            <span
-              v-if="!auth.isCodeMode.value && auth.passwordMode.value === 'saved'"
-              class="password-sentinel"
-            >已保存密码</span>
-            <div :class="{ 'code-input-row': auth.isCodeMode.value }">
-              <input
-                v-model.trim="auth.validateValue.value"
-                :type="auth.isCodeMode.value ? 'text' : 'password'"
-                :inputmode="auth.isCodeMode.value ? 'numeric' : 'text'"
-                :autocomplete="auth.isCodeMode.value ? 'one-time-code' : 'current-password'"
-                :required="auth.isCodeMode.value || auth.passwordMode.value !== 'saved'"
-              />
-              <button
-                v-if="auth.isCodeMode.value"
-                class="button secondary code-send-inline"
-                data-test="send-code"
-                type="button"
-                :disabled="!!auth.busy.value || auth.gt4Loading.value || !auth.accountReady.value"
-                @click="auth.sendCode"
-              >
-                {{ auth.busy.value === 'captcha' ? '等待验证…' : auth.busy.value === 'code' ? '发送中…' : '发送验证码' }}
-              </button>
+          <form class="login-form" @submit.prevent="auth.submitLogin">
+          <div class="login-form-fields">
+            <div class="account-row" :class="{ 'is-phone': isPhoneMethod }">
+              <label v-if="isPhoneMethod" class="country-code-cell">
+                <span>国家区号</span>
+                <input
+                  v-model.number="auth.countryCode.value"
+                  type="text"
+                  inputmode="numeric"
+                  pattern="[0-9]*"
+                  autocomplete="tel-country-code"
+                />
+              </label>
+              <label class="account-cell">
+                <span>{{ isPhoneMethod ? '手机号' : '邮箱地址' }}</span>
+                <input
+                  v-model.trim="auth.account.value"
+                  :type="isPhoneMethod ? 'tel' : 'email'"
+                  :autocomplete="isPhoneMethod ? 'tel' : 'email'"
+                  :placeholder="isPhoneMethod ? '输入手机号' : '输入邮箱地址'"
+                  required
+                />
+              </label>
             </div>
-          </label>
+
+            <label class="secret-field">
+              <span>{{ auth.isCodeMode.value ? '验证码' : '登录密码' }}</span>
+              <span
+                class="password-sentinel"
+                :class="{ 'is-visible': !auth.isCodeMode.value && auth.passwordMode.value === 'saved' }"
+                aria-hidden="true"
+              >已保存密码</span>
+              <div class="field-control" :class="{ 'code-input-row': auth.isCodeMode.value }">
+                <input
+                  v-model.trim="auth.validateValue.value"
+                  :type="auth.isCodeMode.value ? 'text' : 'password'"
+                  :inputmode="auth.isCodeMode.value ? 'numeric' : 'text'"
+                  :autocomplete="auth.isCodeMode.value ? 'one-time-code' : 'current-password'"
+                  :required="auth.isCodeMode.value || auth.passwordMode.value !== 'saved'"
+                />
+                <button
+                  v-if="auth.isCodeMode.value"
+                  class="button secondary code-send-inline"
+                  data-test="send-code"
+                  type="button"
+                  :disabled="!!auth.busy.value || auth.gt4Loading.value || !auth.accountReady.value"
+                  @click="auth.sendCode"
+                >
+                  {{ auth.busy.value === 'captcha' ? '等待验证…' : auth.busy.value === 'code' ? '发送中…' : '发送验证码' }}
+                </button>
+              </div>
+            </label>
+          </div>
 
           <button
             class="button primary login-submit"
@@ -192,13 +232,6 @@ const canSubmitPrimary = computed(() => {
             登录
           </button>
         </form>
-
-        <div class="other-methods">
-          <div class="other-methods-panel">
-            <button type="button" class="button secondary" @click="chooseLoginMethod(3)">手机号密码</button>
-            <button type="button" class="button secondary" @click="chooseLoginMethod(1)">手机号验证码</button>
-            <button type="button" class="button secondary" @click="chooseLoginMethod(2)">邮箱验证码</button>
-          </div>
         </div>
       </template>
 
@@ -267,7 +300,7 @@ const canSubmitPrimary = computed(() => {
                   : '验证值'
               }}
             </span>
-            <div :class="{ 'code-input-row': auth.isChallengeCode.value }">
+            <div class="field-control" :class="{ 'code-input-row': auth.isChallengeCode.value }">
               <input
                 v-model.trim="auth.challengeValue.value"
                 data-test="challenge-value"

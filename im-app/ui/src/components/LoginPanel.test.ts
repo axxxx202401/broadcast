@@ -182,7 +182,7 @@ describe('LoginPanel', () => {
     expect(panelSource).not.toContain('GT4 READY')
   })
 
-  it('默认使用邮箱密码并始终展示其他方式', async () => {
+  it('默认使用邮箱密码并展示单行四种登录 tab', async () => {
     const auth = authStub()
     const wrapper = mountPanel(auth)
 
@@ -190,16 +190,61 @@ describe('LoginPanel', () => {
     expect(wrapper.find('input[type="email"]').exists()).toBe(true)
     expect(wrapper.text()).not.toContain('其他登录方式')
     expect(wrapper.find('[data-test="toggle-other-methods"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('手机号密码')
-    expect(wrapper.text()).toContain('手机号验证码')
-    expect(wrapper.text()).toContain('邮箱验证码')
+    const tabs = wrapper.findAll('[data-test="login-method-tab"]')
+    expect(tabs).toHaveLength(4)
+    expect(tabs.map((tab) => tab.text())).toEqual([
+      '邮箱密码',
+      '邮箱验证码',
+      '手机密码',
+      '手机验证码',
+    ])
+    expect(wrapper.find('.login-method-tab.is-active').text()).toBe('邮箱密码')
     const submit = wrapper.get('.login-submit').element
-    const emailCode = [...wrapper.findAll('button')].find((button) =>
-      button.text() === '邮箱验证码',
-    )?.element
-    expect(emailCode).toBeTruthy()
-    expect(submit.compareDocumentPosition(emailCode!) & Node.DOCUMENT_POSITION_FOLLOWING)
+    const firstTab = tabs[0]!.element
+    expect(firstTab.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING)
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+  })
+
+  it('可从手机密码 tab 切回邮箱密码', async () => {
+    const auth = authStub()
+    const wrapper = mountPanel(auth)
+    await wrapper.findAll('[data-test="login-method-tab"]')
+      .find((tab) => tab.text() === '手机密码')!
+      .trigger('click')
+    expect(auth.loginMethod.value).toBe(3)
+    expect(wrapper.find('.account-row.is-phone').exists()).toBe(true)
+
+    await wrapper.findAll('[data-test="login-method-tab"]')
+      .find((tab) => tab.text() === '邮箱密码')!
+      .trigger('click')
+    expect(auth.loginMethod.value).toBe(4)
+    expect(wrapper.find('input[type="email"]').exists()).toBe(true)
+    expect(wrapper.find('.account-row.is-phone').exists()).toBe(false)
+    expect(wrapper.find('.login-method-tab.is-active').text()).toBe('邮箱密码')
+  })
+
+  it('邮箱模式账号框与密码框同宽对齐', async () => {
+    const auth = authStub()
+    const wrapper = mountPanel(auth)
+    const accountInput = wrapper.get('.account-cell input').element
+    const passwordInput = wrapper.get('.secret-field .field-control input').element
+    expect(accountInput.getBoundingClientRect().width).toBe(passwordInput.getBoundingClientRect().width)
+  })
+
+  it('切换 tab 时主面板高度不变', async () => {
+    const auth = authStub()
+    const wrapper = mountPanel(auth)
+    const measure = () => wrapper.get('.login-primary-panel').element.getBoundingClientRect().height
+
+    auth.loginMethod.value = 1
+    await wrapper.vm.$nextTick()
+    const phoneCode = measure()
+
+    for (const method of [4, 2, 3] as const) {
+      auth.loginMethod.value = method
+      await wrapper.vm.$nextTick()
+      expect(measure()).toBe(phoneCode)
+    }
   })
 
   it('验证码发送按钮嵌在输入框右侧', async () => {
@@ -209,6 +254,13 @@ describe('LoginPanel', () => {
     const row = wrapper.get('.code-input-row')
     expect(row.find('input').exists()).toBe(true)
     expect(row.get('[data-test="send-code"]').text()).toContain('发送验证码')
+  })
+
+  it('密码模式不展示发送验证码按钮', async () => {
+    const auth = authStub()
+    const wrapper = mountPanel(auth)
+    expect(wrapper.find('[data-test="send-code"]').exists()).toBe(false)
+    expect(wrapper.find('.field-control.code-input-row').exists()).toBe(false)
   })
 
   it('添加账号进入的登录页显示返回，普通登录页不显示', async () => {
@@ -243,15 +295,15 @@ describe('LoginPanel', () => {
   it('仅 saved 模式展示已保存密码哨兵', async () => {
     const auth = authStub()
     const wrapper = mountPanel(auth)
-    expect(wrapper.find('.password-sentinel').exists()).toBe(false)
+    expect(wrapper.find('.password-sentinel.is-visible').exists()).toBe(false)
 
     auth.passwordMode.value = 'saved'
     await wrapper.vm.$nextTick()
-    expect(wrapper.get('.password-sentinel').text()).toBe('已保存密码')
+    expect(wrapper.get('.password-sentinel.is-visible').text()).toBe('已保存密码')
 
     auth.passwordMode.value = 'empty'
     await wrapper.vm.$nextTick()
-    expect(wrapper.find('.password-sentinel').exists()).toBe(false)
+    expect(wrapper.find('.password-sentinel.is-visible').exists()).toBe(false)
   })
 
   it('二次验证隐藏协议字段并允许返回登录', async () => {

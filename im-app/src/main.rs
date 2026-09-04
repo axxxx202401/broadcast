@@ -7,6 +7,7 @@ mod commands;
 mod message_content;
 mod state;
 
+use account::CredentialStore;
 use state::AppState;
 use std::sync::Arc;
 use tauri::Manager;
@@ -23,31 +24,30 @@ async fn main() {
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
+    // 凭据库必须在 Tauri setup 之前异步打开：setup 运行在 Tokio runtime 内，不得嵌套 block_on。
+    let data_root = account::AppPaths::default_data_root().unwrap_or_else(|error| {
+        panic!("failed to resolve monitor data root: {error}");
+    });
+    std::fs::create_dir_all(&data_root).unwrap_or_else(|error| {
+        panic!(
+            "failed to create data directory {}: {error}",
+            data_root.display()
+        );
+    });
+    let paths = account::AppPaths::new(data_root);
+    let credentials: Arc<dyn CredentialStore> = Arc::new(
+        account::SqliteCredentialStore::open(&paths)
+            .await
+            .unwrap_or_else(|error| panic!("failed to open credential store: {error}")),
+    );
+
     tauri::Builder::default()
-        .setup(|app| {
+        .setup(move |app| {
             let app_handle = app.app_handle();
             // 真实服务参数来自构建时环境快照；缺项或格式错误时拒绝启动，避免安装包
             // 静默连接测试环境或使用历史密钥。
             let config = im_common::config::AppConfig::from_build_env()?;
-            // 数据根目录固定为用户主目录下的 `.im-monitor`。启动时只创建该目录和账号
-            // 基础设施，不打开业务 SQLite，也不从磁盘恢复监控集合。
-            let data_root = app
-                .path()
-                .home_dir()
-                .map_err(|error| {
-                    std::io::Error::other(format!("failed to resolve user home directory: {error}"))
-                })?
-                .join(".im-monitor");
-            std::fs::create_dir_all(&data_root).map_err(|error| {
-                std::io::Error::other(format!(
-                    "failed to create data directory {}: {error}",
-                    data_root.display()
-                ))
-            })?;
-            let paths = account::AppPaths::new(data_root);
             let account_index = Arc::new(account::AccountIndexStore::new(paths.index_file()));
-            let credentials: Arc<dyn account::CredentialStore> =
-                Arc::new(account::KeyringCredentialStore);
             let account_db = Arc::new(account::AccountDatabaseManager::new(paths.clone()));
             let legacy_migrator = Arc::new(account::LegacyDatabaseMigrator::new(paths.clone()));
             let pending_login = Arc::new(account::PendingLoginCache::default());

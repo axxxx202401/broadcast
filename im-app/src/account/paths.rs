@@ -16,6 +16,19 @@ impl AppPaths {
         Self { root: root.into() }
     }
 
+    /// 解析默认数据根目录：Unix 为 `~/.im-monitor`，Windows 为 `%USERPROFILE%\.im-monitor`。
+    ///
+    /// 不创建目录；调用方负责 `create_dir_all`。Tauri setup 之前可用此方法打开凭据库，
+    /// 避免在已有 Tokio runtime 内嵌套 `block_on`。
+    pub fn default_data_root() -> Result<PathBuf, std::io::Error> {
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "无法解析用户主目录")
+            })?;
+        Ok(PathBuf::from(home).join(".im-monitor"))
+    }
+
     /// 返回全局账号索引文件 `accounts.json` 的路径。
     pub fn index_file(&self) -> PathBuf {
         self.root.join("accounts.json")
@@ -29,6 +42,16 @@ impl AppPaths {
     /// 返回升级前共享数据库 `im_monitor.db` 的路径。
     pub fn legacy_db(&self) -> PathBuf {
         self.root.join("im_monitor.db")
+    }
+
+    /// 返回全局加密凭据库 `credentials.db` 的路径。
+    pub fn credentials_db(&self) -> PathBuf {
+        self.root.join("credentials.db")
+    }
+
+    /// 返回 AES-256-GCM 主密钥文件 `.credential_key` 的路径。
+    pub fn credential_key_file(&self) -> PathBuf {
+        self.root.join(".credential_key")
     }
 
     /// 返回指定 UID 的隔离数据库路径。
@@ -69,6 +92,14 @@ mod tests {
         assert_eq!(
             paths.legacy_db(),
             Path::new("/tmp/im-monitor/im_monitor.db")
+        );
+        assert_eq!(
+            paths.credentials_db(),
+            Path::new("/tmp/im-monitor/credentials.db")
+        );
+        assert_eq!(
+            paths.credential_key_file(),
+            Path::new("/tmp/im-monitor/.credential_key")
         );
         assert_eq!(
             paths.account_db(42).expect("正 UID 应生成账号数据库路径"),

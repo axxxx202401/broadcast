@@ -20,4 +20,12 @@ describe('scroll layout', () => {
     expect(consoleCss).toContain('scrollbar-color')
     expect(consoleCss).toContain('::-webkit-scrollbar')
   })
+
+  it('登录表单输入框与手机区号网格使用全宽布局', () => {
+    expect(consoleCss).toMatch(/\.login-primary-panel[\s\S]*height:\s*288px/)
+    expect(consoleCss).toMatch(/\.login-form-fields \.account-row\.is-phone[\s\S]*grid-template-columns:\s*110px minmax\(0,\s*1fr\)/)
+    expect(consoleCss).toMatch(/\.login-form \.field-control\.code-input-row[\s\S]*height:\s*40px/)
+    expect(consoleCss).toMatch(/\.field-control\.code-input-row[\s\S]*display:\s*flex/)
+    expect(consoleCss).toMatch(/\.login-shell[\s\S]*width:\s*520px/)
+  })
 })
