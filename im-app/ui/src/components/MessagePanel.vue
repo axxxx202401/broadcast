@@ -32,19 +32,51 @@ const emit = defineEmits<{
 
 const viewport = ref<HTMLElement | null>(null)
 
+/**
+ * 按解密正文类型给出保守行高估算。
+ * 虚拟列表在 `measureElement` 完成真实测量前用该值占位；图片/视频与长文本用更高估算，
+ * 避免历史前插时用统一行高把 `msg_id` 锚点算偏。
+ */
+function estimateMessageHeight(message: MessageDto | undefined): number {
+  if (!message?.decoded_content) return 96
+  switch (message.decoded_content.kind) {
+    case 'image':
+    case 'video': return 220
+    case 'audio':
+    case 'file': return 112
+    case 'text': return Math.min(220, 76 + Math.floor(message.decoded_content.text.length / 48) * 22)
+  }
+}
+
+/**
+ * 优先用 ResizeObserver 的 borderBox，否则读元素当前盒。
+ * 不走默认实现里“无 entry 则返回缓存”的路径，媒体撑高后即使回调稍晚也能读到新高度。
+ */
+function measureMessageRow(element: HTMLLIElement, entry: ResizeObserverEntry | undefined): number {
+  const box = entry?.borderBoxSize?.[0]
+  if (box) return Math.round(box.blockSize)
+  return Math.round(element.getBoundingClientRect().height)
+}
+
 // 加载态和空态把 count 归零，确保这两种状态不会生成虚拟行；消息键沿用协议 msg_id。
 const virtualizerOptions = computed(() => ({
   count: props.loading ? 0 : props.messages.length,
   getScrollElement: () => viewport.value,
-  estimateSize: () => 70,
+  estimateSize: (index: number) => estimateMessageHeight(props.messages[index]),
   overscan: 8,
   getItemKey: (index: number) => props.messages[index]?.msg_id ?? index,
+  measureElement: measureMessageRow,
+  // 非零初值避免首帧 `outerSize === 0` 时不算可视范围，媒体重测与锚点恢复才能挂到行。
+  initialRect: { width: 800, height: 600 },
 }))
 const virtualizer = useVirtualizer<HTMLElement, HTMLLIElement>(virtualizerOptions)
 const virtualItems = computed(() => virtualizer.value.getVirtualItems())
 const totalSize = computed(() => virtualizer.value.getTotalSize())
+
 const measureElement: VNodeRef = (element) => {
-  if (element instanceof HTMLLIElement) virtualizer.value.measureElement(element)
+  if (element instanceof HTMLElement && element.tagName === 'LI') {
+    virtualizer.value.measureElement(element as HTMLLIElement)
+  }
 }
 
 const AUTO_SCROLL_THRESHOLD = 80
@@ -60,7 +92,10 @@ let loadOlderRequested = false
 let observedOlderToken: number | null = null
 let olderSettleCycle = 0
 
-/** 顶部阈值内只发出一次请求，直至父组件完成该轮加载。 */
+/**
+ * 顶部阈值内只发出一次请求，直至父组件完成该轮加载。
+ * 已请求但用户仍停在顶部时，只刷新行内偏移，避免程序化滚底留下的 `scrollOffset = 0` 污染锚点。
+ */
 function handleScroll() {
   const element = viewport.value
   if (
@@ -68,19 +103,22 @@ function handleScroll() {
     || element.scrollTop > LOAD_OLDER_THRESHOLD
     || !props.hasOlder
     || props.loadingOlder
-    || loadOlderRequested
   ) return
 
   prependAnchor = {
-    messageId: props.messages[0]?.msg_id,
-    totalSize: virtualizer.value.getTotalSize(),
+    messageId: prependAnchor?.messageId ?? props.messages[0]?.msg_id,
+    totalSize: prependAnchor?.totalSize ?? virtualizer.value.getTotalSize(),
     scrollOffset: element.scrollTop,
   }
+  if (loadOlderRequested) return
   loadOlderRequested = true
   emit('load-older')
 }
 
-/** 按保存的消息 ID 恢复历史前插锚点；无新增、失败或锚点缺失时安全降级。 */
+/**
+ * 按保存的消息 ID 定位锚点行，再用实测 `start + scrollOffset` 恢复滚动。
+ * 不走 `scrollToIndex`：其对齐 reconcile 会抹掉行内偏移。无新增、失败或锚点缺失时安全降级。
+ */
 async function restorePrependAnchor(anchor: typeof prependAnchor) {
   if (!anchor || props.messages[0]?.msg_id === anchor.messageId) return
   await nextTick()
@@ -90,11 +128,12 @@ async function restorePrependAnchor(anchor: typeof prependAnchor) {
     ? props.messages.findIndex(({ msg_id }) => msg_id === anchor.messageId)
     : -1
   if (anchorIndex >= 0) {
-    virtualizer.value.scrollToIndex(anchorIndex, { align: 'start', behavior: 'auto' })
-    await nextTick()
     const anchorStart = virtualizer.value.getOffsetForIndex(anchorIndex, 'start')?.[0]
     if (anchorStart !== undefined) {
-      element.scrollTop = anchorStart + anchor.scrollOffset
+      virtualizer.value.scrollToOffset(anchorStart + anchor.scrollOffset, {
+        align: 'start',
+        behavior: 'auto',
+      })
     } else {
       element.scrollTop += anchor.scrollOffset
     }
