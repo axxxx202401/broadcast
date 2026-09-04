@@ -1,13 +1,139 @@
-/* 登录页：双栏容器、产品导览与协议步骤。 */
+/* 登录页：居中单列卡片，不再使用双栏介绍。 */
 .login-shell {
   display: grid;
-  grid-template-columns: minmax(300px, 0.8fr) minmax(520px, 1.2fr);
-  width: min(1120px, calc(100% - 80px));
-  height: calc(100% - 80px);
+  place-content: start center;
+  width: min(440px, calc(100% - 48px));
+  min-height: calc(100% - 80px);
   margin: 40px auto;
+  animation: console-enter 380ms ease-out both;
+}
+
+.login-card {
+  display: grid;
+  gap: 16px;
+  width: 100%;
+  max-height: calc(100vh - 80px);
+  padding: 42px 36px;
+  background: var(--ink-900);
   border: 1px solid var(--ink-600);
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.38);
-  animation: console-enter 380ms ease-out both;
+}
+
+.login-header {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.login-logo {
+  width: 56px;
+  height: 56px;
+}
+
+.purpose {
+  margin: 0;
+  color: var(--text-500);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.login-form,
+.account-picker,
+.other-methods {
+  display: grid;
+  gap: 12px;
+}
+
+.login-form > label,
+.account-picker label {
+  display: grid;
+  gap: 6px;
+}
+
+.login-back {
+  justify-self: start;
+}
+
+.code-input-row {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  background: var(--ink-900);
+  border: 1px solid var(--ink-600);
+  border-radius: var(--radius);
+}
+
+.code-input-row:hover {
+  border-color: #445155;
+}
+
+.code-input-row:focus-within {
+  border-color: var(--amber-soft);
+}
+
+.code-input-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  border-radius: var(--radius) 0 0 var(--radius);
+}
+
+.code-input-row input:hover,
+.code-input-row input:focus {
+  border-color: transparent;
+}
+
+.code-send-inline {
+  flex: 0 0 auto;
+  align-self: stretch;
+  min-height: 0;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  border-width: 0 0 0 1px;
+  white-space: nowrap;
+}
+
+.other-methods-panel {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.challenge-step {
+  display: grid;
+  gap: 12px;
+}
+
+.challenge-step > label {
+  display: grid;
+  gap: 6px;
+}
+
+.challenge-step > h3,
+.challenge-progress,
+.challenge-method,
+.challenge-target {
+  margin: 0;
+}
+
+.challenge-progress,
+.challenge-target {
+  color: var(--text-500);
+  font-size: 13px;
+}
+
+.pending-list {
+  display: grid;
+  gap: 8px;
+}
+
+.account-picker select {
+  width: 100%;
+}
+
+.password-sentinel {
+  color: var(--text-500);
+  font-size: 12px;
 }
 
 .login-intro {
@@ -290,7 +416,7 @@
 
 .login-submit {
   width: 100%;
-  justify-content: space-between;
+  justify-content: center;
   margin-top: 18px;
 }
 
@@ -298,6 +424,8 @@
 .operations-shell {
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  min-height: 0;
   height: 100%;
   background: var(--ink-900);
 }
@@ -355,13 +483,81 @@
   gap: 9px;
 }
 
-.operator-id {
-  color: var(--text-500);
+/* 头部账号菜单：主按钮显示邮箱/手机号，展开后提供切换与账号管理。 */
+.account-menu {
+  position: relative;
   border-left: 1px solid var(--ink-600);
   margin-left: 4px;
-  padding: 2px 6px 2px 13px;
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 10px;
+  padding-left: 9px;
+}
+
+.account-menu-trigger {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-menu-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  display: grid;
+  gap: 4px;
+  min-width: 220px;
+  padding: 10px;
+  background: var(--ink-900);
+  border: 1px solid var(--ink-600);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+}
+
+.account-menu-status {
+  margin: 0 0 4px;
+  color: var(--amber);
+  font-size: 12px;
+}
+
+.account-menu-current {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 6px;
+  padding: 6px 8px 10px;
+  border-bottom: 1px solid var(--ink-600);
+}
+
+.account-menu-current strong {
+  font-size: 13px;
+}
+
+.account-menu-current small {
+  color: var(--text-500);
+  font-size: 11px;
+}
+
+.account-menu-item {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text-300);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.account-menu-item:hover:not(:disabled) {
+  background: var(--ink-850);
+}
+
+.account-menu-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.account-menu-item.danger {
+  color: #d88989;
 }
 
 .status-badge {
@@ -439,8 +635,31 @@
 .workspace {
   display: grid;
   grid-template-columns: 330px minmax(0, 1fr);
+  min-width: 0;
   min-height: 0;
   flex: 1;
+}
+
+/* 宽屏抽屉容器参与双栏网格；遮罩默认不展示，避免挡住消息区。 */
+.sidebar-drawer {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.sidebar-drawer .group-sidebar {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+
+.sidebar-mask {
+  display: none;
+}
+
+.sidebar-toggle {
+  flex: 0 0 auto;
 }
 
 /* 群组侧栏：统计、搜索、列表选择与监控开关。 */
@@ -831,56 +1050,83 @@
   list-style: none;
 }
 
+/* 虚拟行只负责绝对定位与测量；卡片边距放在内部 article，避免相邻 li 外边距折叠。 */
 .message-log li {
   position: absolute;
   top: 0;
   right: var(--message-log-inline);
   left: var(--message-log-inline);
+}
+
+.message-card {
   display: grid;
-  grid-template-columns: 124px 90px minmax(0, 1fr);
-  align-items: start;
-  min-height: 48px;
-  border-bottom: 1px solid rgba(44, 55, 58, 0.62);
-  padding: 11px 0;
+  gap: 6px;
+  margin: 6px 0;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(44, 55, 58, 0.62);
+  border-radius: 6px;
+  transition: background-color 200ms ease;
 }
 
-.message-log.all-groups li {
-  grid-template-columns: 124px minmax(120px, 180px) 90px minmax(0, 1fr);
+.message-card:hover {
+  border-color: var(--ink-600);
 }
 
-.message-log time,
-.sender-id,
-.message-group,
+/* 新尾消息只改背景，1.2s 后由脚本去掉该类；减少动态偏好下关闭过渡。 */
+.message-card--new {
+  background-color: rgba(240, 169, 58, 0.14);
+}
+
+.message-source,
+.message-meta,
 .message-kind {
   color: var(--text-500);
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 9px;
-  line-height: 1.7;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
-.message-group {
+.message-source {
   min-width: 0;
   overflow: hidden;
-  color: var(--amber);
+  color: var(--text-500);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.message-group small {
+.message-source small {
   color: var(--text-500);
 }
 
-.sender-id {
-  color: var(--cyan);
+.message-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 10px;
 }
 
-.message-log p {
+.message-sender,
+.message-meta time {
+  color: var(--text-500);
+}
+
+.message-content,
+.message-text {
   margin: 0;
-  color: var(--text-300);
-  font-size: 12px;
-  line-height: 1.55;
+  color: var(--text-100);
+  font-size: 15px;
+  line-height: 1.6;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.message-text--emoji-only {
+  font-size: 28px;
+  line-height: 1.3;
+}
+
+.inline-emoji {
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
 }
 
 .message-body {
@@ -954,6 +1200,55 @@
   letter-spacing: 0.04em;
 }
 
+/* 业务滚动区：仅群列表、消息视口与登录表单可纵向滚动；Firefox 与 WebKit 共用低对比深色细滚动条，悬停/拖动提高对比度，不隐藏滚动条。 */
+.group-list,
+.message-viewport,
+.login-console,
+.login-card {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(132, 149, 149, 0.55) rgba(10, 15, 16, 0.35);
+}
+
+.group-list::-webkit-scrollbar,
+.message-viewport::-webkit-scrollbar,
+.login-console::-webkit-scrollbar,
+.login-card::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.group-list::-webkit-scrollbar-track,
+.message-viewport::-webkit-scrollbar-track,
+.login-console::-webkit-scrollbar-track,
+.login-card::-webkit-scrollbar-track {
+  background: rgba(10, 15, 16, 0.35);
+}
+
+.group-list::-webkit-scrollbar-thumb,
+.message-viewport::-webkit-scrollbar-thumb,
+.login-console::-webkit-scrollbar-thumb,
+.login-card::-webkit-scrollbar-thumb {
+  background-color: rgba(132, 149, 149, 0.55);
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background-clip: padding-box;
+}
+
+.group-list::-webkit-scrollbar-thumb:hover,
+.message-viewport::-webkit-scrollbar-thumb:hover,
+.login-console::-webkit-scrollbar-thumb:hover,
+.login-card::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(176, 192, 192, 0.88);
+}
+
+.group-list::-webkit-scrollbar-thumb:active,
+.message-viewport::-webkit-scrollbar-thumb:active,
+.login-console::-webkit-scrollbar-thumb:active,
+.login-card::-webkit-scrollbar-thumb:active {
+  background-color: rgba(196, 208, 208, 0.95);
+}
+
 /* 动画：页面进入、连接状态、刷新与加载提示。 */
 @keyframes console-enter {
   from { opacity: 0; transform: translateY(8px); }
@@ -975,11 +1270,14 @@
 /* 响应式布局：收窄登录页、顶栏、工作区与消息列。 */
 @media (max-width: 900px) {
   .login-shell {
-    grid-template-columns: 1fr;
     width: calc(100% - 24px);
-    height: auto;
     min-height: calc(100% - 24px);
     margin: 12px;
+  }
+
+  .login-card {
+    max-height: calc(100vh - 24px);
+    padding: 30px 24px;
   }
 
   .login-intro {
@@ -1012,7 +1310,6 @@
   }
 
   .login-console {
-    overflow: visible;
     padding: 30px 32px;
   }
 
@@ -1029,20 +1326,47 @@
     justify-content: flex-end;
   }
 
+  /* 窄屏：消息区占满剩余空间，群列表改为同格叠加的抽屉，不挤占消息列。 */
   .workspace {
-    grid-template-columns: 280px minmax(0, 1fr);
+    position: relative;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .sidebar-mask,
+  .sidebar-drawer,
+  .message-panel {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .sidebar-mask {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    background: rgba(0, 0, 0, 0.48);
+  }
+
+  .sidebar-drawer {
+    position: absolute;
+    z-index: 21;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(330px, 86vw);
+    height: 100%;
+    transform: translateX(-100%);
+    transition: transform 180ms ease;
+    box-shadow: 16px 0 40px rgba(0, 0, 0, 0.4);
+  }
+
+  .workspace.is-sidebar-open .sidebar-drawer {
+    transform: translateX(0);
   }
 
   .message-log {
     --message-log-inline: 14px;
-  }
-
-  .message-log li {
-    grid-template-columns: 105px 76px minmax(0, 1fr);
-  }
-
-  .message-log.all-groups li {
-    grid-template-columns: 105px 120px 76px minmax(0, 1fr);
   }
 }
 
@@ -1054,5 +1378,9 @@
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+
+  .message-card {
+    transition: none;
   }
 }

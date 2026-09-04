@@ -173,19 +173,47 @@ describe('useGt4', () => {
     gt4.show('account', vi.fn())
 
     fake.handlers.fail?.()
-    expect(gt4.error.value).toContain('失败')
+    expect(gt4.error.value).toBe('')
+    fake.handlers.close?.()
+    expect(gt4.error.value).toBe('')
     fake.handlers.error?.({ code: 'error_21', msg: 'request blocked' })
     expect(gt4.error.value).toContain('异常')
     expect(gt4.error.value).toContain('error_21')
     expect(gt4.error.value).toContain('request blocked')
-    fake.handlers.close?.()
-    expect(gt4.error.value).toContain('关闭')
 
     gt4.reset()
     expect(fake.instance.reset).toHaveBeenCalledTimes(1)
     expect(gt4.error.value).toBe('')
     wrapper.unmount()
     expect(fake.instance.destroy).toHaveBeenCalledTimes(1)
+  })
+
+  it('滑块失败后再次成功或销毁时清空错误', async () => {
+    const fake = fakeGt4()
+    let gt4!: ReturnType<typeof useGt4>
+    const wrapper = mount(defineComponent({
+      setup() {
+        gt4 = useGt4({
+          captchaId: 'public-id',
+          init: (_options, callback) => callback(fake.instance),
+        })
+        return () => h('div')
+      },
+    }))
+    await flushPromises()
+    fake.handlers.ready?.()
+    gt4.show('account', vi.fn())
+    fake.handlers.error?.({ msg: 'request blocked' })
+    expect(gt4.error.value).toContain('异常')
+
+    fake.handlers.success?.()
+    expect(gt4.error.value).toBe('')
+
+    gt4.show('account', vi.fn())
+    fake.handlers.error?.({ msg: 'request blocked' })
+    gt4.destroy()
+    expect(gt4.error.value).toBe('')
+    wrapper.unmount()
   })
 
   it('销毁旧实例后可以初始化全新实例', async () => {

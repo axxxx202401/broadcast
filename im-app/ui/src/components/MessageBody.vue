@@ -5,6 +5,7 @@ import { computed, ref, watch } from 'vue'
 import { api } from '../services/tauri'
 import type { MessageDto } from '../types/im'
 import { decodeMessageContent } from '../utils/message'
+import MessageText from './MessageText.vue'
 
 const props = defineProps<{ message: MessageDto }>()
 
@@ -13,16 +14,6 @@ const loading = ref(false)
 const error = ref('')
 
 const content = computed(() => props.message.decoded_content)
-const kindLabel = computed(() => {
-  switch (content.value?.kind) {
-    case 'text': return '文本'
-    case 'image': return '图片'
-    case 'audio': return '音频'
-    case 'video': return '视频'
-    case 'file': return '文件'
-    default: return `类型 ${props.message.msg_type}`
-  }
-})
 
 watch(
   () => props.message.msg_id,
@@ -64,14 +55,15 @@ async function loadAttachment() {
 
 <template>
   <div class="message-body" :class="`message-body--${content?.kind ?? 'unknown'}`">
+    <!-- 已知文本走 MessageText：别名替换且只用文本节点，不渲染 .message-kind。 -->
     <template v-if="content?.kind === 'text'">
-      <p>{{ content.text }}</p>
+      <MessageText :text="content.text" />
     </template>
 
     <template v-else-if="content?.kind === 'image'">
       <img v-if="localUrl" :src="localUrl" :alt="`${message.group_name || message.group_id}中的图片`" />
       <button v-else type="button" class="media-load" :disabled="loading" @click="loadAttachment">
-        {{ loading ? '图片解密中…' : '加载图片' }}
+        {{ loading ? '正在打开…' : '打开图片' }}
       </button>
       <small>{{ content.width }}×{{ content.height }} · {{ formatBytes(content.file_size) }}</small>
     </template>
@@ -79,14 +71,14 @@ async function loadAttachment() {
     <template v-else-if="content?.kind === 'audio'">
       <audio v-if="localUrl" :src="localUrl" controls preload="metadata"></audio>
       <button v-else type="button" class="media-load" :disabled="loading" @click="loadAttachment">
-        {{ loading ? '音频解密中…' : `加载音频 · ${content.duration}s` }}
+        {{ loading ? '正在打开…' : '打开音频' }}
       </button>
     </template>
 
     <template v-else-if="content?.kind === 'video'">
       <video v-if="localUrl" :src="localUrl" controls preload="metadata"></video>
       <button v-else type="button" class="media-load" :disabled="loading" @click="loadAttachment">
-        {{ loading ? '视频解密中…' : `加载视频 · ${content.duration}s` }}
+        {{ loading ? '正在打开…' : '打开视频' }}
       </button>
       <small>{{ content.width }}×{{ content.height }} · {{ formatBytes(content.file_size) }}</small>
     </template>
@@ -96,15 +88,15 @@ async function loadAttachment() {
       <small>{{ content.mime_type || '未知类型' }} · {{ formatBytes(content.file_size) }}</small>
       <a v-if="localUrl" :href="localUrl" :download="content.name || 'attachment'">保存文件</a>
       <button v-else type="button" class="media-load" :disabled="loading" @click="loadAttachment">
-        {{ loading ? '文件解密中…' : '解密文件' }}
+        {{ loading ? '正在打开…' : '打开文件' }}
       </button>
     </template>
 
+    <!-- 已知类型不渲染 .message-kind；未知类型只给用户动作提示，不展示协议类型号。 -->
     <template v-else>
       <p>{{ message.decode_error || decodeMessageContent(message.content_b64) }}</p>
+      <span class="message-kind">无法显示这类消息</span>
     </template>
-
-    <span class="message-kind">{{ kindLabel }}</span>
     <small v-if="error" class="media-error" role="alert">{{ error }}</small>
   </div>
 </template>

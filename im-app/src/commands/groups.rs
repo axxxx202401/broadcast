@@ -1,6 +1,7 @@
+#[cfg(test)]
 use std::future::Future;
 
-use crate::state::AppState;
+use crate::state::{AppState, AuthSession};
 use tauri::State;
 
 /// Tauri 边界使用的群组数据。
@@ -48,40 +49,51 @@ fn group_dtos(groups: Vec<im_store::group::GroupRow>) -> Vec<GroupDto> {
 /// 从本地数据库读取全部群组。
 ///
 /// 该命令不发起远程请求，也不修改数据库或内存监控集合；成功返回按 Tauri 边界格式转换
-/// 的群组列表，数据库查询错误转换为字符串返回。
+/// 的群组列表。未登录、活动库与会话 UID 不一致或数据库查询错误转换为字符串返回。
 #[tauri::command]
 pub async fn fetch_group_list(state: State<'_, AppState>) -> Result<Vec<GroupDto>, String> {
-    let groups = state
-        .db
-        .groups
-        .list_all()
+    let session = state
+        .auth_session
+        .read()
         .await
-        .map_err(|e| e.to_string())?;
+        .clone()
+        .ok_or_else(|| "Not logged in".to_string())?;
+    let db = state
+        .account_db
+        .require(session.uid)
+        .await
+        .map_err(|error| error.to_string())?;
+    let groups = db.groups.list_all().await.map_err(|e| e.to_string())?;
     Ok(group_dtos(groups))
 }
 
 /// 从服务端刷新群组快照，并更新本地数据库及内存监控集合。
 ///
-/// 命令仅在请求前从当前会话复制 token，再用它拉取远程群组；网络响应返回后不会复核
-/// uid 或 generation。远程请求期间不持有 `group_ops`；拉取成功后才取得该锁，串行
-/// 执行数据库快照同步、数据库回读及内存监控快照替换。该锁只协调本地群组更新，不提供
-/// 认证代际隔离，因此并发登出或换号时，旧会话请求的迟到响应仍可能覆盖新会话的数据库
-/// 群组和 `monitoring_groups`。任一步失败都返回字符串错误；这里也不承诺网络请求与本地
-/// 写入构成原子事务。
+/// 命令仅在请求前从当前会话复制 token，再用它拉取远程群组。远程请求期间不持有
+/// `group_ops`；拉取成功后先复核 uid 与 generation，不一致则拒绝写入。复核通过后
+/// 才取得该锁，串行执行数据库快照同步、数据库回读及内存监控快照替换。任一步失败
+/// 都返回字符串错误；这里也不承诺网络请求与本地写入构成原子事务。
 #[tauri::command]
 pub async fn refresh_group_list(state: State<'_, AppState>) -> Result<Vec<GroupDto>, String> {
-    let token = state
+    let session = state
         .auth_session
         .read()
         .await
         .clone()
-        .ok_or_else(|| "Not logged in".to_string())?
-        .token;
-    let groups = fetch_and_apply_remote_groups(
+        .ok_or_else(|| "Not logged in".to_string())?;
+    let db = state
+        .account_db
+        .require(session.uid)
+        .await
+        .map_err(|error| error.to_string())?;
+    let remote_groups = fetch_remote_groups(&state, &session.token).await?;
+    let groups = apply_remote_groups_if_session_current(
         &state.group_ops,
-        &state.db,
+        &db,
         &state.monitoring_groups,
-        fetch_remote_groups(&state, &token),
+        &state.auth_session,
+        &session,
+        &remote_groups,
     )
     .await?;
     Ok(group_dtos(groups))
@@ -175,6 +187,7 @@ pub(crate) async fn apply_remote_groups(
 /// 数据库同步与回读完成后才替换内存集合，因此这些本地更新按 `group_ops` 串行；失败时
 /// 不执行内存替换。该函数接收已拉取的数据，不覆盖远程请求阶段，也不校验数据所属的
 /// uid 或 generation；锁本身不阻止旧认证请求覆盖较新的群组状态。
+#[cfg(test)]
 pub(crate) async fn sync_remote_groups_and_refresh_monitoring(
     group_ops: &tokio::sync::Mutex<()>,
     db: &im_store::SqliteStore,
@@ -187,9 +200,36 @@ pub(crate) async fn sync_remote_groups_and_refresh_monitoring(
     Ok(groups)
 }
 
+/// 远程群组已拉取后，仅在会话 uid 与 generation 仍匹配时写入本地。
+///
+/// 登出或换号后的迟到响应会得到错误，且不修改数据库或内存监控集合。
+async fn apply_remote_groups_if_session_current(
+    group_ops: &tokio::sync::Mutex<()>,
+    db: &im_store::SqliteStore,
+    monitoring_groups: &tokio::sync::RwLock<std::collections::HashSet<i64>>,
+    auth_session: &tokio::sync::RwLock<Option<AuthSession>>,
+    expected: &AuthSession,
+    remote_groups: &[im_store::group::GroupRow],
+) -> Result<Vec<im_store::group::GroupRow>, String> {
+    let _operation = group_ops.lock().await;
+    let current = auth_session.read().await;
+    let session_matches = current.as_ref().is_some_and(|session| {
+        session.uid == expected.uid && session.generation == expected.generation
+    });
+    drop(current);
+    if !session_matches {
+        return Err("Authentication session changed during group refresh".to_string());
+    }
+    let (groups, monitored) = apply_remote_groups(db, remote_groups).await?;
+    *monitoring_groups.write().await = monitored;
+    Ok(groups)
+}
+
 /// 先在锁外等待远程群组结果，再串行应用数据库和内存更新。
 ///
 /// 该组合流程不携带认证身份或 generation，远程结果返回后会直接进入本地同步。
+/// 生产刷新路径已改为先拉取再按会话复核后写入；本函数仅保留给锁持有测试。
+#[cfg(test)]
 async fn fetch_and_apply_remote_groups<F>(
     group_ops: &tokio::sync::Mutex<()>,
     db: &im_store::SqliteStore,
@@ -216,9 +256,20 @@ pub async fn toggle_monitor(
     monitored: bool,
 ) -> Result<(), String> {
     let group_id = super::parse_i64_id(&group_id, "group_id")?;
+    let session = state
+        .auth_session
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| "Not logged in".to_string())?;
+    let db = state
+        .account_db
+        .require(session.uid)
+        .await
+        .map_err(|error| error.to_string())?;
     toggle_monitor_serialized(
         &state.group_ops,
-        &state.db,
+        &db,
         &state.monitoring_groups,
         group_id,
         monitored,
@@ -263,9 +314,10 @@ mod tests {
     use im_store::group::GroupRow;
 
     use super::{
-        fetch_and_apply_remote_groups, sync_remote_groups_and_refresh_monitoring,
-        toggle_monitor_serialized, GroupDto,
+        apply_remote_groups_if_session_current, fetch_and_apply_remote_groups,
+        sync_remote_groups_and_refresh_monitoring, toggle_monitor_serialized, GroupDto,
     };
+    use crate::state::AuthSession;
 
     #[test]
     fn group_dto_serializes_identifier_fields_as_decimal_strings() {
@@ -308,6 +360,60 @@ mod tests {
 
         release_tx.send(()).unwrap();
         sync.await.unwrap().unwrap();
+    }
+
+    /// 远程结果返回后若会话已换号，不得写入数据库或内存监控集合。
+    #[tokio::test]
+    async fn stale_refresh_does_not_apply_remote_groups() {
+        let store = im_store::SqliteStore::new(":memory:").await.unwrap();
+        let group_ops = tokio::sync::Mutex::new(());
+        let monitoring_groups = tokio::sync::RwLock::new([7].into_iter().collect());
+        let original = GroupRow {
+            group_id: 7,
+            name: "Original".to_string(),
+            pic: String::new(),
+            host_id: None,
+            member_count: 0,
+            created_at: 0,
+            monitored: 1,
+            updated_at: 1,
+        };
+        store.groups.sync_remote_groups(&[original]).await.unwrap();
+        let started = AuthSession {
+            uid: 1,
+            token: "old-token".to_string(),
+            generation: 0,
+        };
+        let auth_session = tokio::sync::RwLock::new(Some(AuthSession {
+            uid: 2,
+            token: "new-token".to_string(),
+            generation: 1,
+        }));
+        let incoming = GroupRow {
+            group_id: 8,
+            name: "Stale".to_string(),
+            pic: String::new(),
+            host_id: None,
+            member_count: 0,
+            created_at: 0,
+            monitored: 0,
+            updated_at: 2,
+        };
+
+        let error = apply_remote_groups_if_session_current(
+            &group_ops,
+            &store,
+            &monitoring_groups,
+            &auth_session,
+            &started,
+            &[incoming],
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("Authentication session changed"));
+        assert_eq!(store.groups.list_all().await.unwrap()[0].group_id, 7);
+        assert_eq!(*monitoring_groups.read().await, [7].into_iter().collect());
     }
 
     #[tokio::test]

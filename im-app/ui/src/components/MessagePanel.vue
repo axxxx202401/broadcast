@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import type { VNodeRef } from 'vue'
 
 import type { GroupDto, MessageDto } from '../types/im'
-import { formatMessageTime } from '../utils/message'
-import MessageBody from './MessageBody.vue'
+import MessageCard from './MessageCard.vue'
+import MonitoredGroupSummary from './MonitoredGroupSummary.vue'
 
 // 父组件提供当前群组、分页状态和消息；面板负责虚拟窗口、顶部触发与前插锚点恢复。
 const props = withDefaults(defineProps<{
@@ -15,10 +15,13 @@ const props = withDefaults(defineProps<{
   hasOlder?: boolean
   loadingOlder?: boolean
   olderRequestToken?: number | null
+  /** 正在监控的群 ID；仅在全部群消息标题下展示，默认空数组。 */
+  monitoredGroupIds?: string[]
 }>(), {
   hasOlder: false,
   loadingOlder: false,
   olderRequestToken: null,
+  monitoredGroupIds: () => [],
 })
 const emit = defineEmits<{
   /** 视口接近顶部且仍有历史时，请求父组件读取下一页。 */
@@ -29,19 +32,51 @@ const emit = defineEmits<{
 
 const viewport = ref<HTMLElement | null>(null)
 
+/**
+ * 按解密正文类型给出保守行高估算。
+ * 虚拟列表在 `measureElement` 完成真实测量前用该值占位；图片/视频与长文本用更高估算，
+ * 避免历史前插时用统一行高把 `msg_id` 锚点算偏。
+ */
+function estimateMessageHeight(message: MessageDto | undefined): number {
+  if (!message?.decoded_content) return 96
+  switch (message.decoded_content.kind) {
+    case 'image':
+    case 'video': return 220
+    case 'audio':
+    case 'file': return 112
+    case 'text': return Math.min(220, 76 + Math.floor(message.decoded_content.text.length / 48) * 22)
+  }
+}
+
+/**
+ * 优先用 ResizeObserver 的 borderBox，否则读元素当前盒。
+ * 不走默认实现里“无 entry 则返回缓存”的路径，媒体撑高后即使回调稍晚也能读到新高度。
+ */
+function measureMessageRow(element: HTMLLIElement, entry: ResizeObserverEntry | undefined): number {
+  const box = entry?.borderBoxSize?.[0]
+  if (box) return Math.round(box.blockSize)
+  return Math.round(element.getBoundingClientRect().height)
+}
+
 // 加载态和空态把 count 归零，确保这两种状态不会生成虚拟行；消息键沿用协议 msg_id。
 const virtualizerOptions = computed(() => ({
   count: props.loading ? 0 : props.messages.length,
   getScrollElement: () => viewport.value,
-  estimateSize: () => 70,
+  estimateSize: (index: number) => estimateMessageHeight(props.messages[index]),
   overscan: 8,
   getItemKey: (index: number) => props.messages[index]?.msg_id ?? index,
+  measureElement: measureMessageRow,
+  // 非零初值避免首帧 `outerSize === 0` 时不算可视范围，媒体重测与锚点恢复才能挂到行。
+  initialRect: { width: 800, height: 600 },
 }))
 const virtualizer = useVirtualizer<HTMLElement, HTMLLIElement>(virtualizerOptions)
 const virtualItems = computed(() => virtualizer.value.getVirtualItems())
 const totalSize = computed(() => virtualizer.value.getTotalSize())
+
 const measureElement: VNodeRef = (element) => {
-  if (element instanceof HTMLLIElement) virtualizer.value.measureElement(element)
+  if (element instanceof HTMLElement && element.tagName === 'LI') {
+    virtualizer.value.measureElement(element as HTMLLIElement)
+  }
 }
 
 const AUTO_SCROLL_THRESHOLD = 80
@@ -57,7 +92,10 @@ let loadOlderRequested = false
 let observedOlderToken: number | null = null
 let olderSettleCycle = 0
 
-/** 顶部阈值内只发出一次请求，直至父组件完成该轮加载。 */
+/**
+ * 顶部阈值内只发出一次请求，直至父组件完成该轮加载。
+ * 已请求但用户仍停在顶部时，只刷新行内偏移，避免程序化滚底留下的 `scrollOffset = 0` 污染锚点。
+ */
 function handleScroll() {
   const element = viewport.value
   if (
@@ -65,19 +103,22 @@ function handleScroll() {
     || element.scrollTop > LOAD_OLDER_THRESHOLD
     || !props.hasOlder
     || props.loadingOlder
-    || loadOlderRequested
   ) return
 
   prependAnchor = {
-    messageId: props.messages[0]?.msg_id,
-    totalSize: virtualizer.value.getTotalSize(),
+    messageId: prependAnchor?.messageId ?? props.messages[0]?.msg_id,
+    totalSize: prependAnchor?.totalSize ?? virtualizer.value.getTotalSize(),
     scrollOffset: element.scrollTop,
   }
+  if (loadOlderRequested) return
   loadOlderRequested = true
   emit('load-older')
 }
 
-/** 按保存的消息 ID 恢复历史前插锚点；无新增、失败或锚点缺失时安全降级。 */
+/**
+ * 按保存的消息 ID 定位锚点行，再用实测 `start + scrollOffset` 恢复滚动。
+ * 不走 `scrollToIndex`：其对齐 reconcile 会抹掉行内偏移。无新增、失败或锚点缺失时安全降级。
+ */
 async function restorePrependAnchor(anchor: typeof prependAnchor) {
   if (!anchor || props.messages[0]?.msg_id === anchor.messageId) return
   await nextTick()
@@ -87,11 +128,12 @@ async function restorePrependAnchor(anchor: typeof prependAnchor) {
     ? props.messages.findIndex(({ msg_id }) => msg_id === anchor.messageId)
     : -1
   if (anchorIndex >= 0) {
-    virtualizer.value.scrollToIndex(anchorIndex, { align: 'start', behavior: 'auto' })
-    await nextTick()
     const anchorStart = virtualizer.value.getOffsetForIndex(anchorIndex, 'start')?.[0]
     if (anchorStart !== undefined) {
-      element.scrollTop = anchorStart + anchor.scrollOffset
+      virtualizer.value.scrollToOffset(anchorStart + anchor.scrollOffset, {
+        align: 'start',
+        behavior: 'auto',
+      })
     } else {
       element.scrollTop += anchor.scrollOffset
     }
@@ -160,6 +202,61 @@ watch(
   },
   { immediate: true },
 )
+
+/** 新尾消息高亮持续时间；到期后从集合删除，虚拟行重挂载不会再次点亮。 */
+const NEW_HIGHLIGHT_MS = 1200
+/** 当前仍在高亮窗口内的 msg_id；必须整体替换 Set，原地 mutate 不会触发视图更新。 */
+const highlightedIds = ref(new Set<string>())
+const highlightTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** 将一条新尾消息加入高亮集合，并在 1.2s 后移除该 ID。 */
+function markNewTailMessage(msgId: string) {
+  const pending = highlightTimers.get(msgId)
+  if (pending !== undefined) clearTimeout(pending)
+
+  const next = new Set(highlightedIds.value)
+  next.add(msgId)
+  highlightedIds.value = next
+
+  highlightTimers.set(msgId, setTimeout(() => {
+    highlightTimers.delete(msgId)
+    const remaining = new Set(highlightedIds.value)
+    remaining.delete(msgId)
+    highlightedIds.value = remaining
+  }, NEW_HIGHLIGHT_MS))
+}
+
+/** 卸载时清掉未触发的高亮定时器，避免对已销毁实例写回 Set。 */
+function clearHighlightTimers() {
+  for (const timer of highlightTimers.values()) clearTimeout(timer)
+  highlightTimers.clear()
+  highlightedIds.value = new Set()
+}
+
+onUnmounted(clearHighlightTimers)
+
+/**
+ * 比较上一次尾部 `msg_id`：仅非初次、非历史前插的新尾 ID 进入高亮集合。
+ * 初次载入、loading 结束后的首批、以及 `prependAnchor` / `loadingOlder` 期间的尾变化一律忽略。
+ */
+watch(
+  () => [
+    props.loading,
+    props.messages.length,
+    props.messages.at(-1)?.msg_id,
+  ] as const,
+  ([loading, count, lastMessageId], previous) => {
+    if (loading || count === 0 || lastMessageId === undefined) return
+
+    const [wasLoading, previousCount, previousLastMessageId] = previous ?? [true, 0, undefined]
+    const isInitialLoad = wasLoading || previousCount === 0
+    if (isInitialLoad) return
+    if (prependAnchor || props.loadingOlder) return
+    if (lastMessageId === previousLastMessageId) return
+
+    markNewTailMessage(lastMessageId)
+  },
+)
 </script>
 
 <template>
@@ -167,16 +264,18 @@ watch(
     <!-- 标题区随群组选择更新，并持续展示当前载入数量。 -->
     <header class="message-header">
       <div v-if="group">
-        <p class="eyebrow">LIVE MESSAGE STREAM</p>
+        <p class="eyebrow">群消息</p>
         <h2>{{ group.name || `群组 ${group.group_id}` }}</h2>
       </div>
       <div v-else>
-        <p class="eyebrow">ALL MONITORED CHANNELS</p>
+        <p class="eyebrow">全部监控群聊</p>
         <h2>全部群消息</h2>
+        <!-- 汇总只出现在全部群消息；数据来自完整监控列表，不受侧栏搜索影响。 -->
+        <MonitoredGroupSummary :group-ids="monitoredGroupIds" />
       </div>
       <div class="stream-meta">
-        <span><i class="pulse-dot"></i>只读采集</span>
-        <span>{{ messages.length }} 条已载入</span>
+        <span><i class="pulse-dot"></i>正在接收</span>
+        <span>{{ messages.length }} 条消息</span>
       </div>
     </header>
 
@@ -189,7 +288,7 @@ watch(
       <div v-else-if="messages.length === 0" class="panel-empty">
         <span class="empty-glyph" aria-hidden="true">Ø</span>
         <strong>暂无已存储消息</strong>
-        <p>开启群监控并连接聊天链路后等待新消息</p>
+        <p>选择需要监控的群后，新消息会显示在这里</p>
       </div>
       <!-- 状态条覆盖在虚拟容器顶部，不参与列表高度和虚拟行索引。 -->
       <div v-else class="history-status" role="status">
@@ -209,24 +308,20 @@ watch(
           :data-index="item.index"
           :style="{ transform: `translateY(${item.start}px)` }"
         >
-          <template v-if="messages[item.index]" :key="messages[item.index].msg_id">
-            <time :datetime="new Date(messages[item.index].send_time < 10_000_000_000 ? messages[item.index].send_time * 1000 : messages[item.index].send_time).toISOString()">
-              {{ formatMessageTime(messages[item.index].send_time) }}
-            </time>
-            <span v-if="!group" class="message-group">
-              {{ messages[item.index].group_name || `群组 ${messages[item.index].group_id}` }} <small>#{{ messages[item.index].group_id }}</small>
-            </span>
-            <span class="sender-id">UID {{ messages[item.index].send_uid }}</span>
-            <MessageBody :message="messages[item.index]" />
-          </template>
+          <!-- 行内只挂卡片；边距与边框在 article 上，避免绝对定位 li 外边距折叠。 -->
+          <MessageCard
+            v-if="messages[item.index]"
+            :message="messages[item.index]"
+            :show-group="!group"
+            :class="{ 'message-card--new': highlightedIds.has(messages[item.index].msg_id) }"
+          />
         </li>
       </ol>
     </div>
 
     <footer class="message-footer">
-      <span>正文和附件由 Rust 解密，失败时保留原始内容提示</span>
-      <span v-if="group">CHANNEL / {{ group.group_id }}</span>
-      <span v-else>ALL MONITORED CHANNELS</span>
+      <span v-if="group">群 ID：{{ group.group_id }}</span>
+      <span v-else>全部监控群聊</span>
     </footer>
   </section>
 </template>

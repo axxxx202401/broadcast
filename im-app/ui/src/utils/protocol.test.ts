@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { createGt4Payload, errorMessage, normalizeConnectionStatus } from './protocol'
+import { createGt4Payload, errorMessage, normalizeConnectionStatus, userFacingError } from './protocol'
 
 describe('GT4 参数归一化', () => {
   it('仅向后端转发协议确认的四个 GT4 字段', () => {
@@ -35,5 +35,20 @@ describe('IPC 错误展示', () => {
     expect(errorMessage(new Error('Not logged in'))).toBe('Not logged in')
     expect(errorMessage('network failed')).toBe('network failed')
     expect(errorMessage({ code: 500 })).toBe('操作失败，请查看后端日志')
+  })
+
+  it('用户可见错误去掉业务码和诊断字段', () => {
+    expect(userFacingError({
+      kind: 'business',
+      code: 3110002,
+      msg: '验证码错误',
+      title: '认证失败',
+      data: { remaining: 2 },
+    })).toBe('认证失败 · 验证码错误')
+    expect(userFacingError({
+      kind: 'business',
+      code: 3110002,
+      msg: '',
+    })).toBe('验证失败，请重试')
   })
 })

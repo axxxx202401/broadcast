@@ -110,6 +110,10 @@ export interface Gt4Fields {
 
 /** 需要本地账号字段校验的登录方式：手机验证码、邮件验证码、手机密码、邮件密码。 */
 export type PrimaryLoginType = 1 | 2 | 3 | 4
+/** 把 IPC 返回的未知 i32 收敛到主登录方式；异常值回退为邮箱密码，避免前端崩溃。 */
+export function toPrimaryLoginType(value: unknown): PrimaryLoginType {
+  return value === 1 || value === 2 || value === 3 || value === 4 ? value : 4
+}
 /** 当前前端可提交的登录方式；`7`、`8`、`9` 分别对应人脸、交易密码和 Google 验证码。 */
 export type LoginType = PrimaryLoginType | 7 | 8 | 9
 /** 服务端校验类型整数 `16..26`；具体判定规则由服务端决定。 */
@@ -172,10 +176,14 @@ export interface PendingValidation {
   validateType: ValidateType
 }
 
-/** 提交给服务端的单项校验材料。 */
+/** 提交给 Rust 校验命令的单项材料；三种秘密来源必须且只能选一种。 */
 export interface PendingValidationDto extends PendingValidation {
-  /** 验证码、密码摘要或其他材料；密码类值会由后端 IPC 命令按协议规则改写。 */
-  validateValue: string
+  /** 用户本次输入的验证码或密码；与 savedPasswordUid、reuseLoginPassword 互斥。 */
+  validateValue?: string
+  /** 由 Rust 按 UID 从系统凭据库读取已保存登录密码，前端不得填写明文。 */
+  savedPasswordUid?: string
+  /** 复用本次登录流程已缓存的登录密码，最多成功一次。 */
+  reuseLoginPassword?: boolean
 }
 
 /** 向一轮校验流程提交一组校验材料。 */
@@ -184,8 +192,6 @@ export interface VerifyRequest {
   validateToken: string
   /** JSON 字段名固定为 `pendingValidateDTOS` 的待验证材料。 */
   pendingValidateDTOS: PendingValidationDto[]
-  /** 随整批材料提交的可选补充值；客户端不解释其内容。 */
-  secondMac?: string
 }
 
 /** 服务端返回的一项业务处理结果；前端不自行解释业务码。 */
@@ -225,10 +231,22 @@ export interface LoginRequest {
   countryCode?: number
   /** 可随登录请求提交的校验流程令牌。 */
   validateToken?: string
-  /** 可选补充值；客户端不解释其内容。 */
-  secondMac?: string
   /** 人脸方式要求的认证材料。 */
   credentials?: string
+}
+
+/** 前端可见的账号摘要；字段名与 Rust `AccountSummaryDto` 的 camelCase serde 输出一致。 */
+export interface AccountSummary {
+  /** 用户 ID 的十进制字符串表示。 */
+  uid: string
+  /** 用户输入的邮箱或手机号，仅用于展示和回填。 */
+  displayAccount: string
+  /** 首次主登录使用的登录方式标识。 */
+  loginType: PrimaryLoginType
+  /** 系统凭据库是否已保存该账号登录密码。 */
+  hasSavedPassword: boolean
+  /** 该账号是否为当前已发布会话对应的账号。 */
+  isCurrent: boolean
 }
 
 /** 登录 IPC 的带判别字段结果；字段名与 Rust `LoginResultDto` 的 camelCase serde 输出一致。 */
@@ -240,6 +258,10 @@ export type LoginResult =
       uid: string
       /** 本次远程快照同步后得到的本地群组列表。 */
       groups: GroupDto[]
+      /** 当前账号摘要；旧前端在字段尚未接入前可忽略。 */
+      account?: AccountSummary
+      /** 非阻塞提示，例如本次无法安全保存登录信息。 */
+      warnings?: string[]
     }
   | {
       /** 表示服务端要求继续校验，本地认证会话尚未发布。 */
@@ -281,3 +303,66 @@ export type AuthCommandError =
 
 /** 聊天连接状态；未知后端事件值应由归一化层降级为 `disconnected`。 */
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected'
+
+/**
+ * 启动恢复或切换账号后的会话结果；字段名与 Rust `RestoreSessionDto` 的 camelCase serde 输出一致。
+ * 联合分支不得携带 Token 或密码。
+ */
+export type RestoreSessionResult =
+  | {
+      /** Token 有效，已发布会话并打开对应账号数据库。 */
+      status: 'success'
+      /** 当前账号的非密钥摘要。 */
+      account: AccountSummary
+      /** 本次同步后的本地群组列表。 */
+      groups: GroupDto[]
+      /** 非阻塞提示；更新最后账号失败时只放普通用户文案。 */
+      warnings: string[]
+    }
+  | {
+      /** 需要用户重新登录，不得自动进入主界面。 */
+      status: 'needsLogin'
+      /** 用户 ID 的十进制字符串表示。 */
+      uid: string
+      /** 用户输入的邮箱或手机号，仅用于展示和回填。 */
+      displayAccount: string
+      /** 首次主登录使用的登录方式标识；运行时异常值需在边界处回退为邮箱密码。 */
+      loginType: PrimaryLoginType
+      /** 系统凭据库是否已保存该账号登录密码。 */
+      hasSavedPassword: boolean
+    }
+  | {
+      /** 索引中没有任何账号，或最后账号记录已丢失。 */
+      status: 'noAccount'
+    }
+  | {
+      /** 网络等暂时失败，Token 仍保留，允许用户重试。 */
+      status: 'retryable'
+      /** 用户 ID 的十进制字符串表示。 */
+      uid: string
+      /** 普通用户可理解的失败说明，不含协议码或内部实现细节。 */
+      message: string
+    }
+
+/** 暂停当前会话后的结果；字段名与 Rust `PauseSessionDto` 的 camelCase 输出一致。 */
+export interface PauseSessionResult {
+  /** 暂停前的会话 UID；无活动会话时为 `null`。不得据此判断 Token 已被删除。 */
+  uid: string | null
+}
+
+/** 退出登录命令返回的非阻塞提示；字段名与 Rust `LogoutResultDto` 一致。 */
+export interface LogoutResult {
+  /** 删除 Token 失败等情况下的普通用户文案。 */
+  warnings: string[]
+}
+
+/** 移除账号命令返回；字段名与 Rust `RemoveAccountResultDto` 的 camelCase 输出一致。 */
+export interface RemoveAccountResult {
+  /** 凭据删除失败等情况下的普通用户文案。 */
+  warnings: string[]
+  /**
+   * 移除后索引选定的下一账号 UID（`last_used_uid`）。
+   * 无剩余账号时为 `null`；登录页应按此选择，不得用列表首项冒充最近使用。
+   */
+  nextUid: string | null
+}

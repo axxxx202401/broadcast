@@ -46,7 +46,7 @@ defineEmits<{
     </div>
 
     <!-- 群组列表保持原生列表语义；选择按钮与监控开关是同级交互控件，结构上避免 nested button。 -->
-    <div class="list-label"><span>ALL CHANNELS</span><span>{{ groups.length }}</span></div>
+    <div class="list-label"><span>全部群聊</span><span>{{ groups.length }}</span></div>
     <button
       class="all-messages"
       :class="{ selected: selectedId === null }"
@@ -89,7 +89,7 @@ defineEmits<{
         ><i></i></button>
       </li>
       <li v-if="groups.length === 0" class="compact-empty">
-        <span>NO MATCH</span>
+        <span>没有匹配的群</span>
         <p>没有匹配的群组</p>
       </li>
     </ul>

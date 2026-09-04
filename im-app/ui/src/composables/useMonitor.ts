@@ -19,7 +19,7 @@ import { errorMessage, normalizeConnectionStatus } from '../utils/protocol'
    * 消息历史另用请求编号防止陈旧响应覆盖当前范围。连接状态以事件和后端快照共同推进；
  * 部分异步失败路径不具备与成功路径相同的会话门禁，详见对应流程注释。
  *
- * @returns 页面状态、筛选与计数派生值，以及登录接收、群组、连接和退出操作。
+ * @returns 页面状态、筛选、不受搜索影响的监控群 ID 与计数派生值，以及登录接收、群组、连接和退出操作。
  */
 export function useMonitor() {
   // 会话、群组与消息均为页面本地状态；已取得执行权的退出流程会在 finally 中清空。
@@ -152,6 +152,15 @@ export function useMonitor() {
         group.name.toLocaleLowerCase().includes(query) || String(group.group_id).includes(query),
     )
   })
+  /**
+   * 正在监控的群 ID，直接来自完整 `groups`，不受侧栏 `search` 筛选影响。
+   * `monitored !== 0` 视为监控中；顺序与群列表一致。
+   */
+  const monitoredGroupIds = computed(() =>
+    groups.value
+      .filter(({ monitored }) => monitored !== 0)
+      .map(({ group_id }) => group_id),
+  )
   const monitoredCount = computed(() => groups.value.filter((group) => group.monitored !== 0).length)
   const connectDisabled = computed(
     () => pending.value !== null || connectionStatus.value === 'connecting',
@@ -364,27 +373,42 @@ export function useMonitor() {
     })
 
   /**
+   * 只清理前端会话视图，不请求退出、不删除 Token。
+   * 供添加账号进入登录页时与后端 `pause_session` 配合使用。
+   */
+  function detachLocalSession() {
+    connectionStatusVersion += 1
+    loggedIn.value = false
+    uid.value = null
+    groups.value = []
+    clearMessages()
+    resetMessagePagination()
+    selectedGroupId.value = null
+    messageRequestId += 1
+    messagesLoading.value = false
+    connectionStatus.value = 'disconnected'
+  }
+
+  /**
    * 尝试取得 `run` 的 pending 执行权后请求远程退出。
    * 若已有动作占用 pending，本次调用直接返回，不请求后端也不清理本地状态；若已开始执行，
-   * 即使远程 logout 失败也会在 finally 清理本地会话，并以 warning 披露链路状态不确定。
+   * 即使远程 logout 失败也会在 finally 清理本地会话。成功路径展示后端 warnings；
+   * 退出未确认的用户文案原样展示，其余拒绝值仍以 warning 披露链路状态不确定。
    */
   const logout = () =>
     run('logout', async () => {
       try {
-        await api.logout()
+        const result = await api.logout()
+        if (result.warnings.length) {
+          warning.value = result.warnings.join('\n')
+        }
       } catch (reason) {
-        warning.value = `已退出，但断开聊天链路时出现问题：${errorMessage(reason)}`
+        const text = errorMessage(reason)
+        warning.value = text === '本次无法确认已退出，请重试'
+          ? text
+          : `已退出，但断开聊天链路时出现问题：${text}`
       } finally {
-        connectionStatusVersion += 1
-        loggedIn.value = false
-        uid.value = null
-        groups.value = []
-        clearMessages()
-        resetMessagePagination()
-        selectedGroupId.value = null
-        messageRequestId += 1
-        messagesLoading.value = false
-        connectionStatus.value = 'disconnected'
+        detachLocalSession()
       }
     })
 
@@ -464,6 +488,8 @@ export function useMonitor() {
     /** 当前群组列表及其筛选结果。 */
     groups,
     filteredGroups,
+    /** 正在监控的群 ID；不受侧栏搜索影响。 */
+    monitoredGroupIds,
     selectedGroup,
     /** 当前群组的历史与实时消息合并结果。 */
     messages,
@@ -491,5 +517,6 @@ export function useMonitor() {
     connect,
     disconnect,
     logout,
+    detachLocalSession,
   }
 }

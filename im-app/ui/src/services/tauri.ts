@@ -1,6 +1,7 @@
 import { invoke, type Channel } from '@tauri-apps/api/core'
 
 import type {
+  AccountSummary,
   AttachmentDownloadDto,
   GroupDto,
   IssuedRequest,
@@ -8,10 +9,14 @@ import type {
   ListPendingValidationsRequest,
   LoginRequest,
   LoginResult,
+  LogoutResult,
+  PauseSessionResult,
   MessageCursor,
   MessageDto,
   MessagePage,
   PendingValidation,
+  RemoveAccountResult,
+  RestoreSessionResult,
   SendEmailCodeRequest,
   SendSmsCodeRequest,
   VerifyRequest,
@@ -47,7 +52,8 @@ export const api = {
     invoke<IssuedResponse>('issue_validation_token', { request }),
   /**
    * 调用 `verify_validations`，以 `{ request }` 包装参数并返回远程验证结果。
-   * 后端会改写密码类材料后请求远程验证；失败为结构化认证错误，但不证明远程状态未改变。
+   * 每项可选手输 `validateValue`、已保存密码 UID 或复用本次登录密码；Rust 解析后再做密码摘要。
+   * 失败为结构化认证错误，但不证明远程状态未改变。
    */
   verifyValidations: (request: VerifyRequest) =>
     invoke<VerifyResponse>('verify_validations', { request }),
@@ -65,10 +71,38 @@ export const api = {
   login: (request: LoginRequest) =>
     invoke<LoginResult>('login', { request }),
   /**
-   * 无参数调用 `logout`，成功无返回值，失败拒绝为字符串错误。
-   * 仅在本地取消连接并清空认证、监控和连接状态，不调用远程登出接口。
+   * 无参数调用 `logout`，成功返回 `{ warnings }`，失败拒绝为字符串或结构化认证错误。
+   * 仅清理本地会话、Token 与运行时，不调用远程登出接口；warnings 只包含普通用户文案。
    */
-  logout: () => invoke<void>('logout'),
+  logout: () => invoke<LogoutResult>('logout'),
+  /**
+   * 无参数调用 `restore_session`，按最后账号恢复会话。
+   * 成功返回判别联合结果；失败拒绝为结构化认证错误。不得把 Token 或密码送出 IPC。
+   */
+  restoreSession: () => invoke<RestoreSessionResult>('restore_session'),
+  /**
+   * 无参数调用 `list_accounts`，返回全部已保存账号的非密钥摘要。
+   * `isCurrent` 仅当已发布会话 UID 与该记录一致时为 `true`。
+   */
+  listAccounts: () => invoke<AccountSummary[]>('list_accounts'),
+  /**
+   * 调用 `switch_account`，直接包装为 `{ uid }` 并返回与启动恢复相同的判别结果。
+   * 会推进认证代际并清理旧运行时；载荷不得包含密码或 Token。
+   */
+  switchAccount: (uid: string) =>
+    invoke<RestoreSessionResult>('switch_account', { uid }),
+  /**
+   * 无参数调用 `pause_session`，断开当前 TCP 并清理运行时，但保留 Token。
+   * 成功返回暂停前的 `{ uid }`；失败拒绝为结构化认证错误。不得把 Token 送出 IPC。
+   */
+  pauseSession: () => invoke<PauseSessionResult>('pause_session'),
+  /**
+   * 调用 `remove_account`，直接包装为 `{ uid }`，成功返回 `{ warnings, nextUid }`。
+   * 删除索引与凭据但保留该 UID 的 SQLite 文件；`nextUid` 为删除后的 `last_used_uid`。
+   * 载荷不得包含密码或 Token。
+   */
+  removeAccount: (uid: string) =>
+    invoke<RemoveAccountResult>('remove_account', { uid }),
   /**
    * 无参数调用 `fetch_group_list`，从本地数据库返回群组列表。
    * 查询失败拒绝为字符串错误；不发起远程请求，也不修改数据库或监控集合。
