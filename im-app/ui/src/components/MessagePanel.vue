@@ -6,6 +6,7 @@ import type { VNodeRef } from 'vue'
 import type { GroupDto, MessageDto } from '../types/im'
 import LotteryPanel from './LotteryPanel.vue'
 import MessageCard from './MessageCard.vue'
+import MonitoredGroupSummary from './MonitoredGroupSummary.vue'
 
 // 父组件提供当前群组、分页状态和消息；面板负责虚拟窗口、顶部触发与前插锚点恢复。
 const props = withDefaults(defineProps<{
@@ -278,33 +279,28 @@ watch(
   <section class="message-panel" aria-label="消息监控">
     <!-- 标题区随群组选择更新，并持续展示当前载入数量。 -->
     <header class="message-header">
-      <!-- 上行：群 ID 列表，全部群消息模式展示。 -->
+      <!-- 第1行：标题 -->
+      <div class="message-header-title">
+        <h2>{{ group ? (`${group.name} (${group.group_id})`) : '全部群消息' }}</h2>
+      </div>
+      <!-- 第2行：群 ID 列表，全部群消息模式展示。 -->
       <MonitoredGroupSummary v-if="!group" :group-ids="monitoredGroupIds" class="header-group-ids" />
-      <!-- 下行：左侧标题，右侧统计与开奖信息。 -->
+      <!-- 第3行：左侧统计信息（两行），右侧开奖信息（两行），并排显示。 -->
       <div class="message-header-row">
-        <div class="message-header-main">
-          <div v-if="group">
-            <span class="eyebrow">群消息</span>
-            <h2>{{ group.name || `群组 ${group.group_id}` }}</h2>
-          </div>
-          <div v-else>
-            <span class="eyebrow">全部监控群聊</span>
-            <h2>全部群消息</h2>
-          </div>
-        </div>
         <div class="stream-meta">
-          <span class="meta-metrics">
+          <div class="meta-group">
             <span>群组总数 <strong>{{ totalGroups }}</strong></span>
-            <span class="meta-metrics-divider">·</span>
+            <span class="meta-divider">·</span>
             <span>监控中 <strong class="metric-live">{{ monitoredCount }}</strong></span>
-          </span>
-          <span class="meta-divider">·</span>
-          <span><i class="pulse-dot"></i>正在接收</span>
-          <span class="meta-divider">·</span>
-          <span>{{ messages.length }} 条消息</span>
-          <!-- 开奖信息：紧凑横条，与统计信息并排显示在标题栏右侧。 -->
-          <LotteryPanel v-if="lottery" class="header-lottery" :lottery="lottery" />
+          </div>
+          <div class="meta-group">
+            <span><i class="pulse-dot"></i>正在接收</span>
+            <span class="meta-divider">·</span>
+            <span>{{ messages.length }} 条消息</span>
+          </div>
         </div>
+        <!-- 开奖信息：紧凑竖排，与统计信息并排显示在标题栏右侧。 -->
+        <LotteryPanel v-if="lottery" class="header-lottery" :lottery="lottery" />
       </div>
     </header>
 

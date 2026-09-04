@@ -52,9 +52,9 @@ function cancelEdit() {
   <div v-if="!editing" class="lottery-strip" role="status" aria-label="开奖信息">
     <div class="lottery-row">
       <span class="issue">
-        <em class="issue-since">本期</em>
+        <em class="issue-since">本期期号</em>
         <strong class="issue-num">{{ currentDraw?.preDrawIssue ?? '—' }}</strong>
-        <span class="issue-time">{{ currentDraw?.preDrawTime ?? '' }}</span>
+        <!-- <span class="issue-time">{{ currentDraw?.preDrawTime ?? '' }}</span> -->
       </span>
       <button
         class="lottery-btn"
@@ -68,9 +68,9 @@ function cancelEdit() {
     </div>
     <div v-if="previousDraw" class="lottery-row">
       <span class="issue">
-        <em class="issue-since">上期</em>
+        <em class="issue-since">上期期号</em>
         <strong class="issue-num">{{ previousDraw?.preDrawIssue ?? '—' }}</strong>
-        <span class="issue-time">{{ previousDraw?.preDrawTime ?? '' }}</span>
+        <!-- <span class="issue-time">{{ previousDraw?.preDrawTime ?? '' }}</span> -->
       </span>
       <button class="lottery-btn" type="button" title="配置 API" @click="openEdit">
         <span aria-hidden="true">⚙</span>
@@ -115,7 +115,7 @@ function cancelEdit() {
 
 .issue-since {
   font-style: normal;
-  font-size: 9px;
+  font-size: 12px;
   color: var(--text-500, #6e6e73);
   text-transform: uppercase;
   letter-spacing: 0.04em;
