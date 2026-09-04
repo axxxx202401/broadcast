@@ -5,6 +5,7 @@ import { computed, ref, watch } from 'vue'
 import { api } from '../services/tauri'
 import type { MessageDto } from '../types/im'
 import { decodeMessageContent } from '../utils/message'
+import MessageText from './MessageText.vue'
 
 const props = defineProps<{ message: MessageDto }>()
 
@@ -54,8 +55,9 @@ async function loadAttachment() {
 
 <template>
   <div class="message-body" :class="`message-body--${content?.kind ?? 'unknown'}`">
+    <!-- 已知文本走 MessageText：别名替换且只用文本节点，不渲染 .message-kind。 -->
     <template v-if="content?.kind === 'text'">
-      <p>{{ content.text }}</p>
+      <MessageText :text="content.text" />
     </template>
 
     <template v-else-if="content?.kind === 'image'">

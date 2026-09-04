@@ -53,6 +53,17 @@ describe('MessageBody', () => {
     expect(wrapper.find('.message-kind').exists()).toBe(false)
   })
 
+  // 文本分支必须接入 MessageText：别名替换走文本节点，标签不得被解析为 DOM。
+  it('文本分支使用文本节点渲染 Emoji 且不解析 HTML', () => {
+    const wrapper = mount(MessageBody, {
+      props: { message: message({ kind: 'text', text: '<img src=x onerror=alert(1)>[呲牙]' }) },
+    })
+
+    expect(wrapper.text()).toContain('<img src=x onerror=alert(1)>😁')
+    expect(wrapper.find('img').exists()).toBe(false)
+    expect(wrapper.find('.message-kind').exists()).toBe(false)
+  })
+
   it('媒体按钮没有解密字样', () => {
     const cases: Array<{ content: NonNullable<MessageDto['decoded_content']>; label: string }> = [
       {

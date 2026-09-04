@@ -1,7 +1,7 @@
 /* 设计令牌：全局色彩、字体与圆角基准。 */
 :root {
   color-scheme: dark;
-  font-family: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", sans-serif;
+  font-family: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
   font-synthesis: none;
   --ink-950: #080a0b;
   --ink-900: #0b0e0f;

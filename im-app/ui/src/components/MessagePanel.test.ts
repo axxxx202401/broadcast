@@ -497,4 +497,101 @@ describe('MessagePanel', () => {
     expect(wrapper.text()).toContain('#20')
     expect(wrapper.text()).toContain('告警恢复')
   })
+
+  // 首屏或 loading 结束后的第一批消息都视为初次载入，不得闪高亮。
+  it('初次载入消息不高亮', async () => {
+    const wrapper = mount(MessagePanel, {
+      props: {
+        group: null,
+        loading: false,
+        messages: Array.from({ length: 8 }, (_, index) => makeMessage(index)),
+      },
+    })
+    await settleVirtualizer()
+
+    expect(wrapper.find('.message-card--new').exists()).toBe(false)
+  })
+
+  // 仅新尾 msg_id 进入高亮集合；已在窗口内的旧消息即使同批重渲染也不得带 --new。
+  it('尾部追加一条实时消息时只给新 msg_id 增加高亮', async () => {
+    const messages = Array.from({ length: 8 }, (_, index) => makeMessage(index))
+    const wrapper = mount(MessagePanel, {
+      props: { group: null, loading: false, messages },
+    })
+    await settleVirtualizer()
+
+    await wrapper.setProps({ messages: [...messages, makeMessage(8)] })
+    await settleVirtualizer()
+
+    const highlighted = wrapper.findAll('.message-card--new')
+    expect(highlighted).toHaveLength(1)
+    expect(highlighted[0].text()).toContain('消息 9')
+    expect(
+      wrapper.findAll('.message-card').some((card) => (
+        card.text().includes('消息 8') && !card.classes().includes('message-card--new')
+      )),
+    ).toBe(true)
+  })
+
+  // 历史前插由锚点 watcher 独占；即使可视行换成更早消息，也不得当作实时新尾。
+  it('历史前插不得高亮', async () => {
+    const messages = Array.from({ length: 20 }, (_, index) => makeMessage(index + 20))
+    const wrapper = mount(MessagePanel, {
+      props: {
+        group: null,
+        loading: false,
+        loadingOlder: false,
+        olderRequestToken: 6,
+        hasOlder: true,
+        messages,
+      },
+    })
+    await settleVirtualizer()
+
+    const viewport = wrapper.get('.message-viewport')
+    const element = viewport.element as HTMLElement
+    Object.defineProperties(element, {
+      clientHeight: { configurable: true, value: VIEWPORT_HEIGHT },
+      scrollHeight: { configurable: true, value: 2100 },
+    })
+    element.scrollTop = 40
+    await viewport.trigger('scroll')
+    await wrapper.setProps({ loadingOlder: true })
+    await wrapper.setProps({
+      messages: [
+        ...Array.from({ length: 10 }, (_, index) => makeMessage(index + 10)),
+        ...messages,
+      ],
+      loadingOlder: false,
+    })
+    await settleVirtualizer()
+
+    expect(wrapper.find('.message-card--new').exists()).toBe(false)
+  })
+
+  // 虚拟窗口回收后重新挂载已出现过的行，只复用原卡片，不得重新打上新消息高亮。
+  it('虚拟行重新挂载不得高亮', async () => {
+    const messages = Array.from({ length: 40 }, (_, index) => makeMessage(index))
+    const wrapper = mount(MessagePanel, {
+      props: { group: null, loading: false, messages },
+    })
+    await settleVirtualizer()
+
+    const viewport = wrapper.get('.message-viewport')
+    const element = viewport.element as HTMLElement
+    Object.defineProperties(element, {
+      clientHeight: { configurable: true, value: VIEWPORT_HEIGHT },
+      scrollHeight: { configurable: true, value: 2800 },
+    })
+    element.scrollTop = 0
+    await viewport.trigger('scroll')
+    await settleVirtualizer()
+    expect(wrapper.find('.message-card--new').exists()).toBe(false)
+
+    element.scrollTop = 2000
+    await viewport.trigger('scroll')
+    await settleVirtualizer()
+    expect(wrapper.find('.message-card--new').exists()).toBe(false)
+  })
 })
+

@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import type { VNodeRef } from 'vue'
 
 import type { GroupDto, MessageDto } from '../types/im'
-import { formatMessageTime } from '../utils/message'
-import MessageBody from './MessageBody.vue'
+import MessageCard from './MessageCard.vue'
 import MonitoredGroupSummary from './MonitoredGroupSummary.vue'
 
 // 父组件提供当前群组、分页状态和消息；面板负责虚拟窗口、顶部触发与前插锚点恢复。
@@ -164,6 +163,61 @@ watch(
   },
   { immediate: true },
 )
+
+/** 新尾消息高亮持续时间；到期后从集合删除，虚拟行重挂载不会再次点亮。 */
+const NEW_HIGHLIGHT_MS = 1200
+/** 当前仍在高亮窗口内的 msg_id；必须整体替换 Set，原地 mutate 不会触发视图更新。 */
+const highlightedIds = ref(new Set<string>())
+const highlightTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** 将一条新尾消息加入高亮集合，并在 1.2s 后移除该 ID。 */
+function markNewTailMessage(msgId: string) {
+  const pending = highlightTimers.get(msgId)
+  if (pending !== undefined) clearTimeout(pending)
+
+  const next = new Set(highlightedIds.value)
+  next.add(msgId)
+  highlightedIds.value = next
+
+  highlightTimers.set(msgId, setTimeout(() => {
+    highlightTimers.delete(msgId)
+    const remaining = new Set(highlightedIds.value)
+    remaining.delete(msgId)
+    highlightedIds.value = remaining
+  }, NEW_HIGHLIGHT_MS))
+}
+
+/** 卸载时清掉未触发的高亮定时器，避免对已销毁实例写回 Set。 */
+function clearHighlightTimers() {
+  for (const timer of highlightTimers.values()) clearTimeout(timer)
+  highlightTimers.clear()
+  highlightedIds.value = new Set()
+}
+
+onUnmounted(clearHighlightTimers)
+
+/**
+ * 比较上一次尾部 `msg_id`：仅非初次、非历史前插的新尾 ID 进入高亮集合。
+ * 初次载入、loading 结束后的首批、以及 `prependAnchor` / `loadingOlder` 期间的尾变化一律忽略。
+ */
+watch(
+  () => [
+    props.loading,
+    props.messages.length,
+    props.messages.at(-1)?.msg_id,
+  ] as const,
+  ([loading, count, lastMessageId], previous) => {
+    if (loading || count === 0 || lastMessageId === undefined) return
+
+    const [wasLoading, previousCount, previousLastMessageId] = previous ?? [true, 0, undefined]
+    const isInitialLoad = wasLoading || previousCount === 0
+    if (isInitialLoad) return
+    if (prependAnchor || props.loadingOlder) return
+    if (lastMessageId === previousLastMessageId) return
+
+    markNewTailMessage(lastMessageId)
+  },
+)
 </script>
 
 <template>
@@ -215,16 +269,13 @@ watch(
           :data-index="item.index"
           :style="{ transform: `translateY(${item.start}px)` }"
         >
-          <template v-if="messages[item.index]" :key="messages[item.index].msg_id">
-            <time :datetime="new Date(messages[item.index].send_time < 10_000_000_000 ? messages[item.index].send_time * 1000 : messages[item.index].send_time).toISOString()">
-              {{ formatMessageTime(messages[item.index].send_time) }}
-            </time>
-            <span v-if="!group" class="message-group">
-              {{ messages[item.index].group_name || `群组 ${messages[item.index].group_id}` }} <small>#{{ messages[item.index].group_id }}</small>
-            </span>
-            <span class="sender-id">用户 {{ messages[item.index].send_uid }}</span>
-            <MessageBody :message="messages[item.index]" />
-          </template>
+          <!-- 行内只挂卡片；边距与边框在 article 上，避免绝对定位 li 外边距折叠。 -->
+          <MessageCard
+            v-if="messages[item.index]"
+            :message="messages[item.index]"
+            :show-group="!group"
+            :class="{ 'message-card--new': highlightedIds.has(messages[item.index].msg_id) }"
+          />
         </li>
       </ol>
     </div>
