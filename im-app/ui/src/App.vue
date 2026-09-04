@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 
 import AccountMenu from './components/AccountMenu.vue'
 import GroupSidebar from './components/GroupSidebar.vue'
@@ -9,11 +9,14 @@ import StatusBadge from './components/StatusBadge.vue'
 import { useAccounts } from './composables/useAccounts'
 import { useAuth } from './composables/useAuth'
 import { useMonitor } from './composables/useMonitor'
+import { useResponsiveSidebar } from './composables/useResponsiveSidebar'
 import type { RestoreSessionResult } from './types/im'
 
 // 根组件编排账号恢复、认证与监控状态。启动时先恢复上次登录，避免闪现登录页。
 const monitor = useMonitor()
 const accounts = useAccounts()
+/** 窄屏把群列表收成抽屉；宽屏保持侧栏展开。仅已登录工作区使用开关与遮罩。 */
+const layout = useResponsiveSidebar()
 const auth = useAuth((payload) => {
   accounts.applyManualLogin(payload.account)
   monitor.acceptLogin(payload.groups, payload.account.uid)
@@ -50,8 +53,20 @@ function applyRestoreOutcome(result: RestoreSessionResult | null) {
   }
 }
 
+/** Escape 关闭窄屏群列表抽屉，不拦截输入框以外的其它快捷键。 */
+function onWorkspaceEscape(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    layout.closeSidebar()
+  }
+}
+
 onMounted(() => {
   void accounts.restore().then(applyRestoreOutcome)
+  window.addEventListener('keydown', onWorkspaceEscape)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onWorkspaceEscape)
 })
 
 const retryRestore = () => {
@@ -115,6 +130,18 @@ const removeCurrentAccount = async (uid: string) => {
     auth.resetAuthForm({ preserveSelectedAccount: false })
   }
 }
+
+/** 选择单个群后交给监控状态，窄屏再关闭抽屉以免挡住消息区。 */
+function onSelectGroup(groupId: string) {
+  monitor.selectGroup(groupId)
+  layout.selectGroup()
+}
+
+/** 回到全部群消息汇总，窄屏同样关闭抽屉。 */
+function onShowAllMessages() {
+  monitor.showAllMessages()
+  layout.selectGroup()
+}
 </script>
 
 <template>
@@ -162,6 +189,15 @@ const removeCurrentAccount = async (uid: string) => {
   <main v-else class="operations-shell">
     <!-- 顶栏集中呈现连接状态、当前账号菜单及连接操作。 -->
     <header class="topbar">
+      <!-- 窄屏优先展示消息区，用顶部按钮展开群列表抽屉。 -->
+      <button
+        v-if="layout.isNarrow.value"
+        class="button ghost compact sidebar-toggle"
+        type="button"
+        :aria-expanded="layout.sidebarOpen.value"
+        aria-controls="group-sidebar-drawer"
+        @click="layout.toggleSidebar"
+      >群列表</button>
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">IM</span>
         <div>
@@ -204,21 +240,39 @@ const removeCurrentAccount = async (uid: string) => {
       <button type="button" aria-label="关闭错误" @click="monitor.error.value = ''">×</button>
     </div>
 
-    <!-- 工作区由群组筛选与监控操作、当前群消息流两部分组成。 -->
-    <div class="workspace">
-      <GroupSidebar
-        :groups="monitor.filteredGroups.value"
-        :total="monitor.groups.value.length"
-        :monitored-count="monitor.monitoredCount.value"
-        :selected-id="monitor.selectedGroup.value?.group_id ?? null"
-        :search="monitor.search.value"
-        :pending="monitor.pending.value"
-        @update:search="monitor.search.value = $event"
-        @select="monitor.selectGroup"
-        @select-all="monitor.showAllMessages"
-        @toggle="monitor.toggleGroup"
-        @refresh="monitor.refreshGroups"
+    <!-- 工作区由群组筛选与监控操作、当前群消息流两部分组成；窄屏侧栏改为遮罩抽屉。 -->
+    <div
+      class="workspace"
+      :class="{
+        'is-narrow': layout.isNarrow.value,
+        'is-sidebar-open': layout.sidebarOpen.value,
+      }"
+    >
+      <div
+        v-if="layout.isNarrow.value && layout.sidebarOpen.value"
+        class="sidebar-mask"
+        @click="layout.closeSidebar"
       />
+      <div
+        id="group-sidebar-drawer"
+        class="sidebar-drawer"
+        :inert="layout.isNarrow.value && !layout.sidebarOpen.value"
+        :aria-hidden="layout.isNarrow.value && !layout.sidebarOpen.value ? true : undefined"
+      >
+        <GroupSidebar
+          :groups="monitor.filteredGroups.value"
+          :total="monitor.groups.value.length"
+          :monitored-count="monitor.monitoredCount.value"
+          :selected-id="monitor.selectedGroup.value?.group_id ?? null"
+          :search="monitor.search.value"
+          :pending="monitor.pending.value"
+          @update:search="monitor.search.value = $event"
+          @select="onSelectGroup"
+          @select-all="onShowAllMessages"
+          @toggle="monitor.toggleGroup"
+          @refresh="monitor.refreshGroups"
+        />
+      </div>
       <MessagePanel
         :group="monitor.selectedGroup.value"
         :messages="monitor.messages.value"

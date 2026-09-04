@@ -75,6 +75,34 @@ import { api } from './services/tauri'
 import App from './App.vue'
 import LoginPanel from './components/LoginPanel.vue'
 
+/**
+ * 用可控 `MediaQueryList` 替身模拟 `(max-width: 900px)`。
+ * 已登录工作区测试默认宽屏，避免现有双栏断言被窄屏抽屉影响。
+ */
+function mockMatchMedia(matches: boolean) {
+  const media = {
+    matches,
+    media: '(max-width: 900px)',
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }
+  vi.stubGlobal('matchMedia', vi.fn(() => media))
+  return media
+}
+
+/** 消息面板测量依赖 ResizeObserver；jsdom 不提供实现。 */
+function stubResizeObserver() {
+  vi.stubGlobal('ResizeObserver', class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  })
+}
+
 /** 创建可控 Promise，用于断言恢复完成前不会闪现登录页。 */
 function promiseWithResolvers<T>() {
   let resolve!: (value: T) => void
@@ -93,6 +121,21 @@ const restoredAccount: AccountSummary = {
   hasSavedPassword: true,
   isCurrent: true,
 }
+
+const drawerGroup: GroupDto = {
+  group_id: '13537',
+  name: '运营群',
+  pic: '',
+  host_id: null,
+  member_count: 3,
+  created_at: 0,
+  monitored: 1,
+  updated_at: 0,
+}
+
+beforeEach(() => {
+  mockMatchMedia(false)
+})
 
 /** 恢复测试使用 LoginPanel 桩，避免真实面板读取不完整的 useAuth mock。 */
 function mountApp() {
@@ -629,6 +672,99 @@ describe('App 普通用户文案', () => {
       'NO MATCH',
     ]) {
       expect(visible).not.toContain(forbidden)
+    }
+    wrapper.unmount()
+  })
+})
+
+describe('App 窄屏群列表抽屉', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockMatchMedia(true)
+    stubResizeObserver()
+    mocks.monitor.loggedIn.value = true
+    mocks.monitor.warning.value = ''
+    mocks.monitor.error.value = ''
+    mocks.monitor.connectionStatus.value = 'connected'
+    mocks.monitor.selectedGroup.value = null
+    mocks.monitor.messages.value = []
+    mocks.monitor.filteredGroups.value = [drawerGroup]
+    mocks.monitor.groups.value = [drawerGroup]
+    mocks.monitor.monitoredCount.value = 1
+    mocks.monitor.monitoredGroupIds.value = [drawerGroup.group_id]
+    mocks.restoreSession.mockResolvedValue({
+      status: 'success',
+      account: restoredAccount,
+      groups: [drawerGroup],
+      warnings: [],
+    } satisfies RestoreSessionResult)
+    mocks.listAccounts.mockResolvedValue([restoredAccount])
+  })
+
+  afterEach(() => {
+    mocks.monitor.filteredGroups.value = []
+    mocks.monitor.groups.value = []
+    mocks.monitor.monitoredCount.value = 0
+    mocks.monitor.monitoredGroupIds.value = []
+  })
+
+  it('窄屏显示群列表按钮并提供 aria-expanded / aria-controls', async () => {
+    const wrapper = await mountAuthenticatedApp()
+    const toggle = wrapper.get('button[aria-controls="group-sidebar-drawer"]')
+    expect(toggle.text()).toContain('群列表')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(toggle.attributes('aria-controls')).toBe('group-sidebar-drawer')
+    expect(wrapper.find('#group-sidebar-drawer').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('遮罩点击和 Escape 关闭抽屉', async () => {
+    const wrapper = await mountAuthenticatedApp()
+    const toggle = wrapper.get('button[aria-controls="group-sidebar-drawer"]')
+    await toggle.trigger('click')
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    expect(wrapper.find('.sidebar-mask').exists()).toBe(true)
+
+    await wrapper.get('.sidebar-mask').trigger('click')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('.sidebar-mask').exists()).toBe(false)
+
+    await toggle.trigger('click')
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await wrapper.vm.$nextTick()
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    wrapper.unmount()
+  })
+
+  it('选择群或全部群消息后关闭抽屉', async () => {
+    const wrapper = await mountAuthenticatedApp()
+    const toggle = wrapper.get('button[aria-controls="group-sidebar-drawer"]')
+    await toggle.trigger('click')
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+
+    await wrapper.get('.group-select').trigger('click')
+    expect(mocks.monitor.selectGroup).toHaveBeenCalledWith('13537')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+
+    await toggle.trigger('click')
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    await wrapper.get('.all-messages').trigger('click')
+    expect(mocks.monitor.showAllMessages).toHaveBeenCalled()
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    wrapper.unmount()
+  })
+
+  it('关闭时抽屉内容不可获得焦点', async () => {
+    const wrapper = await mountAuthenticatedApp()
+    const drawer = wrapper.get('#group-sidebar-drawer')
+    const inert = drawer.attributes('inert') !== undefined
+    const hidden = drawer.attributes('aria-hidden') === 'true'
+    expect(inert || hidden).toBe(true)
+    if (!inert) {
+      for (const el of drawer.findAll('button, input, a, [tabindex]')) {
+        expect(el.attributes('tabindex')).toBe('-1')
+      }
     }
     wrapper.unmount()
   })

@@ -592,6 +592,28 @@
   flex: 1;
 }
 
+/* 宽屏抽屉容器参与双栏网格；遮罩默认不展示，避免挡住消息区。 */
+.sidebar-drawer {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.sidebar-drawer .group-sidebar {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+
+.sidebar-mask {
+  display: none;
+}
+
+.sidebar-toggle {
+  flex: 0 0 auto;
+}
+
 /* 群组侧栏：统计、搜索、列表选择与监控开关。 */
 .group-sidebar {
   display: flex;
@@ -1256,8 +1278,43 @@
     justify-content: flex-end;
   }
 
+  /* 窄屏：消息区占满剩余空间，群列表改为同格叠加的抽屉，不挤占消息列。 */
   .workspace {
-    grid-template-columns: 280px minmax(0, 1fr);
+    position: relative;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .sidebar-mask,
+  .sidebar-drawer,
+  .message-panel {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .sidebar-mask {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    background: rgba(0, 0, 0, 0.48);
+  }
+
+  .sidebar-drawer {
+    position: absolute;
+    z-index: 21;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(330px, 86vw);
+    height: 100%;
+    transform: translateX(-100%);
+    transition: transform 180ms ease;
+    box-shadow: 16px 0 40px rgba(0, 0, 0, 0.4);
+  }
+
+  .workspace.is-sidebar-open .sidebar-drawer {
+    transform: translateX(0);
   }
 
   .message-log {
