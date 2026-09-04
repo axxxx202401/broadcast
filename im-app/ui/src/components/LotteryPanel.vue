@@ -4,16 +4,32 @@ import { computed, ref } from 'vue'
 import { useLottery } from '../composables/useLottery'
 import type { DrawItem } from '../services/tauri'
 
-const { config, drawHistory, currentIssue, loading, error, saveConfig, fetchHistory } = useLottery()
+const props = withDefaults(defineProps<{
+  lottery?: {
+    config: { value: { api_url: string; current_issue: number } }
+    drawHistory: { value: DrawItem[] }
+    loading: { value: boolean }
+    error: { value: string }
+    saveConfig: (url: string, issue: number) => Promise<void>
+    fetchHistory: () => Promise<void>
+  }
+}>(), {})
+
+const src = props.lottery ?? useLottery()
+
+// 解包 prop 中的 ref，使模板可直接使用（与独立调用 useLottery() 行为一致）。
+const config = computed(() => src.config.value)
+const drawHistory = computed(() => src.drawHistory.value)
+const loading = computed(() => src.loading.value)
+const error = computed(() => src.error.value)
+const saveConfig = src.saveConfig
+const fetchHistory = src.fetchHistory
 
 /** 是否展开配置编辑区。 */
 const editing = ref(false)
-/** 正在编辑的 URL 输入框。 */
 const editUrl = ref(config.value.api_url)
 
-/** 本期期号（drawHistory[0]），不存在时显示占位。 */
 const currentDraw = computed<DrawItem | null>(() => drawHistory.value[0] ?? null)
-/** 上期期号（drawHistory[1]），不存在时显示占位。 */
 const previousDraw = computed<DrawItem | null>(() => drawHistory.value[1] ?? null)
 
 function openEdit() {
@@ -32,201 +48,196 @@ function cancelEdit() {
 </script>
 
 <template>
-  <section class="lottery-panel" aria-label="开奖信息">
-    <!-- 收起态：显示期号和快捷入口 -->
-    <template v-if="!editing">
-      <div class="lottery-header">
-        <span class="lottery-label">开奖</span>
-        <div class="lottery-issues">
-          <div class="issue-block current">
-            <span class="issue-label">本期</span>
-            <strong v-if="currentDraw" class="issue-number">{{ currentDraw.pre_draw_issue }}</strong>
-            <span v-else class="issue-placeholder">—</span>
-            <small v-if="currentDraw" class="issue-time">{{ currentDraw.pre_draw_time }}</small>
-            <small v-else class="issue-time"></small>
-          </div>
-          <div class="issue-divider" aria-hidden="true">|</div>
-          <div class="issue-block previous">
-            <span class="issue-label">上期</span>
-            <strong v-if="previousDraw" class="issue-number">{{ previousDraw.pre_draw_issue }}</strong>
-            <span v-else class="issue-placeholder">—</span>
-            <small v-if="previousDraw" class="issue-time">{{ previousDraw.pre_draw_time }}</small>
-            <small v-else class="issue-time"></small>
-          </div>
-        </div>
-        <div class="lottery-actions">
-          <button
-            class="icon-button compact"
-            type="button"
-            title="刷新"
-            :disabled="loading"
-            @click="fetchHistory"
-          >
-            <span :class="{ spinning: loading }" aria-hidden="true">↻</span>
-          </button>
-          <button
-            class="icon-button compact"
-            type="button"
-            title="修改配置"
-            @click="openEdit"
-          >
-            <span aria-hidden="true">⚙</span>
-          </button>
-        </div>
-      </div>
-      <p v-if="error" class="lottery-error">{{ error }}</p>
-    </template>
+  <!-- 内嵌模式：紧凑竖排，与消息区标题栏融为一条 -->
+  <div v-if="!editing" class="lottery-strip" role="status" aria-label="开奖信息">
+    <div class="lottery-row">
+      <span class="issue">
+        <em class="issue-since">本期</em>
+        <strong class="issue-num">{{ currentDraw?.preDrawIssue ?? '—' }}</strong>
+        <span class="issue-time">{{ currentDraw?.preDrawTime ?? '' }}</span>
+      </span>
+      <button
+        class="lottery-btn"
+        type="button"
+        title="刷新"
+        :disabled="loading"
+        @click="fetchHistory"
+      >
+        <span :class="{ spinning: loading }" aria-hidden="true">↻</span>
+      </button>
+    </div>
+    <div v-if="previousDraw" class="lottery-row">
+      <span class="issue">
+        <em class="issue-since">上期</em>
+        <strong class="issue-num">{{ previousDraw?.preDrawIssue ?? '—' }}</strong>
+        <span class="issue-time">{{ previousDraw?.preDrawTime ?? '' }}</span>
+      </span>
+      <button class="lottery-btn" type="button" title="配置 API" @click="openEdit">
+        <span aria-hidden="true">⚙</span>
+      </button>
+    </div>
+    <span v-if="error" class="lottery-err">{{ error }}</span>
+  </div>
 
-    <!-- 展开态：编辑表单 -->
-    <template v-else>
-      <div class="lottery-edit">
-        <label class="edit-field">
-          <span class="edit-label">API URL</span>
-          <input
-            v-model="editUrl"
-            type="url"
-            placeholder="https://go124.com/api/hash/get28HistoryList/10091"
-          />
-        </label>
-        <div class="edit-actions">
-          <button class="button ghost compact" type="button" @click="cancelEdit">取消</button>
-          <button
-            class="button primary compact"
-            type="button"
-            @click="confirmSave"
-          >保存</button>
-        </div>
-      </div>
-    </template>
-  </section>
+  <!-- 编辑表单 -->
+  <div v-else class="lottery-edit">
+    <label class="edit-row">
+      <span class="edit-label">API URL</span>
+      <input v-model="editUrl" type="url" placeholder="https://go124.com/api/hash/get28HistoryList/10091" />
+    </label>
+    <div class="edit-actions">
+      <button class="btn-ghost" type="button" @click="cancelEdit">取消</button>
+      <button class="btn-primary" type="button" @click="confirmSave">保存</button>
+    </div>
+  </div>
 </template>
 
 <style scoped>
-.lottery-panel {
-  background: var(--panel-bg, var(--surface-2, #f5f5f7));
-  border-bottom: 1px solid var(--border-color, #e2e2e6);
-  padding: 8px 16px;
+.lottery-strip {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--text-400, #8e8e93);
 }
 
-.lottery-header {
+.lottery-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 4px;
 }
 
-.lottery-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-secondary, #6e6e73);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  white-space: nowrap;
+.issue {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
 }
 
-.lottery-issues {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-}
-
-.issue-block {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.issue-label {
-  font-size: 10px;
-  color: var(--text-tertiary, #8e8e93);
+.issue-since {
+  font-style: normal;
+  font-size: 9px;
+  color: var(--text-500, #6e6e73);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
-.issue-number {
-  font-size: 18px;
+.issue-num {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
   font-weight: 700;
-  color: var(--text-primary, #1d1d1f);
-  letter-spacing: 0.02em;
-  line-height: 1.2;
-}
-
-.issue-block.current .issue-number {
-  color: var(--accent-color, #007aff);
-}
-
-.issue-placeholder {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--text-tertiary, #8e8e93);
+  color: var(--green, #54c993);
 }
 
 .issue-time {
+  font-size: 10px;
+  color: var(--text-600, #636366);
+}
+
+.lottery-err {
+  color: #ff453a;
+  font-size: 10px;
+}
+
+.lottery-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-500, #6e6e73);
+  cursor: pointer;
   font-size: 11px;
-  color: var(--text-tertiary, #8e8e93);
-  line-height: 1.3;
+  flex: 0 0 auto;
+  margin-left: auto;
+  transition: background 0.15s, color 0.15s;
 }
 
-.issue-divider {
-  font-size: 14px;
-  color: var(--text-tertiary, #8e8e93);
-  user-select: none;
+.lottery-btn:hover {
+  background: var(--ink-700, #38383e);
+  color: var(--text-300, #aeaeb2);
 }
 
-.lottery-actions {
-  display: flex;
-  gap: 4px;
-}
-
-.lottery-error {
-  font-size: 12px;
-  color: #ff3b30;
-  margin: 0;
-  padding-left: 4px;
+.lottery-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* 编辑表单 */
 .lottery-edit {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--ink-850, #1c1c1e);
+  border-top: 1px solid var(--ink-700, #38383e);
 }
 
-.edit-field {
+.edit-row {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
 
 .edit-label {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
-  color: var(--text-secondary, #6e6e73);
+  color: var(--text-500, #6e6e73);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
 }
 
-.edit-field input {
-  font-size: 13px;
-  padding: 4px 8px;
-  border: 1px solid var(--border-color, #e2e2e6);
-  border-radius: 6px;
-  background: var(--input-bg, #fff);
-  color: var(--text-primary, #1d1d1f);
+.edit-row input {
+  font-size: 12px;
+  padding: 3px 8px;
+  border: 1px solid var(--ink-600, #48484a);
+  border-radius: 4px;
+  background: var(--ink-900, #1c1c1e);
+  color: var(--text-200, #ebebf0);
   outline: none;
+  font-family: "IBM Plex Mono", monospace;
 }
 
-.edit-field input:focus {
-  border-color: var(--accent-color, #007aff);
+.edit-row input:focus {
+  border-color: var(--green, #54c993);
 }
 
 .edit-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 2px;
+  gap: 6px;
+}
+
+.btn-ghost,
+.btn-primary {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: none;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-400, #8e8e93);
+}
+
+.btn-ghost:hover {
+  background: var(--ink-700, #38383e);
+  color: var(--text-200, #ebebf0);
+}
+
+.btn-primary {
+  background: var(--green, #54c993);
+  color: var(--ink-900, #0b0e0f);
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  opacity: 0.85;
 }
 </style>

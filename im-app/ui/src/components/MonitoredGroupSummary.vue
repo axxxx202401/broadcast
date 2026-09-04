@@ -41,7 +41,7 @@ const hiddenCount = computed(() => Math.max(0, props.groupIds.length - 5))
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin-top: 6px;
+  padding: 0;
 }
 
 .empty,
@@ -49,13 +49,13 @@ const hiddenCount = computed(() => Math.max(0, props.groupIds.length - 5))
 button {
   margin: 0;
   color: var(--text-500);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .id-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 10px;
+  gap: 4px 8px;
   padding: 0;
   list-style: none;
 }
@@ -64,7 +64,12 @@ button {
   padding: 0;
   background: none;
   border: 0;
-  color: var(--text-300, var(--text-500));
+  color: var(--text-400);
   cursor: pointer;
+  font-size: 11px;
+}
+
+button:hover {
+  color: var(--text-200);
 }
 </style>

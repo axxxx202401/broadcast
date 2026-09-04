@@ -14,11 +14,15 @@ export function useResponsiveSidebar() {
   const media = window.matchMedia(NARROW_QUERY)
   const isNarrow = ref(media.matches)
   const sidebarOpen = ref(!media.matches)
+  /** 宽屏下侧栏整体收起为窄条模式（仅保留图标），由用户手动切换。 */
+  const sidebarCollapsed = ref(false)
 
   /** 断点变化时同步窄屏标志，并按宽/窄默认值重置开合状态。 */
   const applyBreakpoint = (narrow: boolean) => {
     isNarrow.value = narrow
     sidebarOpen.value = !narrow
+    // 断点切换时重置手动收起状态，避免状态残留
+    if (narrow) sidebarCollapsed.value = false
   }
 
   const onChange = (event: MediaQueryListEvent) => {
@@ -52,11 +56,18 @@ export function useResponsiveSidebar() {
     sidebarOpen.value = false
   }
 
+  /** 宽屏下切换侧栏收起/展开（窄条 ↔ 全宽）。 */
+  const toggleCollapsed = () => {
+    sidebarCollapsed.value = !sidebarCollapsed.value
+  }
+
   return {
     isNarrow,
     sidebarOpen,
+    sidebarCollapsed,
     toggleSidebar,
     selectGroup,
     closeSidebar,
+    toggleCollapsed,
   }
 }

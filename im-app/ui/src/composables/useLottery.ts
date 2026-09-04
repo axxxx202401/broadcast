@@ -1,4 +1,4 @@
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { api } from '../services/tauri'
 import type { DrawItem, LotteryConfig } from '../services/tauri'
@@ -14,8 +14,11 @@ const POLL_INTERVAL_MS = 30_000
  * - 每 30 秒轮询一次，并在收到含"开奖"的消息时额外触发一次。
  * - 历史只显示最新两条（本期 / 上期），配置变更立即生效于消息匹配。
  */
-export function useLottery() {
-  const config = ref<LotteryConfig>({ api_url: '', current_issue: 0 })
+export function useLottery(loggedIn?: { value: boolean }) {
+  const config = ref<LotteryConfig>({
+    api_url: 'https://go124.com/api/hash/get28HistoryList/10091',
+    current_issue: 0,
+  })
   const drawHistory = ref<DrawItem[]>([])
   const loading = ref(false)
   const error = ref('')
@@ -51,7 +54,6 @@ export function useLottery() {
     error.value = ''
     try {
       const items = await api.fetchLotteryHistory()
-      // 只显示最新两条。
       drawHistory.value = items.slice(0, 2)
     } catch (reason) {
       // URL 未配置属于正常初始状态，不展示错误。
@@ -61,6 +63,23 @@ export function useLottery() {
       }
     } finally {
       loading.value = false
+    }
+  }
+
+  /** 挂载时把默认 URL 写入后端持久化，再通过 Tauri 命令拉取，避免浏览器 CORS 拦截。 */
+  async function prefetchWithDefault() {
+    const defaultUrl = config.value.api_url
+    if (!defaultUrl) {
+      await loadConfig()
+      void fetchHistory()
+      return
+    }
+    try {
+      await api.setLotteryConfig(defaultUrl, 0)
+      await loadConfig()
+      await fetchHistory()
+    } catch (_e) {
+      // 保存失败（如未登录）：静默跳过，等登录后 watch 再触发。
     }
   }
 
@@ -74,9 +93,24 @@ export function useLottery() {
     }, POLL_INTERVAL_MS)
   }
 
+  /** 登录后（含恢复登录成功）触发一次拉取；未登录时静默跳过。 */
+  function runPrefetch() {
+    if (loggedIn?.value !== true) return
+    void prefetchWithDefault().then(schedulePoll)
+  }
+
   onMounted(() => {
-    void loadConfig().then(fetchHistory).then(schedulePoll)
+    void runPrefetch()
   })
+
+  if (loggedIn) {
+    watch(
+      () => loggedIn.value,
+      (val) => {
+        if (val) void runPrefetch()
+      },
+    )
+  }
 
   onBeforeUnmount(() => {
     if (timer) clearTimeout(timer)

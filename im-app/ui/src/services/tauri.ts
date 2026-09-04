@@ -26,9 +26,9 @@ import type {
 /** 单条开奖历史条目。 */
 export interface DrawItem {
   /** 期号。 */
-  pre_draw_issue: number
+  preDrawIssue: number
   /** 开奖时间字符串，格式为 `"YYYY-MM-DD HH:MM:SS"`。 */
-  pre_draw_time: string
+  preDrawTime: string
 }
 
 /** 当前账号的开奖配置。 */

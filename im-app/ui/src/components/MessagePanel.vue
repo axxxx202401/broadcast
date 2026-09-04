@@ -4,8 +4,8 @@ import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import type { VNodeRef } from 'vue'
 
 import type { GroupDto, MessageDto } from '../types/im'
+import LotteryPanel from './LotteryPanel.vue'
 import MessageCard from './MessageCard.vue'
-import MonitoredGroupSummary from './MonitoredGroupSummary.vue'
 
 // 父组件提供当前群组、分页状态和消息；面板负责虚拟窗口、顶部触发与前插锚点恢复。
 const props = withDefaults(defineProps<{
@@ -17,11 +17,26 @@ const props = withDefaults(defineProps<{
   olderRequestToken?: number | null
   /** 正在监控的群 ID；仅在全部群消息标题下展示，默认空数组。 */
   monitoredGroupIds?: string[]
+  /** 群组总数，显示在标题栏统计区域。 */
+  totalGroups?: number
+  /** 当前监控中的群组数，显示在标题栏统计区域。 */
+  monitoredCount?: number
+  /** 父组件共享的开奖 composable；用于在消息区顶部嵌入迷你开奖面板。 */
+  lottery?: {
+    config: import('vue').Ref<{ api_url: string; current_issue: number }>
+    drawHistory: import('vue').Ref<import('../services/tauri').DrawItem[]>
+    loading: import('vue').Ref<boolean>
+    error: import('vue').Ref<string>
+    saveConfig: (url: string, issue: number) => Promise<void>
+    fetchHistory: () => Promise<void>
+  }
 }>(), {
   hasOlder: false,
   loadingOlder: false,
   olderRequestToken: null,
   monitoredGroupIds: () => [],
+  totalGroups: 0,
+  monitoredCount: 0,
 })
 const emit = defineEmits<{
   /** 视口接近顶部且仍有历史时，请求父组件读取下一页。 */
@@ -263,19 +278,33 @@ watch(
   <section class="message-panel" aria-label="消息监控">
     <!-- 标题区随群组选择更新，并持续展示当前载入数量。 -->
     <header class="message-header">
-      <div v-if="group">
-        <p class="eyebrow">群消息</p>
-        <h2>{{ group.name || `群组 ${group.group_id}` }}</h2>
-      </div>
-      <div v-else>
-        <p class="eyebrow">全部监控群聊</p>
-        <h2>全部群消息</h2>
-        <!-- 汇总只出现在全部群消息；数据来自完整监控列表，不受侧栏搜索影响。 -->
-        <MonitoredGroupSummary :group-ids="monitoredGroupIds" />
-      </div>
-      <div class="stream-meta">
-        <span><i class="pulse-dot"></i>正在接收</span>
-        <span>{{ messages.length }} 条消息</span>
+      <!-- 上行：群 ID 列表，全部群消息模式展示。 -->
+      <MonitoredGroupSummary v-if="!group" :group-ids="monitoredGroupIds" class="header-group-ids" />
+      <!-- 下行：左侧标题，右侧统计与开奖信息。 -->
+      <div class="message-header-row">
+        <div class="message-header-main">
+          <div v-if="group">
+            <span class="eyebrow">群消息</span>
+            <h2>{{ group.name || `群组 ${group.group_id}` }}</h2>
+          </div>
+          <div v-else>
+            <span class="eyebrow">全部监控群聊</span>
+            <h2>全部群消息</h2>
+          </div>
+        </div>
+        <div class="stream-meta">
+          <span class="meta-metrics">
+            <span>群组总数 <strong>{{ totalGroups }}</strong></span>
+            <span class="meta-metrics-divider">·</span>
+            <span>监控中 <strong class="metric-live">{{ monitoredCount }}</strong></span>
+          </span>
+          <span class="meta-divider">·</span>
+          <span><i class="pulse-dot"></i>正在接收</span>
+          <span class="meta-divider">·</span>
+          <span>{{ messages.length }} 条消息</span>
+          <!-- 开奖信息：紧凑横条，与统计信息并排显示在标题栏右侧。 -->
+          <LotteryPanel v-if="lottery" class="header-lottery" :lottery="lottery" />
+        </div>
       </div>
     </header>
 

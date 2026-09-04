@@ -41,6 +41,14 @@ pub async fn fetch_draw_history(url: &str) -> Result<Vec<DrawItem>, String> {
     tracing::debug!(url, "lottery API response keys: {:?}", body.as_object().map(|o| o.keys().collect::<Vec<_>>()));
 
     // 响应结构通常为 {"result": {"list": [...]}} 或 {"data": [...]} 或直接为数组；兼容三种格式。
+    if body.get("success").is_some_and(|v| v.as_bool() == Some(false)) {
+        let msg = body
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("未知错误");
+        return Err(format!("API 错误：{}", msg));
+    }
+
     let items = if let Some(list) = body
         .get("result")
         .and_then(|v| v.get("list"))

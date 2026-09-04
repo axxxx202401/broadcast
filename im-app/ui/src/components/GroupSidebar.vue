@@ -11,8 +11,11 @@ const props = withDefaults(defineProps<{
   search: string
   pending: string | null
   showMatchedOnly?: boolean
+  /** 侧栏当前是否处于收起窄条模式。 */
+  collapsed?: boolean
 }>(), {
   showMatchedOnly: true,
+  collapsed: false,
 })
 
 // 搜索采用受控值更新，其余事件把选择、监控切换和刷新意图交还父组件。
@@ -23,19 +26,18 @@ defineEmits<{
   toggle: [group: GroupDto]
   refresh: []
   'update:showMatchedOnly': [value: boolean]
+  collapse: []
 }>()
 
-/** 各分组的展开/收起状态 */
-const sections = ref<{ id: string, expanded: boolean }>({ id: 'all', expanded: true })
+/** 各分组独立的展开/收起状态。 */
+const sections = ref({
+  monitored: true,
+  unmonitored: false,
+})
 </script>
 
 <template>
   <aside class="group-sidebar" aria-label="群组监控列表">
-    <!-- 顶部区域汇总群组状态，并提供搜索和全量刷新；pending 期间禁止重复刷新。 -->
-    <div class="sidebar-metrics">
-      <div><span>群组总数</span><strong>{{ total }}</strong></div>
-      <div><span>监控中</span><strong class="metric-live">{{ monitoredCount }}</strong></div>
-    </div>
     <div class="sidebar-tools">
       <label class="search-field">
         <span class="sr-only">搜索群组</span>
@@ -50,6 +52,15 @@ const sections = ref<{ id: string, expanded: boolean }>({ id: 'all', expanded: t
       <button class="icon-button" type="button" title="刷新全量群列表" :disabled="!!pending" @click="$emit('refresh')">
         <span :class="{ spinning: pending === 'refresh' }" aria-hidden="true">↻</span>
         <span class="sr-only">刷新群列表</span>
+      </button>
+      <button
+        class="collapse-btn"
+        type="button"
+        :title="collapsed ? '展开群列表' : '收起群列表'"
+        :aria-label="collapsed ? '展开群列表' : '收起群列表'"
+        @click="$emit('collapse')"
+      >
+        <span aria-hidden="true" class="collapse-icon">{{ collapsed ? '›' : '‹' }}</span>
       </button>
     </div>
 
@@ -66,12 +77,24 @@ const sections = ref<{ id: string, expanded: boolean }>({ id: 'all', expanded: t
       </label>
     </div>
 
+    <!-- 全部消息按钮 -->
+    <button
+      class="all-messages"
+      :class="{ selected: selectedId === null }"
+      type="button"
+      :aria-pressed="selectedId === null"
+      @click="$emit('select-all')"
+    >
+      <span aria-hidden="true">⌘</span>
+      <span><strong>全部消息</strong><small>所有已监控群组</small></span>
+    </button>
+
     <!-- 群组列表分组显示 -->
-    <div class="section-header" @click="sections.expanded = !sections.expanded">
+    <div class="section-header" @click="sections.monitored = !sections.monitored">
       <span>监听中（{{ monitoredCount }}）</span>
-      <span class="chevron" :class="{ collapsed: !sections.expanded }">▼</span>
+      <span class="chevron" :class="{ collapsed: !sections.monitored }">▼</span>
     </div>
-    <ul v-if="sections.expanded" class="group-list monitored-list" aria-label="监听中的群组">
+    <ul v-if="sections.monitored" class="group-list monitored-list" aria-label="监听中的群组">
       <li
         v-for="group in groups.filter(g => g.monitored !== 0)"
         :key="group.group_id"
@@ -103,11 +126,11 @@ const sections = ref<{ id: string, expanded: boolean }>({ id: 'all', expanded: t
       </li>
     </ul>
 
-    <div class="section-header" @click="sections.expanded = !sections.expanded">
+    <div class="section-header" @click="sections.unmonitored = !sections.unmonitored">
       <span>未监听（{{ total - monitoredCount }}）</span>
-      <span class="chevron" :class="{ collapsed: !sections.expanded }">▼</span>
+      <span class="chevron" :class="{ collapsed: !sections.unmonitored }">▼</span>
     </div>
-    <ul v-if="!sections.expanded" class="group-list unmonitored-list" aria-label="未监听的群组">
+    <ul v-if="sections.unmonitored" class="group-list unmonitored-list" aria-label="未监听的群组">
       <li
         v-for="group in groups.filter(g => g.monitored === 0)"
         :key="group.group_id"
@@ -138,18 +161,6 @@ const sections = ref<{ id: string, expanded: boolean }>({ id: 'all', expanded: t
         ><i></i></button>
       </li>
     </ul>
-
-    <!-- 全部消息按钮 -->
-    <button
-      class="all-messages"
-      :class="{ selected: selectedId === null }"
-      type="button"
-      :aria-pressed="selectedId === null"
-      @click="$emit('select-all')"
-    >
-      <span aria-hidden="true">⌘</span>
-      <span><strong>全部消息</strong><small>所有已监控群组</small></span>
-    </button>
 
     <div v-if="groups.length === 0" class="compact-empty">
       <span>没有匹配的群</span>
@@ -232,9 +243,18 @@ const sections = ref<{ id: string, expanded: boolean }>({ id: 'all', expanded: t
   transform: rotate(-90deg);
 }
 
+.group-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0 4px 8px;
+}
+
 .monitored-list {
   border-bottom: 1px solid var(--border-color, #e2e2e6);
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 
 .unmonitored-list {

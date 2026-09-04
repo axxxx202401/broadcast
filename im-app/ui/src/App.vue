@@ -17,7 +17,7 @@ import type { RestoreSessionResult } from './types/im'
 
 // 根组件编排账号恢复、认证与监控状态。启动时先恢复上次登录，避免闪现登录页。
 const monitor = useMonitor()
-const lottery = useLottery()
+const lottery = useLottery(monitor.loggedIn)
 const accounts = useAccounts()
 /** 窄屏把群列表收成抽屉；宽屏保持侧栏展开。仅已登录工作区使用开关与遮罩。 */
 const layout = useResponsiveSidebar()
@@ -198,8 +198,6 @@ function onShowAllMessages() {
   />
 
   <main v-else class="operations-shell">
-    <!-- 开奖信息面板，始终显示在最顶部。 -->
-    <LotteryPanel />
     <!-- 顶栏集中呈现连接状态、当前账号菜单及连接操作。 -->
     <header class="topbar">
       <!-- 窄屏优先展示消息区，用顶部按钮展开群列表抽屉。 -->
@@ -268,6 +266,7 @@ function onShowAllMessages() {
       :class="{
         'is-narrow': layout.isNarrow.value,
         'is-sidebar-open': layout.sidebarOpen.value,
+        'is-sidebar-collapsed': layout.sidebarCollapsed.value,
       }"
     >
       <div
@@ -289,12 +288,14 @@ function onShowAllMessages() {
           :search="monitor.search.value"
           :pending="monitor.pending.value"
           :show-matched-only="monitor.showMatchedOnly.value"
+          :collapsed="layout.sidebarCollapsed.value"
           @update:search="monitor.search.value = $event"
           @select="onSelectGroup"
           @select-all="onShowAllMessages"
           @toggle="monitor.toggleGroup"
           @refresh="monitor.refreshGroups"
           @update:show-matched-only="monitor.showMatchedOnly.value = $event"
+          @collapse="layout.toggleCollapsed"
         />
       </div>
       <MessagePanel
@@ -305,6 +306,9 @@ function onShowAllMessages() {
         :loading-older="monitor.loadingOlder.value"
         :older-request-token="monitor.olderRequestToken.value"
         :monitored-group-ids="monitor.monitoredGroupIds.value"
+        :total-groups="monitor.groups.value.length"
+        :monitored-count="monitor.monitoredCount.value"
+        :lottery="lottery"
         @load-older="monitor.loadOlderMessages"
         @older-settled="monitor.handleOlderSettled"
       />

@@ -805,6 +805,12 @@
   min-width: 0;
   min-height: 0;
   flex: 1;
+  transition: grid-template-columns 200ms ease;
+}
+
+/* 侧栏收起时缩为窄条，腾出更多空间给消息区。 */
+.workspace.is-sidebar-collapsed {
+  grid-template-columns: 48px minmax(0, 1fr);
 }
 
 /* 宽屏抽屉容器参与双栏网格；遮罩默认不展示，避免挡住消息区。 */
@@ -813,6 +819,12 @@
   min-width: 0;
   min-height: 0;
   flex-direction: column;
+  overflow: hidden;
+  transition: width 200ms ease;
+}
+
+.workspace.is-sidebar-collapsed .sidebar-drawer {
+  width: 48px;
 }
 
 .sidebar-drawer .group-sidebar {
@@ -836,6 +848,32 @@
   flex-direction: column;
   background: var(--ink-800);
   border-right: 1px solid var(--ink-600);
+  transition: opacity 150ms ease;
+}
+
+/* 收起态：只露出折叠按钮，其余内容隐藏。 */
+.workspace.is-sidebar-collapsed .sidebar-metrics,
+.workspace.is-sidebar-collapsed .matched-toggle,
+.workspace.is-sidebar-collapsed .section-header,
+.workspace.is-sidebar-collapsed .group-list,
+.workspace.is-sidebar-collapsed .all-messages,
+.workspace.is-sidebar-collapsed .compact-empty,
+.workspace.is-sidebar-collapsed .sidebar-tools > :not(.collapse-btn) {
+  display: none;
+}
+
+/* 收起态：按钮居中显示在顶部区域 */
+.workspace.is-sidebar-collapsed .sidebar-tools {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 0;
+  min-height: 48px;
+}
+
+/* 收起态：统计区域收缩为图标条 */
+.workspace.is-sidebar-collapsed .sidebar-metrics {
+  display: none;
 }
 
 .sidebar-metrics {
@@ -867,10 +905,6 @@
   margin-top: 3px;
   font-family: "IBM Plex Mono", monospace;
   font-size: 18px;
-}
-
-.sidebar-metrics .metric-live {
-  color: var(--green);
 }
 
 .sidebar-tools {
@@ -1121,34 +1155,94 @@
 
 .message-header {
   display: flex;
-  min-height: 72px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 13px 20px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 20px;
   background: var(--ink-850);
   border-bottom: 1px solid var(--ink-700);
 }
 
-.message-header h2 {
-  margin: 0;
-  font-size: 16px;
+.message-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
 }
 
-.stream-meta {
+.message-header-main {
   display: flex;
-  gap: 16px;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-500);
+  font-size: 10px;
+  font-family: "IBM Plex Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.message-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-100);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+
+.meta-metrics {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--text-500);
   font-family: "IBM Plex Mono", monospace;
-  font-size: 9px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.meta-metrics strong {
+  color: var(--text-300);
+  font-weight: 600;
+}
+
+.meta-metrics-divider,
+.meta-divider {
+  opacity: 0.5;
+  margin: 0 2px;
+}
+
+.metric-live {
+  color: var(--green);
 }
 
 .pulse-dot {
   display: inline-block;
   width: 6px;
   height: 6px;
-  margin-right: 6px;
+  margin-right: 5px;
   background: var(--green);
   border-radius: 50%;
+  vertical-align: middle;
+}
+
+.stream-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  color: var(--text-500);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
 }
 
 .message-viewport {
@@ -1849,4 +1943,39 @@
 [data-theme="light"] .login-console::-webkit-scrollbar-thumb:active,
 [data-theme="light"] .login-card::-webkit-scrollbar-thumb:active {
   background-color: rgba(100, 118, 130, 0.85);
+}
+
+/* 群列表收起/展开按钮 */
+.collapse-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-500, #6e6e73);
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.collapse-btn:hover {
+  background: var(--ink-700, #38383e);
+  color: var(--text-200, #ebebf0);
+}
+
+.collapse-icon {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* 开奖横条，内嵌在标题栏统计信息右侧。 */
+.header-lottery {
+  margin-left: 16px;
+  padding-left: 16px;
+  border-left: 1px solid var(--ink-700);
 }
