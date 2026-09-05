@@ -13,9 +13,12 @@ const props = withDefaults(defineProps<{
   showMatchedOnly?: boolean
   /** 侧栏当前是否处于收起窄条模式。 */
   collapsed?: boolean
+  /** 当前是否为窄屏（抽屉模式）。窄屏下 collapse-btn 同时控制抽屉开合。 */
+  isNarrow?: boolean
 }>(), {
   showMatchedOnly: true,
   collapsed: false,
+  isNarrow: false,
 })
 
 // 搜索采用受控值更新，其余事件把选择、监控切换和刷新意图交还父组件。
@@ -27,6 +30,7 @@ defineEmits<{
   refresh: []
   'update:showMatchedOnly': [value: boolean]
   collapse: []
+  'toggle-sidebar': []
 }>()
 
 /** 各分组独立的展开/收起状态。 */
@@ -58,7 +62,7 @@ const sections = ref({
         type="button"
         :title="collapsed ? '展开群列表' : '收起群列表'"
         :aria-label="collapsed ? '展开群列表' : '收起群列表'"
-        @click="$emit('collapse')"
+        @click="isNarrow ? $emit('toggle-sidebar') : $emit('collapse')"
       >
         <span aria-hidden="true" class="collapse-icon">{{ collapsed ? '›' : '‹' }}</span>
       </button>

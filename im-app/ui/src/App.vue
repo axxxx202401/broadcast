@@ -200,15 +200,6 @@ function onShowAllMessages() {
   <main v-else class="operations-shell">
     <!-- 顶栏集中呈现连接状态、当前账号菜单及连接操作。 -->
     <header class="topbar">
-      <!-- 窄屏优先展示消息区，用顶部按钮展开群列表抽屉。 -->
-      <button
-        v-if="layout.isNarrow.value"
-        class="button ghost compact sidebar-toggle"
-        type="button"
-        :aria-expanded="layout.sidebarOpen.value"
-        aria-controls="group-sidebar-drawer"
-        @click="layout.toggleSidebar"
-      >群列表</button>
       <div class="brand">
         <img src="/32x32.png" alt="Logo" class="brand-mark" aria-hidden="true" />
         <div>
@@ -269,6 +260,16 @@ function onShowAllMessages() {
         'is-sidebar-collapsed': layout.sidebarCollapsed.value,
       }"
     >
+      <!-- 窄屏抽屉关闭时，在工作区左边缘展示触发按钮，让用户可以随时打开群列表。 -->
+      <button
+        v-if="layout.isNarrow.value && !layout.sidebarOpen.value"
+        class="narrow-sidebar-trigger"
+        type="button"
+        aria-label="展开群列表"
+        @click="layout.toggleSidebar"
+      >
+        <span aria-hidden="true">‹</span>
+      </button>
       <div
         v-if="layout.isNarrow.value && layout.sidebarOpen.value"
         class="sidebar-mask"
@@ -289,6 +290,7 @@ function onShowAllMessages() {
           :pending="monitor.pending.value"
           :show-matched-only="monitor.showMatchedOnly.value"
           :collapsed="layout.sidebarCollapsed.value"
+          :is-narrow="layout.isNarrow.value"
           @update:search="monitor.search.value = $event"
           @select="onSelectGroup"
           @select-all="onShowAllMessages"
@@ -296,6 +298,7 @@ function onShowAllMessages() {
           @refresh="monitor.refreshGroups"
           @update:show-matched-only="monitor.showMatchedOnly.value = $event"
           @collapse="layout.toggleCollapsed"
+          @toggle-sidebar="layout.toggleSidebar"
         />
       </div>
       <MessagePanel

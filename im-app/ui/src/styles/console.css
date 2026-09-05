@@ -832,10 +832,6 @@
   display: none;
 }
 
-.sidebar-toggle {
-  flex: 0 0 auto;
-}
-
 /* 群组侧栏：统计、搜索、列表选择与监控开关。 */
 .group-sidebar {
   display: flex;
@@ -1633,6 +1629,32 @@
 
   .message-log {
     --message-log-inline: 14px;
+  }
+
+  /* 窄屏抽屉关闭时，左边缘触发按钮：始终可见，点击打开群列表。 */
+  .narrow-sidebar-trigger {
+    position: absolute;
+    z-index: 22;
+    top: 50%;
+    left: 0;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 56px;
+    background: var(--ink-800);
+    border: 1px solid var(--ink-600);
+    border-left: none;
+    border-radius: 0 6px 6px 0;
+    color: var(--text-500);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .narrow-sidebar-trigger:hover {
+    background: var(--ink-700);
+    color: var(--text-300);
   }
 }
 

@@ -749,50 +749,55 @@ describe('App 窄屏群列表抽屉', () => {
     mocks.monitor.monitoredGroupIds.value = []
   })
 
-  it('窄屏显示群列表按钮并提供 aria-expanded / aria-controls', async () => {
+  it('窄屏 collapse-btn 存在且默认抽屉关闭', async () => {
     const wrapper = await mountAuthenticatedApp()
-    const toggle = wrapper.get('button[aria-controls="group-sidebar-drawer"]')
-    expect(toggle.text()).toContain('群列表')
-    expect(toggle.attributes('aria-expanded')).toBe('false')
-    expect(toggle.attributes('aria-controls')).toBe('group-sidebar-drawer')
+    const collapseBtn = wrapper.find('.collapse-btn')
+    expect(collapseBtn.exists()).toBe(true)
+    expect(wrapper.find('.sidebar-mask').exists()).toBe(false)
     expect(wrapper.find('#group-sidebar-drawer').exists()).toBe(true)
     wrapper.unmount()
   })
 
   it('遮罩点击和 Escape 关闭抽屉', async () => {
     const wrapper = await mountAuthenticatedApp()
-    const toggle = wrapper.get('button[aria-controls="group-sidebar-drawer"]')
-    await toggle.trigger('click')
-    expect(toggle.attributes('aria-expanded')).toBe('true')
+    const collapseBtn = wrapper.find('.collapse-btn')
+
+    // 点击 collapse-btn 打开抽屉
+    await collapseBtn.trigger('click')
     expect(wrapper.find('.sidebar-mask').exists()).toBe(true)
 
+    // 点击遮罩关闭
     await wrapper.get('.sidebar-mask').trigger('click')
-    expect(toggle.attributes('aria-expanded')).toBe('false')
     expect(wrapper.find('.sidebar-mask').exists()).toBe(false)
 
-    await toggle.trigger('click')
-    expect(toggle.attributes('aria-expanded')).toBe('true')
+    // 再次打开，用 Escape 关闭
+    await collapseBtn.trigger('click')
+    expect(wrapper.find('.sidebar-mask').exists()).toBe(true)
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await wrapper.vm.$nextTick()
-    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('.sidebar-mask').exists()).toBe(false)
     wrapper.unmount()
   })
 
   it('选择群或全部群消息后关闭抽屉', async () => {
     const wrapper = await mountAuthenticatedApp()
-    const toggle = wrapper.get('button[aria-controls="group-sidebar-drawer"]')
-    await toggle.trigger('click')
-    expect(toggle.attributes('aria-expanded')).toBe('true')
+    const collapseBtn = wrapper.find('.collapse-btn')
 
+    // 点击 collapse-btn 打开抽屉
+    await collapseBtn.trigger('click')
+    expect(wrapper.find('.sidebar-mask').exists()).toBe(true)
+
+    // 点击群选项，应选中并关闭抽屉
     await wrapper.get('.group-select').trigger('click')
     expect(mocks.monitor.selectGroup).toHaveBeenCalledWith('13537')
-    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('.sidebar-mask').exists()).toBe(false)
 
-    await toggle.trigger('click')
-    expect(toggle.attributes('aria-expanded')).toBe('true')
+    // 再次打开，点击全部群消息
+    await collapseBtn.trigger('click')
+    expect(wrapper.find('.sidebar-mask').exists()).toBe(true)
     await wrapper.get('.all-messages').trigger('click')
     expect(mocks.monitor.showAllMessages).toHaveBeenCalled()
-    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('.sidebar-mask').exists()).toBe(false)
     wrapper.unmount()
   })
 
