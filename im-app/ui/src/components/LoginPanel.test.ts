@@ -523,4 +523,10 @@ describe('LoginPanel', () => {
 
     expect(auth.destroyGt4).toHaveBeenCalledTimes(1)
   })
+
+  it('渲染 tab 滑动指示器元素', async () => {
+    const auth = authStub()
+    const wrapper = mountPanel(auth)
+    expect(wrapper.find('.login-tab-indicator').exists()).toBe(true)
+  })
 })

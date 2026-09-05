@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import type { useAuth } from '../composables/useAuth'
 import type { AccountSummary, PrimaryLoginType } from '../types/im'
@@ -62,6 +62,30 @@ const challengeMethodLabel = computed(() => {
   return type == null ? '验证' : (validateTypeLabels[type] ?? '安全验证')
 })
 
+const showPassword = ref(false)
+const tabRefs = ref<(HTMLElement | null)[]>([])
+
+/** 将滑动 indicator 定位到当前激活的 tab。jsdom 中 getBoundingClientRect 可能返回零。 */
+function positionTabIndicator() {
+  const activeIdx = loginMethodTabs.findIndex(t => t.method === props.auth.loginMethod.value)
+  const el = tabRefs.value[activeIdx]
+  const indicator = document.querySelector('.login-tab-indicator') as HTMLElement | null
+  if (!el || !indicator) return
+  const tabRect = el.getBoundingClientRect()
+  const containerRect = el.parentElement!.getBoundingClientRect()
+  indicator.style.left = `${tabRect.left - containerRect.left}px`
+  indicator.style.width = `${tabRect.width}px`
+}
+
+watch(() => props.auth.loginMethod.value, () => {
+  showPassword.value = false
+  setTimeout(positionTabIndicator, 0)
+})
+
+onMounted(() => {
+  setTimeout(positionTabIndicator, 0)
+})
+
 const showChallengeSecretInput = computed(() => {
   const type = props.auth.selectedChallenge.value?.validateType
   if (type === 20 || type === 21) {
@@ -116,9 +140,15 @@ const canSubmitPrimary = computed(() => {
 </script>
 
 <template>
-  <!-- 居中宽表单登录卡片：Logo、账号、主字段、登录，其他方式始终可见。 -->
+  <!-- 左栏品牌区：宽屏显示，窄屏隐藏 -->
   <main class="login-shell">
-    <section class="login-card" aria-label="登录">
+    <div class="login-brand" aria-hidden="true">
+      <img src="/icon.svg" alt="" class="login-logo" />
+      <p class="purpose">进入实时监控控制台</p>
+    </div>
+
+    <!-- 右栏表单区 -->
+    <section class="login-form-panel" aria-label="登录">
       <button
         v-if="props.canReturn"
         class="button ghost login-back"
@@ -128,10 +158,6 @@ const canSubmitPrimary = computed(() => {
       >
         返回
       </button>
-      <header class="login-header">
-        <img src="/icon.svg" alt="IM" class="login-logo" />
-        <p class="purpose">进入实时监控控制台</p>
-      </header>
 
       <!-- 主登录：账号选择、邮箱或手机、密码哨兵、提交。 -->
       <template v-if="!auth.challengePending.value.length">
@@ -147,16 +173,15 @@ const canSubmitPrimary = computed(() => {
           </label>
         </div>
 
-        <div
-          class="login-primary-panel"
-        >
+        <div class="login-primary-panel">
           <div
             class="login-method-tabs"
             role="tablist"
             aria-label="登录方式"
           >
+            <div class="login-tab-indicator" aria-hidden="true"></div>
             <button
-              v-for="tab in loginMethodTabs"
+              v-for="(tab, index) in loginMethodTabs"
               :key="tab.method"
               type="button"
               role="tab"
@@ -164,78 +189,106 @@ const canSubmitPrimary = computed(() => {
               data-test="login-method-tab"
               :class="{ 'is-active': auth.loginMethod.value === tab.method }"
               :aria-selected="auth.loginMethod.value === tab.method"
-              @click="chooseLoginMethod(tab.method)"
+              :ref="(el) => { tabRefs[index] = el as HTMLElement; if (auth.loginMethod.value === tab.method) positionTabIndicator() }"
+              @click="() => { chooseLoginMethod(tab.method) }"
             >
               {{ tab.label }}
             </button>
           </div>
 
           <form class="login-form" @submit.prevent="auth.submitLogin">
-          <div class="login-form-fields">
-            <div class="account-row" :class="{ 'is-phone': isPhoneMethod }">
-              <label v-if="isPhoneMethod" class="country-code-cell">
-                <span>国家区号</span>
-                <input
-                  v-model.number="auth.countryCode.value"
-                  type="text"
-                  inputmode="numeric"
-                  pattern="[0-9]*"
-                  autocomplete="tel-country-code"
-                />
-              </label>
-              <label class="account-cell">
-                <span>{{ isPhoneMethod ? '手机号' : '邮箱地址' }}</span>
-                <input
-                  v-model.trim="auth.account.value"
-                  :type="isPhoneMethod ? 'tel' : 'email'"
-                  :autocomplete="isPhoneMethod ? 'tel' : 'email'"
-                  :placeholder="isPhoneMethod ? '输入手机号' : '输入邮箱地址'"
-                  required
-                />
-              </label>
-            </div>
+            <div class="login-form-fields">
+              <div class="account-row" :class="{ 'is-phone': isPhoneMethod }">
+                <label v-if="isPhoneMethod" class="country-code-cell">
+                  <span>国家区号</span>
+                  <input
+                    v-model.number="auth.countryCode.value"
+                    type="text"
+                    inputmode="numeric"
+                    pattern="[0-9]*"
+                    autocomplete="tel-country-code"
+                  />
+                </label>
+                <div v-else class="field-group account-cell">
+                  <input
+                    v-model.trim="auth.account.value"
+                    :type="isPhoneMethod ? 'tel' : 'email'"
+                    :autocomplete="isPhoneMethod ? 'tel' : 'email'"
+                    placeholder=" "
+                    required
+                  />
+                  <label>{{ isPhoneMethod ? '手机号' : '邮箱地址' }}</label>
+                </div>
+              </div>
 
-            <div class="secret-field" :class="{ 'is-code': auth.isCodeMode.value }">
-              <label>
-                <span>
-                  {{ auth.isCodeMode.value ? '验证码' : '登录密码' }}
-                  <span
-                    class="password-sentinel"
-                    :class="{ 'is-visible': !auth.isCodeMode.value && auth.passwordMode.value === 'saved' }"
-                    aria-hidden="true"
-                  >已保存密码</span>
-                </span>
-              </label>
-              <div class="code-input-wrap">
-                <input
-                  v-model.trim="auth.validateValue.value"
-                  :type="auth.isCodeMode.value ? 'text' : 'password'"
-                  :inputmode="auth.isCodeMode.value ? 'numeric' : 'text'"
-                  :autocomplete="auth.isCodeMode.value ? 'one-time-code' : 'current-password'"
-                  :required="auth.isCodeMode.value || auth.passwordMode.value !== 'saved'"
-                />
-                <button
-                  v-if="auth.isCodeMode.value"
-                  class="button secondary code-send-inline"
-                  data-test="send-code"
-                  type="button"
-                  :disabled="!!auth.busy.value || auth.gt4Loading.value || !auth.accountReady.value"
-                  @click="auth.sendCode"
-                >
-                  {{ auth.busy.value === 'captcha' ? '等待验证…' : auth.busy.value === 'code' ? '发送中…' : '发送验证码' }}
-                </button>
+              <div class="secret-field" :class="{ 'is-code': auth.isCodeMode.value }">
+                <div v-if="!auth.isCodeMode.value" class="field-group">
+                  <input
+                    v-model.trim="auth.validateValue.value"
+                    :type="showPassword ? 'text' : 'password'"
+                    :inputmode="auth.isCodeMode.value ? 'numeric' : 'text'"
+                    :autocomplete="auth.isCodeMode.value ? 'one-time-code' : 'current-password'"
+                    :required="auth.isCodeMode.value || auth.passwordMode.value !== 'saved'"
+                    placeholder=" "
+                  />
+                  <label>
+                    登录密码
+                    <span
+                      class="password-sentinel"
+                      :class="{ 'is-visible': auth.passwordMode.value === 'saved' }"
+                      aria-hidden="true"
+                    >已保存密码</span>
+                  </label>
+                  <button
+                    v-if="auth.passwordMode.value !== 'saved'"
+                    type="button"
+                    class="eye-toggle"
+                    aria-label="切换密码可见性"
+                    @click="showPassword = !showPassword"
+                  >
+                    <!-- Eye open icon -->
+                    <svg v-if="!showPassword" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                      <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                    <!-- Eye closed icon -->
+                    <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                      <line x1="1" y1="1" x2="23" y2="23"/>
+                    </svg>
+                  </button>
+                </div>
+                <div v-else class="code-input-wrap">
+                  <input
+                    v-model.trim="auth.validateValue.value"
+                    :type="'text'"
+                    :inputmode="'numeric'"
+                    autocomplete="one-time-code"
+                    :required="true"
+                    placeholder=" "
+                  />
+                  <button
+                    class="button secondary code-send-inline"
+                    data-test="send-code"
+                    type="button"
+                    :disabled="!!auth.busy.value || auth.gt4Loading.value || !auth.accountReady.value"
+                    @click="auth.sendCode"
+                  >
+                    {{ auth.busy.value === 'captcha' ? '等待验证…' : auth.busy.value === 'code' ? '发送中…' : '发送验证码' }}
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
 
-          <button
-            class="button primary login-submit"
-            type="submit"
-            :disabled="!canSubmitPrimary"
-          >
-            登录
-          </button>
-        </form>
+            <button
+              class="button primary login-submit"
+              type="submit"
+              :disabled="!canSubmitPrimary"
+            >
+              <span v-if="auth.busy.value" class="spinning" aria-hidden="true">●</span>
+              {{ auth.busy.value ? '登录中…' : '登录' }}
+            </button>
+          </form>
         </div>
       </template>
 
