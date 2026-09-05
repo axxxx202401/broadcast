@@ -17,6 +17,7 @@ pub mod schema;
 #[cfg(test)]
 mod tests;
 
+use prost::Message;
 use schema::SCHEMA_SQL;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
 use sqlx::SqlitePool;
@@ -75,6 +76,8 @@ impl SqliteStore {
         .execute(&pool)
         .await?;
         migrate_messages_matched(&pool).await?;
+        migrate_messages_content_text(&pool).await?;
+        migrate_lottery_config_issues(&pool).await?;
         Ok(Self {
             pool: pool.clone(),
             messages: MessageStore::new(pool.clone()).await,
@@ -111,6 +114,98 @@ async fn migrate_messages_matched(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     .await?;
     if column_count == 0 {
         sqlx::query("ALTER TABLE messages ADD COLUMN matched INTEGER NOT NULL DEFAULT 0")
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
+/// 检查 `messages` 表，并在缺失时补充 `content_text` 列。
+///
+/// 对于已有数据行（`content_text` 为空），尝试从 `raw_proto` 中重建 `GroupMessage`
+/// 并提取明文文本；version == 0 的消息直接拷贝 `content`，加密消息无法解密则保留空字符串。
+async fn migrate_messages_content_text(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let column_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'content_text'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if column_count == 0 {
+        sqlx::query("ALTER TABLE messages ADD COLUMN content_text TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await?;
+        return Ok(());
+    }
+    // 检查是否有未填充的行（content_text 为空且 raw_proto 非空）。
+    let empty_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages WHERE content_text = '' AND raw_proto IS NOT NULL",
+    )
+    .fetch_one(pool)
+    .await?;
+    if empty_count == 0 {
+        return Ok(());
+    }
+    // 批量提取：对每行尝试从 raw_proto 提取明文。
+    let rows: Vec<(i64, Vec<u8>)> =
+        sqlx::query_as("SELECT msg_id, raw_proto FROM messages WHERE content_text = ''")
+            .fetch_all(pool)
+            .await?;
+    for (msg_id, raw_proto) in rows {
+        if let Ok(msg) = im_proto::GroupMessage::decode(raw_proto.as_slice()) {
+            let text = if msg.version == 0 {
+                String::from_utf8_lossy(&msg.content).to_string()
+            } else {
+                // version > 0 的加密消息无法离线解密，保留空字符串。
+                String::new()
+            };
+            if !text.is_empty() {
+                sqlx::query("UPDATE messages SET content_text = ? WHERE msg_id = ?")
+                    .bind(&text)
+                    .bind(msg_id)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 检查 `lottery_config` 表，并把旧 `current_issue INTEGER` 列迁移为 `current_issues TEXT`。
+///
+/// 旧列存单个期号；新列存 JSON 数组。迁移时会把旧值包进长度为 1 的数组，并删除旧列。
+async fn migrate_lottery_config_issues(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let has_old: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('lottery_config') WHERE name = 'current_issue'",
+    )
+    .fetch_one(pool)
+    .await?;
+    let has_new: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('lottery_config') WHERE name = 'current_issues'",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    // 全新库：`current_issues` 已被 SCHEMA_SQL 创建，无需操作。
+    if has_new > 0 {
+        return Ok(());
+    }
+
+    // 旧库：若存在 `current_issue`，先复制其值到新列，再删旧列。
+    // SQLite 不支持在同一语句中 ADD + DROP，因此分两步执行。
+    if has_old > 0 {
+        sqlx::query(
+            "ALTER TABLE lottery_config ADD COLUMN current_issues TEXT NOT NULL DEFAULT '[]'",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "UPDATE lottery_config
+             SET current_issues = json_array(current_issue)
+             WHERE current_issue IS NOT NULL AND current_issue != 0",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("ALTER TABLE lottery_config DROP COLUMN current_issue")
             .execute(pool)
             .await?;
     }

@@ -17,16 +17,14 @@ const POLL_INTERVAL_MS = 30_000
 export function useLottery(loggedIn?: { value: boolean }) {
   const config = ref<LotteryConfig>({
     api_url: 'https://go124.com/api/hash/get28HistoryList/10091',
-    current_issue: 0,
+    current_issues: [],
   })
   const drawHistory = ref<DrawItem[]>([])
   const loading = ref(false)
   const error = ref('')
 
-  /** 当前关注的期号；未配置时为 `null`。 */
-  const currentIssue = computed(() =>
-    config.value.current_issue > 0 ? String(config.value.current_issue) : null,
-  )
+  /** 当前关注的期号列表；未配置时为空数组。 */
+  const currentIssues = computed(() => config.value.current_issues)
 
   /** 加载当前账号的开奖配置。 */
   async function loadConfig() {
@@ -37,10 +35,10 @@ export function useLottery(loggedIn?: { value: boolean }) {
     }
   }
 
-  /** 保存开奖配置并立即重新拉取历史。 */
-  async function saveConfig(api_url: string, current_issue: number) {
+  /** 保存开奖配置（期号列表从 drawHistory 提取）并立即重新拉取历史。 */
+  async function saveConfig(api_url: string, current_issues: number[]) {
     try {
-      await api.setLotteryConfig(api_url, current_issue)
+      await api.setLotteryConfig(api_url, current_issues)
       await loadConfig()
       await fetchHistory()
     } catch (reason) {
@@ -67,7 +65,7 @@ export function useLottery(loggedIn?: { value: boolean }) {
   }
 
   /** 挂载时把默认 URL 写入后端持久化，再通过 Tauri 命令拉取，避免浏览器 CORS 拦截。 */
-  async function prefetchWithDefault() {
+  async function prefetchWithDefault(current_issues: number[]) {
     const defaultUrl = config.value.api_url
     if (!defaultUrl) {
       await loadConfig()
@@ -75,9 +73,15 @@ export function useLottery(loggedIn?: { value: boolean }) {
       return
     }
     try {
-      await api.setLotteryConfig(defaultUrl, 0)
+      await api.setLotteryConfig(defaultUrl, current_issues)
       await loadConfig()
       await fetchHistory()
+      // 首次加载后将拉取到的历史期号自动保存为配置，确保消息匹配能正常生效。
+      if (drawHistory.value.length > 0) {
+        const issues = drawHistory.value.map(item => item.preDrawIssue)
+        await api.setLotteryConfig(defaultUrl, issues)
+        await loadConfig()
+      }
     } catch (_e) {
       // 保存失败（如未登录）：静默跳过，等登录后 watch 再触发。
     }
@@ -96,7 +100,7 @@ export function useLottery(loggedIn?: { value: boolean }) {
   /** 登录后（含恢复登录成功）触发一次拉取；未登录时静默跳过。 */
   function runPrefetch() {
     if (loggedIn?.value !== true) return
-    void prefetchWithDefault().then(schedulePoll)
+    void prefetchWithDefault(currentIssues.value).then(schedulePoll)
   }
 
   onMounted(() => {
@@ -119,7 +123,7 @@ export function useLottery(loggedIn?: { value: boolean }) {
   return {
     config,
     drawHistory,
-    currentIssue,
+    currentIssues,
     loading,
     error,
     saveConfig,

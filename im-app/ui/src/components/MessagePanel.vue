@@ -24,11 +24,11 @@ const props = withDefaults(defineProps<{
   monitoredCount?: number
   /** 父组件共享的开奖 composable；用于在消息区顶部嵌入迷你开奖面板。 */
   lottery?: {
-    config: import('vue').Ref<{ api_url: string; current_issue: number }>
+    config: import('vue').Ref<{ api_url: string; current_issues: number[] }>
     drawHistory: import('vue').Ref<import('../services/tauri').DrawItem[]>
     loading: import('vue').Ref<boolean>
     error: import('vue').Ref<string>
-    saveConfig: (url: string, issue: number) => Promise<void>
+    saveConfig: (url: string, issues: number[]) => Promise<void>
     fetchHistory: () => Promise<void>
   }
 }>(), {

@@ -17,8 +17,8 @@ use crate::state::AppState;
 pub struct LotteryConfigDto {
     /// 用户填写的 API URL。
     pub api_url: String,
-    /// 当前关注的期号；`0` 表示尚未设置。
-    pub current_issue: i64,
+    /// 当前关注的期号列表（从 API 历史获取的所有期号）；空列表表示尚未设置。
+    pub current_issues: Vec<i64>,
 }
 
 /// 暴露给前端的开奖历史条目。
@@ -33,7 +33,7 @@ pub struct DrawItemDto {
 
 /// 读取当前账号的开奖配置。
 ///
-/// 若配置表中无记录，返回空 URL 与 `current_issue = 0` 的默认值。
+/// 若配置表中无记录，返回空 URL 与空期号列表的默认值。
 #[tauri::command]
 pub async fn get_lottery_config(
     state: State<'_, AppState>,
@@ -54,22 +54,28 @@ pub async fn get_lottery_config(
         .get(session.uid)
         .await
         .map_err(|e| e.to_string())?;
-    tracing::debug!(uid = session.uid, api_url = ?row.api_url, current_issue = row.current_issue, "Loaded lottery config");
+    tracing::debug!(
+        uid = session.uid,
+        api_url = ?row.api_url,
+        issue_count = row.current_issues.len(),
+        "Loaded lottery config"
+    );
     Ok(LotteryConfigDto {
         api_url: row.api_url,
-        current_issue: row.current_issue,
+        current_issues: row.current_issues,
     })
 }
 
 /// 保存当前账号的开奖配置，并重新计算已有消息的匹配标记。
 ///
-/// 新的 `current_issue` 生效后，会遍历该账号下全部群组的既有消息重新评估
-/// `matched` 字段；该操作可能在群组较多时耗时较长。
+/// `current_issues` 为从 API 获取的期号列表（降序排列的最新若干条）；
+/// 生效后会遍历该账号下全部群组的既有消息重新评估 `matched` 字段；
+/// 该操作可能在群组较多时耗时较长。
 #[tauri::command]
 pub async fn set_lottery_config(
     state: State<'_, AppState>,
     api_url: String,
-    current_issue: i64,
+    current_issues: Vec<i64>,
 ) -> Result<(), String> {
     let session = state
         .auth_session
@@ -83,20 +89,33 @@ pub async fn set_lottery_config(
         .await
         .map_err(|e| e.to_string())?;
     let updated_at = Utc::now().timestamp_millis();
-    tracing::info!(uid = session.uid, api_url, current_issue, "Saving lottery config");
+    tracing::info!(
+        uid = session.uid,
+        api_url,
+        issue_count = current_issues.len(),
+        "Saving lottery config"
+    );
+    let issues_for_recompute = current_issues.clone();
     db.lottery_config
         .upsert(&LotteryConfigRow {
             uid: session.uid,
             api_url,
-            current_issue,
+            current_issues: issues_for_recompute.clone(),
             updated_at,
         })
         .await
         .map_err(|e| e.to_string())?;
 
     // 重新计算全部已有消息的 matched 标记。
-    if let Err(e) = db.messages.recompute_matched_all(current_issue).await {
-        tracing::warn!(uid = session.uid, "Failed to recompute matched: {e}");
+    let recompute_result = db.messages.recompute_matched_all(&issues_for_recompute).await;
+    match &recompute_result {
+        Ok(count) => tracing::info!(
+            uid = session.uid,
+            recomputed = count,
+            issue_count = issues_for_recompute.len(),
+            "set_lottery_config: recompute_matched_all done"
+        ),
+        Err(e) => tracing::warn!(uid = session.uid, "Failed to recompute matched: {e}"),
     }
     Ok(())
 }

@@ -170,6 +170,13 @@ fn stored_message_parts(
         stored_at: None,
         matched: 0,
     };
+    // 提取明文文本：version == 0 时内容未加密，直接转为 UTF-8；否则暂时留空，
+    // 由调用方在持有解密密钥后补充（persist_monitored_batch 会在入库后立即更新）。
+    let content_text = if message.version == 0 {
+        String::from_utf8_lossy(&message.content).to_string()
+    } else {
+        String::new()
+    };
     let record = im_store::message::MessageRecord {
         msg_id: message.msg_id,
         group_id: message.group_id,
@@ -179,6 +186,7 @@ fn stored_message_parts(
         send_time: message.send_time,
         content_md5: message.content_md5.clone(),
         raw_proto: Some(message.encode_to_vec()),
+        content_text,
     };
     (record, dto)
 }
@@ -622,10 +630,18 @@ impl MessageEffects for ConnectionMessageEffects {
     }
 
     async fn persist_monitored_batch(&self, messages: &[im_proto::GroupMessage]) -> bool {
-        let records = messages
+        let session = self.context.auth_session.read().await.clone();
+        let mut records: Vec<_> = messages
             .iter()
             .map(|message| stored_message_parts(message).0)
-            .collect::<Vec<_>>();
+            .collect();
+
+        tracing::info!(
+            message_count = records.len(),
+            "persist_monitored_batch: inserting {} messages",
+            records.len()
+        );
+
         if let Err(error) = self.context.db.messages.insert_batch(&records).await {
             tracing::error!(
                 message_count = records.len(),
@@ -633,12 +649,160 @@ impl MessageEffects for ConnectionMessageEffects {
             );
             return false;
         }
+
+        tracing::info!(
+            message_count = records.len(),
+            "persist_monitored_batch: inserted, now processing..."
+        );
+
+        // 新消息入库后：对加密消息尝试解密并回填 content_text，同时检查匹配开奖配置。
+        if let Some(session) = session {
+            let config = self.context.db.lottery_config.get(session.uid).await.ok();
+            let has_config = config.as_ref().map(|c| !c.current_issues.is_empty()).unwrap_or(false);
+            tracing::info!(
+                uid = session.uid,
+                has_config = has_config,
+                issue_count = config.as_ref().map(|c| c.current_issues.len()).unwrap_or(0),
+                "persist_monitored_batch: lottery config check"
+            );
+            if has_config || records.iter().any(|r| r.content_text.is_empty()) {
+                // 需要解密密钥；尝试获取群相对密钥来解密。
+                let config_guard = self.context.config.read().await;
+                let client_info = message_client_info(&config_guard, session.token.clone());
+                drop(config_guard);
+                let mut decrypted_count = 0u32;
+                for record in &mut records {
+                    if record.content_text.is_empty() {
+                        if let Some(raw) = &record.raw_proto {
+                            if let Ok(msg) = im_proto::GroupMessage::decode(raw.as_slice()) {
+                                if msg.version > 0 {
+                                    // 通过 message_crypto 解密；如果失败（如密钥未就绪）则跳过。
+                                    match self
+                                        .context
+                                        .message_crypto
+                                        .decode_group_message(
+                                            &self.context.http.im_biz,
+                                            &client_info,
+                                            &msg,
+                                        )
+                                        .await
+                                    {
+                                        Ok(d) => {
+                                            let text = match d.content {
+                                                crate::message_content::MediaContent::Text { text } => text,
+                                                _ => String::new(),
+                                            };
+                                            tracing::debug!(
+                                                msg_id = record.msg_id,
+                                                group_id = record.group_id,
+                                                version = msg.version,
+                                                text_len = text.len(),
+                                                "persist_monitored_batch: decrypted message"
+                                            );
+                                            record.content_text = text;
+                                            sqlx::query("UPDATE messages SET content_text = ? WHERE msg_id = ?")
+                                                .bind(&record.content_text)
+                                                .bind(record.msg_id)
+                                                .execute(&self.context.db.pool)
+                                                .await
+                                                .ok();
+                                            decrypted_count += 1;
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                msg_id = record.msg_id,
+                                                group_id = record.group_id,
+                                                error = %e,
+                                                "persist_monitored_batch: decryption failed"
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    // version == 0：明文消息，content_text 已在 stored_message_parts 中填充。
+                                    tracing::debug!(
+                                        msg_id = record.msg_id,
+                                        group_id = record.group_id,
+                                        text_len = record.content_text.len(),
+                                        "persist_monitored_batch: plaintext message (version=0)"
+                                    );
+                                }
+                            } else {
+                                tracing::debug!(
+                                    msg_id = record.msg_id,
+                                    "persist_monitored_batch: failed to re-decode raw_proto"
+                                );
+                            }
+                        }
+                    }
+                }
+                tracing::info!(
+                    record_count = records.len(),
+                    decrypted = decrypted_count,
+                    "persist_monitored_batch: decryption pass complete"
+                );
+            }
+            // 检查匹配开奖配置。
+            if let Some(config) = config {
+                if !config.current_issues.is_empty() {
+                    let mut updated = 0usize;
+                    for record in &records {
+                        let text = &record.content_text;
+                        let is_matched = text.contains("开奖")
+                            && config
+                                .current_issues
+                                .iter()
+                                .any(|issue| text.contains(&issue.to_string()));
+                        if is_matched {
+                            tracing::info!(
+                                uid = session.uid,
+                                msg_id = record.msg_id,
+                                issue = config.current_issues.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","),
+                                "persist_monitored_batch: MATCHED lottery message"
+                            );
+                            sqlx::query("UPDATE messages SET matched = 1 WHERE msg_id = ?")
+                                .bind(record.msg_id)
+                                .execute(&self.context.db.pool)
+                                .await
+                                .ok();
+                            updated += 1;
+                        } else if !text.is_empty() {
+                            tracing::debug!(
+                                uid = session.uid,
+                                msg_id = record.msg_id,
+                                text = %text,
+                                "persist_monitored_batch: no match (no '开奖' or issue)"
+                            );
+                        } else {
+                            tracing::debug!(
+                                uid = session.uid,
+                                msg_id = record.msg_id,
+                                version = record.content.len(),
+                                "persist_monitored_batch: empty content_text (no decryption available)"
+                            );
+                        }
+                    }
+                    if updated > 0 {
+                        tracing::info!(
+                            uid = session.uid,
+                            updated = updated,
+                            "Matched new messages against lottery config"
+                        );
+                    } else {
+                        tracing::info!(
+                            uid = session.uid,
+                            record_count = records.len(),
+                            "No lottery matches found in this batch"
+                        );
+                    }
+                }
+            }
+        }
         true
     }
 
     async fn publish_monitored_batch(&self, messages: Vec<im_proto::GroupMessage>) {
         let context = self.context.clone();
-        let messages = map_ordered_bounded(messages, MESSAGE_DECRYPT_CONCURRENCY, move |message| {
+        let mut dtos = map_ordered_bounded(messages, MESSAGE_DECRYPT_CONCURRENCY, move |message| {
             let context = context.clone();
             async move {
                 let (_, mut dto) = stored_message_parts(&message);
@@ -655,21 +819,49 @@ impl MessageEffects for ConnectionMessageEffects {
             }
         })
         .await;
-        match publish_realtime_message(&self.context.message_channel, &messages).await {
+
+        // 从数据库读取最新的 matched 值，因为 persist_monitored_batch 可能已更新。
+        // stored_message_parts 中 matched 硬编码为 0，此处修正为 DB 中的实际值。
+        let db_matched: std::collections::HashMap<i64, i32> = {
+            let ids: Vec<String> = dtos.iter().map(|d| d.msg_id.clone()).collect();
+            let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!("SELECT msg_id, matched FROM messages WHERE msg_id IN ({})", placeholders);
+            let mut q = sqlx::query_as::<_, (i64, i32)>(&sql);
+            for id_str in &ids {
+                q = q.bind(id_str.parse::<i64>().unwrap_or(0));
+            }
+            q.fetch_all(&self.context.db.pool).await.unwrap_or_default()
+                .into_iter()
+                .collect()
+        };
+        tracing::debug!(
+            fetched = db_matched.len(),
+            total = dtos.len(),
+            "publish_monitored_batch: loaded matched from DB"
+        );
+        for dto in &mut dtos {
+            if let Ok(msg_id) = dto.msg_id.parse::<i64>() {
+                if let Some(&matched) = db_matched.get(&msg_id) {
+                    dto.matched = matched;
+                }
+            }
+        }
+
+        match publish_realtime_message(&self.context.message_channel, &dtos).await {
             Ok(()) => {
                 #[cfg(debug_assertions)]
                 tracing::info!(
-                    message_count = messages.len(),
+                    message_count = dtos.len(),
                     "Persisted message batch sent through frontend Channel"
                 );
                 #[cfg(not(debug_assertions))]
                 tracing::debug!(
-                    message_count = messages.len(),
+                    message_count = dtos.len(),
                     "Persisted message batch sent through frontend Channel"
                 );
             }
             Err(error) => tracing::warn!(
-                message_count = messages.len(),
+                message_count = dtos.len(),
                 "Failed to send persisted message batch through frontend Channel: {error}"
             ),
         }
@@ -2133,6 +2325,12 @@ pub async fn get_messages(
         .require(session.uid)
         .await
         .map_err(|error| error.to_string())?;
+    tracing::info!(
+        uid = session.uid,
+        group_id = group_id.as_deref().unwrap_or("all"),
+        matched_only,
+        "get_messages: loading messages"
+    );
     let page = match group_id {
         Some(group_id) => {
             let group_id = super::parse_i64_id(&group_id, "group_id")?;
@@ -2141,6 +2339,14 @@ pub async fn get_messages(
         None => db.messages.get_recent(limit, cursor, matched_only).await,
     }
     .map_err(|error| error.to_string())?;
+    tracing::info!(
+        uid = session.uid,
+        page_size = page.messages.len(),
+        has_more = page.has_more,
+        matched_only,
+        "get_messages: loaded {} messages",
+        page.messages.len()
+    );
 
     let messages = map_ordered_bounded(page.messages, MESSAGE_DECRYPT_CONCURRENCY, |row| async {
         let message = row
@@ -2164,6 +2370,12 @@ pub async fn get_messages(
         dto
     })
     .await;
+    tracing::info!(
+        uid = session.uid,
+        returned = messages.len(),
+        matched_count = messages.iter().filter(|m| m.matched != 0).count(),
+        "get_messages: built DTOs, sending to frontend"
+    );
     Ok(MessagePageDto {
         messages,
         next_cursor: page.next_cursor.map(|cursor| MessageCursorDto {
@@ -4882,6 +5094,7 @@ mod tests {
             raw_proto: record.raw_proto.clone(),
             matched: 0,
             group_name: "测试群".to_string(),
+            content_text: record.content_text.clone(),
         });
 
         assert_eq!(realtime.content_b64, STANDARD.encode(&message.content));

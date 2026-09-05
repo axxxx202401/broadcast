@@ -68,6 +68,9 @@ export function useMonitor() {
     const result = messageIndex.mergeWithResult(incoming, trimStrategy)
     if (!result.changed) return result
     messages.value = messageIndex.snapshot()
+    console.debug(
+      `[useMonitor] mergeAndPublish: +${result.inserted} new, ${messages.value.length} total, matched=${messages.value.filter(m => m.matched !== 0).length}`,
+    )
     return result
   }
 
@@ -259,9 +262,14 @@ export function useMonitor() {
     resetMessagePagination()
     messagesLoading.value = true
     error.value = ''
+    console.debug(`[useMonitor] loadMessages: group=${groupId ?? 'all'}, showMatchedOnly=${showMatchedOnly.value}`)
     try {
       const history = await api.getMessages(groupId ?? undefined, undefined, 200)
       if (isCurrentMessageRequest(requestId, messageRequestId, groupId, selectedGroupId.value)) {
+        const matchedCount = history.messages.filter(m => m.matched !== 0).length
+        console.debug(
+          `[useMonitor] loadMessages: received ${history.messages.length} msgs, matched=${matchedCount}`,
+        )
         // 历史返回期间可能已收到实时消息，合并而非覆盖可保留两条来源。
         mergeAndPublishMessages(history.messages)
         nextMessageCursor.value = history.nextCursor
@@ -427,10 +435,22 @@ export function useMonitor() {
     messageChannel = new Channel<MessageDto[]>()
     messageChannel.onmessage = (batch) => {
       // 后端保持批内协议顺序；单群视图只筛选当前群，再一次性合并，避免逐条触发响应式更新。
+      const matchedInBatch = batch.filter(m => m.matched !== 0).length
+      console.debug(
+        `[useMonitor] channel received: ${batch.length} msgs, matched=${matchedInBatch}, showMatchedOnly=${showMatchedOnly.value}`,
+      )
+      for (const m of batch) {
+        console.debug(
+          `  msg[${m.msg_id}]: matched=${m.matched}, group=${m.group_id}, decode_err=${m.decode_error ?? 'none'}`,
+        )
+      }
       const visible = selectedGroupId.value === null
         ? batch
         : batch.filter((message) => message.group_id === selectedGroupId.value)
-      if (visible.length === 0) return
+      if (visible.length === 0) {
+        console.debug('[useMonitor] channel: visible=0, skipping')
+        return
+      }
       if (activeOlderRequest) {
         // 缓冲索引自身限制为 MAX_MESSAGES，并按 ID 去重；请求结束前不触碰可见索引。
         if (bufferedRealtimeRequestId !== messageRequestId) {

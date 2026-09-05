@@ -17,3 +17,4 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing.workspace = true
 chrono = { workspace = true, features = ["serde"] }
+prost = "0.13"

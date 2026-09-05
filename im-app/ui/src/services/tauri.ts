@@ -35,8 +35,8 @@ export interface DrawItem {
 export interface LotteryConfig {
   /** 用户填写的 API URL。 */
   api_url: string
-  /** 当前关注的期号；`0` 表示尚未设置。 */
-  current_issue: number
+  /** 当前关注的期号列表（从 API 历史获取的所有期号）；空列表表示尚未设置。 */
+  current_issues: number[]
 }
 
 /** 前端使用的 Tauri IPC 服务集合；各方法保持后端命令名、参数包装和返回类型契约。 */
@@ -170,11 +170,11 @@ export const api = {
    */
   downloadMessageAttachment: (msgId: string, thumbnail = false) =>
     invoke<AttachmentDownloadDto>('download_message_attachment', { msgId, thumbnail }),
-  /** 读取当前账号的开奖配置；未配置时返回空 URL 与 `current_issue = 0`。 */
+  /** 读取当前账号的开奖配置；未配置时返回空 URL 与空期号列表。 */
   getLotteryConfig: () => invoke<LotteryConfig>('get_lottery_config'),
   /** 保存当前账号的开奖配置，并触发已有消息重新匹配。 */
-  setLotteryConfig: (apiUrl: string, currentIssue: number) =>
-    invoke<void>('set_lottery_config', { apiUrl, currentIssue }),
+  setLotteryConfig: (apiUrl: string, currentIssues: number[]) =>
+    invoke<void>('set_lottery_config', { apiUrl, currentIssues }),
   /** 从远端拉取开奖历史，按期号降序排列；URL 未配置时拒绝。 */
   fetchLotteryHistory: () => invoke<DrawItem[]>('fetch_lottery_history'),
 }

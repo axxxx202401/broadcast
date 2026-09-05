@@ -17,6 +17,7 @@ fn batch_message(msg_id: i64, content: &str) -> MessageRecord {
         send_time: 1_788_420_000_000 + msg_id,
         content_md5: format!("md5-{msg_id}"),
         raw_proto: Some(vec![msg_id as u8]),
+        content_text: content.to_string(),
     }
 }
 
@@ -44,6 +45,7 @@ async fn test_insert_and_fetch_message() {
             send_time: 1725292800000,
             content_md5: "d41d8cd98f00b204e9800998ecf8427e".to_string(),
             raw_proto: None,
+            content_text: String::new(),
         })
         .await
         .unwrap();
@@ -201,6 +203,7 @@ async fn test_get_by_group() {
                 send_time: *time,
                 content_md5: format!("md5-{}", i),
                 raw_proto: None,
+            content_text: String::new(),
             })
             .await
             .unwrap();
@@ -218,6 +221,7 @@ async fn test_get_by_group() {
             send_time: 1725292803000,
             content_md5: "other-md5".to_string(),
             raw_proto: None,
+            content_text: String::new(),
         })
         .await
         .unwrap();
@@ -272,6 +276,7 @@ async fn message_cursor_paginates_equal_send_times_without_duplicates_or_gaps() 
                 send_time: 100,
                 content_md5: String::new(),
                 raw_proto: None,
+            content_text: String::new(),
             })
             .await
             .unwrap();
@@ -336,6 +341,7 @@ async fn test_get_recent_returns_all_groups_with_names() {
                 send_time: group_id,
                 content_md5: String::new(),
                 raw_proto: None,
+            content_text: String::new(),
             })
             .await
             .unwrap();
@@ -381,6 +387,7 @@ async fn test_get_message_by_id_keeps_raw_proto() {
             send_time: 3,
             content_md5: String::new(),
             raw_proto: Some(vec![4, 5, 6]),
+            content_text: String::new(),
         })
         .await
         .unwrap();
@@ -626,6 +633,7 @@ async fn remote_snapshot_hides_missing_group_without_deleting_history_and_restor
             send_time: 1,
             content_md5: String::new(),
             raw_proto: None,
+            content_text: String::new(),
         })
         .await
         .unwrap();
@@ -791,6 +799,7 @@ async fn test_message_content_and_md5() {
             send_time: 1725292800000,
             content_md5: "abc123".to_string(),
             raw_proto: Some(vec![0x08, 0x89, 0x27]),
+            content_text: String::new(),
         })
         .await
         .unwrap();
@@ -834,15 +843,15 @@ async fn lottery_config_upsert_and_get() {
     let row = store.lottery_config.get(uid).await.unwrap();
     assert_eq!(row.uid, uid);
     assert_eq!(row.api_url, "");
-    assert_eq!(row.current_issue, 0);
+    assert!(row.current_issues.is_empty());
 
-    // 保存配置。
+    // 保存配置（多条期号）。
     store
         .lottery_config
         .upsert(&lottery_config::LotteryConfigRow {
             uid,
             api_url: "https://example.com/api".to_string(),
-            current_issue: 3477887,
+            current_issues: vec![3477887, 3477886],
             updated_at: 1_700_000_000_000,
         })
         .await
@@ -850,7 +859,7 @@ async fn lottery_config_upsert_and_get() {
 
     let row = store.lottery_config.get(uid).await.unwrap();
     assert_eq!(row.api_url, "https://example.com/api");
-    assert_eq!(row.current_issue, 3477887);
+    assert_eq!(row.current_issues, vec![3477887, 3477886]);
 
     // 更新配置。
     store
@@ -858,7 +867,7 @@ async fn lottery_config_upsert_and_get() {
         .upsert(&lottery_config::LotteryConfigRow {
             uid,
             api_url: "https://new.com/api".to_string(),
-            current_issue: 9999999,
+            current_issues: vec![9999999, 9999998],
             updated_at: 1_700_000_001_000,
         })
         .await
@@ -866,5 +875,63 @@ async fn lottery_config_upsert_and_get() {
 
     let row = store.lottery_config.get(uid).await.unwrap();
     assert_eq!(row.api_url, "https://new.com/api");
-    assert_eq!(row.current_issue, 9999999);
+    assert_eq!(row.current_issues, vec![9999999, 9999998]);
+}
+
+#[tokio::test]
+async fn lottery_config_legacy_current_issue_migrated_to_array() {
+    use std::str::FromStr;
+
+    let path = std::env::temp_dir().join(format!(
+        "im-monitor-store-lottery-migration-{}-{}.db",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap()
+    ));
+    let dsn = format!("sqlite://{}", path.display());
+    let options = sqlx::sqlite::SqliteConnectOptions::from_str(&dsn)
+        .unwrap()
+        .create_if_missing(true);
+    let legacy_pool = sqlx::SqlitePool::connect_with(options).await.unwrap();
+    // 模拟旧表结构：只有 current_issue INTEGER。
+    sqlx::query(
+        "CREATE TABLE lottery_config (
+            uid INTEGER NOT NULL PRIMARY KEY,
+            api_url TEXT NOT NULL DEFAULT '',
+            current_issue INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL
+        )",
+    )
+    .execute(&legacy_pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO lottery_config (uid, api_url, current_issue, updated_at)
+         VALUES (42, 'https://example.com/api', 3477887, 1700000000000)",
+    )
+    .execute(&legacy_pool)
+    .await
+    .unwrap();
+    legacy_pool.close().await;
+
+    // 重新打开旧库时迁移列；旧期号应被包进数组。
+    let store = SqliteStore::new(&dsn).await.unwrap();
+    let row = store.lottery_config.get(42).await.unwrap();
+    assert_eq!(row.api_url, "https://example.com/api");
+    assert_eq!(row.current_issues, vec![3477887]);
+    // 新列存在，旧列已删除。
+    let col_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('lottery_config') WHERE name = 'current_issues'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(col_count, 1);
+    let old_col_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('lottery_config') WHERE name = 'current_issue'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(old_col_count, 0);
+
+    store.pool.close().await;
+    std::fs::remove_file(path).unwrap();
 }

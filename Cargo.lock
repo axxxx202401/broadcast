@@ -1929,6 +1929,7 @@ dependencies = [
  "chrono",
  "im-common",
  "im-proto",
+ "prost",
  "serde",
  "serde_json",
  "sqlx",

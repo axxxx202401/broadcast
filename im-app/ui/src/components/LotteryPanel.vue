@@ -6,11 +6,11 @@ import type { DrawItem } from '../services/tauri'
 
 const props = withDefaults(defineProps<{
   lottery?: {
-    config: { value: { api_url: string; current_issue: number } }
+    config: { value: { api_url: string; current_issues: number[] } }
     drawHistory: { value: DrawItem[] }
     loading: { value: boolean }
     error: { value: string }
-    saveConfig: (url: string, issue: number) => Promise<void>
+    saveConfig: (url: string, issues: number[]) => Promise<void>
     fetchHistory: () => Promise<void>
   }
 }>(), {})
@@ -38,7 +38,9 @@ function openEdit() {
 }
 
 async function confirmSave() {
-  await saveConfig(editUrl.value.trim(), 0)
+  // 保存所有历史期号，用于消息匹配。
+  const issues = drawHistory.value.map(item => item.preDrawIssue)
+  await saveConfig(editUrl.value.trim(), issues)
   editing.value = false
 }
 
@@ -195,7 +197,7 @@ function cancelEdit() {
   border: 1px solid var(--ink-600, #48484a);
   border-radius: 4px;
   background: var(--ink-900, #1c1c1e);
-  color: var(--text-200, #1c1c1e);
+  color: var(--text-200, #ebebf0);
   outline: none;
   font-family: "IBM Plex Mono", monospace;
 }
