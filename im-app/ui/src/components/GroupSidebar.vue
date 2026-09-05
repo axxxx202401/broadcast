@@ -176,7 +176,7 @@ const sections = ref({
 <style scoped>
 .matched-toggle {
   padding: 8px 12px;
-  border-bottom: 1px solid var(--border-color, #e2e2e6);
+  border-bottom: 1px solid var(--border-subtle, #30363d);
 }
 
 .toggle-label {
@@ -185,7 +185,7 @@ const sections = ref({
   justify-content: space-between;
   cursor: pointer;
   font-size: 13px;
-  color: var(--text-primary, #1d1d1f);
+  color: var(--text-primary, #e6edf3);
 }
 
 .toggle-label input[type="checkbox"] {
@@ -196,9 +196,9 @@ const sections = ref({
   position: relative;
   width: 40px;
   height: 22px;
-  background: var(--border-color, #e2e2e6);
+  background: var(--border-medium, #3d444d);
   border-radius: 11px;
-  transition: background 0.2s;
+  transition: background 200ms ease;
 }
 
 .toggle-slider::after {
@@ -210,12 +210,12 @@ const sections = ref({
   height: 18px;
   background: white;
   border-radius: 50%;
-  transition: transform 0.2s;
+  transition: transform 200ms ease;
   box-shadow: 0 1px 3px rgba(0,0,0,0.2);
 }
 
 .toggle-label input:checked + .toggle-slider {
-  background: var(--accent-color, #007aff);
+  background: var(--success, #3fb950);
 }
 
 .toggle-label input:checked + .toggle-slider::after {
@@ -229,18 +229,19 @@ const sections = ref({
   padding: 10px 12px 6px;
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-secondary, #6e6e73);
+  color: var(--text-tertiary, #6e7681);
   cursor: pointer;
   user-select: none;
+  transition: color 150ms ease;
 }
 
 .section-header:hover {
-  color: var(--text-primary, #1d1d1f);
+  color: var(--text-primary, #e6edf3);
 }
 
 .chevron {
   font-size: 10px;
-  transition: transform 0.2s;
+  transition: transform 200ms ease;
 }
 
 .chevron.collapsed {
@@ -257,11 +258,11 @@ const sections = ref({
 }
 
 .monitored-list {
-  border-bottom: 1px solid var(--border-color, #e2e2e6);
+  border-bottom: 1px solid var(--border-subtle, #30363d);
   margin-bottom: 4px;
 }
 
 .unmonitored-list {
-  opacity: 0.8;
+  opacity: 0.85;
 }
 </style>

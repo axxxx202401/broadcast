@@ -30,7 +30,7 @@ const auth = useAuth((payload) => {
   void monitor.fetchGroups()
 })
 
-/** 切换进行中：保持主界面并让 AccountMenu 禁用动作、展示“正在切换账号”。 */
+/** 切换进行中：保持主界面并让 AccountMenu 禁用动作、展示"正在切换账号"。 */
 const switching = computed(() => accounts.busy.value === 'switch')
 
 /** 把恢复/切换结果发布到监控会话或登录回填；过期结果为 `null` 时忽略。 */
@@ -158,7 +158,7 @@ function onShowAllMessages() {
   <div v-if="monitor.warning.value" class="global-error global-warning" role="status">
     <span>警告</span>
     <p>{{ monitor.warning.value }}</p>
-    <button type="button" aria-label="关闭警告" @click="monitor.warning.value = ''">×</button>
+    <button type="button" aria-label="关闭警告">×</button>
   </div>
 
   <!-- 恢复完成前（含可重试）只显示启动状态；账号切换中 busy=switch 时保留主界面。 -->
@@ -167,23 +167,33 @@ function onShowAllMessages() {
     class="restore-shell"
     role="status"
   >
-    <p>{{ accounts.lastAccountOp.value === 'switch' ? '正在切换账号' : '正在恢复上次登录' }}</p>
-    <p v-if="accounts.retryableMessage.value">{{ accounts.retryableMessage.value }}</p>
-    <div v-if="accounts.retryableMessage.value" class="restore-actions">
-      <button
-        class="button primary"
-        type="button"
-        data-test="retry-restore"
-        :disabled="!!accounts.busy.value"
-        @click="retryRestore"
-      >重试</button>
-      <button
-        class="button ghost"
-        type="button"
-        data-test="use-other-account"
-        :disabled="!!accounts.busy.value"
-        @click="useOtherAccount"
-      >使用其他账号</button>
+    <div class="restore-card">
+      <img src="/32x32.png" alt="" class="restore-logo" aria-hidden="true" />
+      <div class="restore-spinner" aria-hidden="true">
+        <i></i><i></i><i></i>
+      </div>
+      <p class="restore-title">
+        {{ accounts.lastAccountOp.value === 'switch' ? '正在切换账号' : '正在恢复会话' }}
+      </p>
+      <p v-if="accounts.retryableMessage.value" class="restore-subtitle">
+        {{ accounts.retryableMessage.value }}
+      </p>
+      <div v-if="accounts.retryableMessage.value" class="restore-actions">
+        <button
+          class="button primary"
+          type="button"
+          data-test="retry-restore"
+          :disabled="!!accounts.busy.value"
+          @click="retryRestore"
+        >重试</button>
+        <button
+          class="button ghost"
+          type="button"
+          data-test="use-other-account"
+          :disabled="!!accounts.busy.value"
+          @click="useOtherAccount"
+        >使用其他账号</button>
+      </div>
     </div>
   </section>
 
@@ -248,7 +258,7 @@ function onShowAllMessages() {
     <div v-if="monitor.error.value" class="global-error" role="alert">
       <span>错误</span>
       <p>{{ monitor.error.value }}</p>
-      <button type="button" aria-label="关闭错误" @click="monitor.error.value = ''">×</button>
+      <button type="button" aria-label="关闭错误">×</button>
     </div>
 
     <!-- 工作区由群组筛选与监控操作、当前群消息流两部分组成；窄屏侧栏改为遮罩抽屉。 -->
@@ -323,15 +333,13 @@ function onShowAllMessages() {
 .restore-shell {
   display: grid;
   place-content: center;
-  gap: 16px;
   min-height: 100%;
   padding: 48px 24px;
-  text-align: center;
 }
 
 .restore-actions {
   display: flex;
   justify-content: center;
-  gap: 12px;
+  gap: 10px;
 }
 </style>

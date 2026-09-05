@@ -17,8 +17,8 @@
   box-sizing: border-box;
   max-height: calc(100vh - 80px);
   padding: 42px 36px;
-  background: var(--ink-900);
-  border: 1px solid var(--ink-600);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-medium);
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.38);
   scrollbar-gutter: stable;
 }
@@ -81,7 +81,7 @@
   align-items: baseline;
   gap: 8px;
   margin: 0;
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-family: inherit;
   font-size: 12px;
   font-weight: 500;
@@ -94,7 +94,7 @@
 .login-form-fields .account-row label > span {
   display: block;
   margin-bottom: 6px;
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-family: inherit;
   font-size: 12px;
   font-weight: 500;
@@ -109,17 +109,18 @@
   padding: 10px 11px;
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid var(--ink-600);
+  border: 1px solid var(--border-medium);
   border-radius: var(--radius);
 }
 
 .login-form-fields input:hover {
-  border-color: #445155;
+  border-color: var(--border-subtle);
 }
 
 .login-form-fields input:focus {
   outline: none;
-  border-color: var(--amber-soft);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(240, 180, 70, 0.12);
 }
 
 .code-input-wrap {
@@ -146,40 +147,42 @@
 /* 验证码模式 input 右侧留白给按钮，自带边框与其他输入框一致。 */
 .login-form-fields .secret-field.is-code input {
   padding-right: 90px;
-  border: 1px solid var(--ink-600);
+  border: 1px solid var(--border-medium);
   border-radius: var(--radius);
 }
 
 .login-form-fields .secret-field.is-code input:hover {
-  border-color: #445155;
+  border-color: var(--border-subtle);
 }
 
 .login-form-fields .secret-field.is-code input:focus {
   outline: none;
-  border-color: var(--amber-soft);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(240, 180, 70, 0.12);
 }
 
 /* 已保存密码哨兵：内联在 label 行右侧，不占额外布局空间。 */
 .password-sentinel {
   display: none;
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-size: 11px;
   line-height: 1;
 }
 
 /* 普通密码模式的 input：带边框，由自身负责边框。 */
 .login-form-fields .secret-field:not(.is-code) input {
-  border: 1px solid var(--ink-600);
+  border: 1px solid var(--border-medium);
   border-radius: var(--radius);
 }
 
 .login-form-fields .secret-field:not(.is-code) input:hover {
-  border-color: #445155;
+  border-color: var(--border-subtle);
 }
 
 .login-form-fields .secret-field:not(.is-code) input:focus {
   outline: none;
-  border-color: var(--amber-soft);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(240, 180, 70, 0.12);
 }
 
 .password-sentinel.is-visible {
@@ -193,8 +196,8 @@
   height: 42px;
   box-sizing: border-box;
   padding: 3px;
-  background: var(--ink-850);
-  border: 1px solid var(--ink-600);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-medium);
   border-radius: var(--radius);
 }
 
@@ -212,7 +215,7 @@
 
 .purpose {
   margin: 0;
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-size: 14px;
   line-height: 1.6;
 }
@@ -224,7 +227,7 @@
   border: 0;
   border-radius: calc(var(--radius) - 2px);
   background: transparent;
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-size: 11px;
   font-weight: 600;
   line-height: 36px;
@@ -234,22 +237,22 @@
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: pointer;
-  transition: color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+  transition: color 180ms ease, background 180ms ease, box-shadow 180ms ease;
 }
 
 .login-method-tab:hover:not(.is-active) {
-  color: var(--text-300);
+  color: var(--text-secondary);
   background: rgba(255, 255, 255, 0.04);
 }
 
 .login-method-tab.is-active {
-  color: var(--text-100);
-  background: var(--ink-900);
-  box-shadow: inset 0 -2px 0 var(--amber-soft);
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  box-shadow: inset 0 -2px 0 var(--accent-soft);
 }
 
 .login-method-tab:focus-visible {
-  outline: 2px solid var(--focus);
+  outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
 
@@ -282,7 +285,7 @@
 
 .challenge-progress,
 .challenge-target {
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-size: 13px;
 }
 
@@ -300,9 +303,9 @@
   overflow: hidden;
   padding: 56px 48px;
   background:
-    linear-gradient(145deg, rgba(184, 134, 11, 0.08), transparent 45%),
-    var(--ink-850);
-  border-right: 1px solid var(--ink-600);
+    linear-gradient(145deg, rgba(240, 180, 70, 0.08), transparent 45%),
+    var(--bg-elevated);
+  border-right: 1px solid var(--border-medium);
 }
 
 .login-intro::after {
@@ -333,7 +336,7 @@
 
 .intro-copy {
   max-width: 330px;
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-size: 14px;
   line-height: 1.8;
 }
@@ -351,13 +354,13 @@
   grid-template-columns: 42px 1fr;
   align-items: center;
   min-height: 46px;
-  color: var(--text-500);
-  border-top: 1px solid var(--ink-700);
+  color: var(--text-tertiary);
+  border-top: 1px solid var(--border-subtle);
   font-size: 12px;
 }
 
 .protocol-track b {
-  color: var(--amber);
+  color: var(--accent);
   font-family: "IBM Plex Mono", monospace;
   font-size: 10px;
 }
@@ -366,7 +369,7 @@
 .login-console {
   overflow-y: auto;
   padding: 42px 48px;
-  background: var(--ink-900);
+  background: var(--bg-surface);
 }
 
 .console-heading {
@@ -382,8 +385,8 @@
 }
 
 .secure-mark {
-  color: var(--green);
-  border: 1px solid rgba(84, 201, 147, 0.3);
+  color: var(--success);
+  border: 1px solid rgba(63, 185, 80, 0.3);
   padding: 5px 7px;
   font-family: "IBM Plex Mono", monospace;
   font-size: 9px;
@@ -421,7 +424,7 @@
 
 .protocol-step {
   margin-top: 16px;
-  border: 1px solid var(--ink-700);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius);
   padding: 0 16px 16px;
   background: rgba(255, 255, 255, 0.012);
@@ -430,13 +433,13 @@
 .auth-step h3 {
   margin: 0 -16px 14px;
   padding: 13px 16px;
-  color: var(--text-300);
-  border-bottom: 1px solid var(--ink-700);
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-subtle);
   font-size: 12px;
 }
 
 .auth-step h3 span {
-  color: var(--amber);
+  color: var(--accent);
   margin-right: 8px;
   font-family: "IBM Plex Mono", monospace;
 }
@@ -453,13 +456,14 @@
   gap: 10px;
   align-items: start;
   padding: 10px;
-  border: 1px solid var(--ink-700);
+  border: 1px solid var(--border-subtle);
   cursor: pointer;
+  transition: border-color 180ms ease, background 180ms ease;
 }
 
 .pending-option:has(input:checked) {
-  border-color: var(--amber-soft);
-  background: rgba(184, 134, 11, 0.06);
+  border-color: var(--accent-soft);
+  background: rgba(240, 180, 70, 0.06);
 }
 
 .pending-option input {
@@ -473,19 +477,19 @@
 }
 
 .pending-option > span {
-  color: var(--text-300);
+  color: var(--text-secondary);
   font-size: 11px;
   line-height: 1.5;
 }
 
 .pending-option b {
-  color: var(--amber);
+  color: var(--accent);
   font-family: "IBM Plex Mono", monospace;
   font-size: 9px;
 }
 
 .pending-option small {
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-family: "IBM Plex Mono", monospace;
   font-size: 9px;
 }
@@ -493,22 +497,23 @@
 .protocol-step summary {
   margin: 0 -16px 14px;
   padding: 13px 16px;
-  color: var(--text-300);
+  color: var(--text-secondary);
   border-bottom: 1px solid transparent;
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
   list-style: none;
+  transition: color 180ms ease;
 }
 
 .protocol-step[open] summary {
-  border-bottom-color: var(--ink-700);
+  border-bottom-color: var(--border-subtle);
 }
 
 .protocol-step summary::before {
   content: "+";
   float: right;
-  color: var(--text-500);
+  color: var(--text-tertiary);
 }
 
 .protocol-step[open] summary::before {
@@ -516,21 +521,21 @@
 }
 
 .protocol-step summary span {
-  color: var(--amber);
+  color: var(--accent);
   margin-right: 8px;
   font-family: "IBM Plex Mono", monospace;
 }
 
 .field-note,
 .warning-note {
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-size: 11px;
   line-height: 1.55;
 }
 
 .warning-note {
-  color: #b8860b;
-  border-left: 2px solid var(--amber-soft);
+  color: var(--accent-soft);
+  border-left: 2px solid var(--accent-soft);
   padding-left: 9px;
 }
 
@@ -543,27 +548,27 @@
 
 .feedback.error {
   color: #f1a29a;
-  background: rgba(226, 104, 92, 0.08);
-  border-color: var(--red);
+  background: rgba(248, 81, 73, 0.08);
+  border-color: var(--danger);
 }
 
 .feedback.notice {
   color: #8cddb7;
-  background: rgba(84, 201, 147, 0.07);
-  border-color: var(--green);
+  background: rgba(63, 185, 80, 0.07);
+  border-color: var(--success);
 }
 
 .business-processing {
   margin-top: 14px;
-  color: #9a7209;
-  background: rgba(184, 134, 11, 0.08);
-  border: 1px solid rgba(184, 134, 11, 0.35);
+  color: var(--accent-soft);
+  background: rgba(240, 180, 70, 0.08);
+  border: 1px solid rgba(240, 180, 70, 0.35);
   padding: 10px 12px;
 }
 
 .business-processing > strong,
 .business-processing b {
-  color: var(--amber);
+  color: var(--accent);
   font-family: "IBM Plex Mono", monospace;
 }
 
@@ -587,6 +592,84 @@
   margin-top: 4px;
 }
 
+/* 恢复启动页：居中卡片，带 logo、加载指示器和状态文案。 */
+.restore-shell {
+  display: grid;
+  place-content: center;
+  min-height: 100%;
+  padding: 48px 24px;
+  animation: console-enter 380ms ease-out both;
+}
+
+.restore-card {
+  display: grid;
+  gap: 16px;
+  width: 400px;
+  max-width: 90vw;
+  padding: 36px 32px;
+  text-align: center;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-medium);
+  border-radius: 10px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  animation: restore-card-in 400ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.restore-logo {
+  width: 40px;
+  height: 40px;
+  margin: 0 auto 4px;
+}
+
+.restore-spinner {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.restore-spinner i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: restore-bounce 1.2s ease-in-out infinite;
+}
+
+.restore-spinner i:nth-child(2) { animation-delay: 0.2s; }
+.restore-spinner i:nth-child(3) { animation-delay: 0.4s; }
+
+.restore-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.restore-subtitle {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.restore-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
+@keyframes restore-card-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes restore-bounce {
+  0%, 80%, 100% { transform: scale(0.75); opacity: 0.4; }
+  40%             { transform: scale(1);   opacity: 1; }
+}
+
 /* 控制台框架：顶栏、连接状态、全局反馈与主工作区。 */
 .operations-shell {
   display: flex;
@@ -594,7 +677,7 @@
   min-width: 0;
   min-height: 0;
   height: 100%;
-  background: var(--ink-900);
+  background: var(--bg-surface);
 }
 
 .topbar {
@@ -603,8 +686,9 @@
   align-items: center;
   justify-content: space-between;
   padding: 0 18px;
-  background: var(--ink-850);
-  border-bottom: 1px solid var(--ink-600);
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-medium);
+  transition: background 300ms ease, border-color 300ms ease;
 }
 
 .brand,
@@ -635,7 +719,7 @@
 
 .brand small {
   margin-top: 2px;
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-family: "IBM Plex Mono", monospace;
   font-size: 8px;
   letter-spacing: 0.14em;
@@ -648,7 +732,7 @@
 /* 头部账号菜单：主按钮显示邮箱/手机号，展开后提供切换与账号管理。 */
 .account-menu {
   position: relative;
-  border-left: 1px solid var(--ink-600);
+  border-left: 1px solid var(--border-medium);
   margin-left: 4px;
   padding-left: 9px;
 }
@@ -669,14 +753,21 @@
   gap: 4px;
   min-width: 220px;
   padding: 10px;
-  background: var(--ink-900);
-  border: 1px solid var(--ink-600);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-medium);
+  border-radius: 8px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+  animation: panel-drop 180ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes panel-drop {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 .account-menu-status {
   margin: 0 0 4px;
-  color: var(--amber);
+  color: var(--accent);
   font-size: 12px;
 }
 
@@ -685,7 +776,7 @@
   gap: 2px;
   margin-bottom: 6px;
   padding: 6px 8px 10px;
-  border-bottom: 1px solid var(--ink-600);
+  border-bottom: 1px solid var(--border-medium);
 }
 
 .account-menu-current strong {
@@ -693,7 +784,7 @@
 }
 
 .account-menu-current small {
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-size: 11px;
 }
 
@@ -703,14 +794,17 @@
   padding: 8px;
   border: 0;
   background: transparent;
-  color: var(--text-300);
+  color: var(--text-secondary);
   text-align: left;
   font: inherit;
   cursor: pointer;
+  border-radius: 4px;
+  transition: background 150ms ease, color 150ms ease;
 }
 
 .account-menu-item:hover:not(:disabled) {
-  background: var(--ink-850);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
 }
 
 .account-menu-item:disabled {
@@ -719,14 +813,14 @@
 }
 
 .account-menu-item.danger {
-  color: #d88989;
+  color: #f1a29a;
 }
 
 .status-badge {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-size: 11px;
 }
 
@@ -735,15 +829,15 @@
   height: 7px;
   background: currentColor;
   border-radius: 50%;
-  box-shadow: 0 0 0 3px rgba(125, 137, 132, 0.1);
+  box-shadow: 0 0 0 3px rgba(139, 148, 158, 0.12);
 }
 
 .status-connected {
-  color: var(--green);
+  color: var(--success);
 }
 
 .status-connecting {
-  color: var(--amber);
+  color: var(--accent);
 }
 
 .status-connecting i {
@@ -760,27 +854,34 @@
   gap: 12px;
   align-items: center;
   max-width: 560px;
-  color: #f2b5af;
-  background: #241514;
-  border: 1px solid rgba(226, 104, 92, 0.45);
+  color: #f1a29a;
+  background: rgba(248, 81, 73, 0.10);
+  border: 1px solid rgba(248, 81, 73, 0.4);
+  border-radius: 8px;
   padding: 10px 12px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  animation: slide-in 250ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(20px); }
+  to   { opacity: 1; transform: translateX(0); }
 }
 
 .global-error span {
-  color: var(--red);
+  color: var(--danger);
   font-family: "IBM Plex Mono", monospace;
   font-size: 9px;
 }
 
 .global-warning {
-  color: #b8860b;
-  background: #241f14;
-  border-color: rgba(184, 134, 11, 0.5);
+  color: var(--accent-soft);
+  background: rgba(240, 180, 70, 0.08);
+  border-color: rgba(240, 180, 70, 0.4);
 }
 
 .global-warning span {
-  color: var(--amber);
+  color: var(--accent);
 }
 
 .global-error p {
@@ -792,6 +893,17 @@
   background: none;
   border: 0;
   cursor: pointer;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  color: currentColor;
+  transition: background 150ms ease;
+}
+
+.global-error button:hover {
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .workspace {
@@ -800,7 +912,7 @@
   min-width: 0;
   min-height: 0;
   flex: 1;
-  transition: grid-template-columns 200ms ease;
+  transition: grid-template-columns 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* 侧栏收起时缩为窄条，腾出更多空间给消息区。 */
@@ -815,7 +927,7 @@
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
-  transition: width 200ms ease;
+  transition: width 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .workspace.is-sidebar-collapsed .sidebar-drawer {
@@ -837,9 +949,9 @@
   display: flex;
   min-height: 0;
   flex-direction: column;
-  background: var(--ink-800);
-  border-right: 1px solid var(--ink-600);
-  transition: opacity 150ms ease;
+  background: var(--bg-elevated-2);
+  border-right: 1px solid var(--border-medium);
+  transition: background 300ms ease, border-color 300ms ease;
 }
 
 /* 收起态：只露出折叠按钮，其余内容隐藏。 */
@@ -870,7 +982,7 @@
 .sidebar-metrics {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  border-bottom: 1px solid var(--ink-700);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .sidebar-metrics div {
@@ -878,7 +990,7 @@
 }
 
 .sidebar-metrics div + div {
-  border-left: 1px solid var(--ink-700);
+  border-left: 1px solid var(--border-subtle);
 }
 
 .sidebar-metrics span,
@@ -887,7 +999,7 @@
 }
 
 .sidebar-metrics span {
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-size: 9px;
   letter-spacing: 0.08em;
 }
@@ -895,7 +1007,7 @@
 .sidebar-metrics strong {
   margin-top: 3px;
   font-family: "IBM Plex Mono", monospace;
-  font-size: 18px;
+  font-size: 21px;
 }
 
 .sidebar-tools {
@@ -913,7 +1025,7 @@
   position: absolute;
   top: 8px;
   left: 10px;
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-size: 17px;
 }
 
@@ -925,13 +1037,25 @@
 }
 
 .icon-button {
-  width: 36px;
-  height: 36px;
-  color: var(--text-300);
-  background: var(--ink-700);
-  border: 1px solid var(--ink-600);
+  width: 38px;
+  height: 38px;
+  color: var(--text-secondary);
+  background: var(--bg-elevated-2);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius);
   cursor: pointer;
+  transition:
+    color 180ms ease,
+    background 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.icon-button:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border-color: var(--border-medium);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 
 .spinning {
@@ -943,7 +1067,7 @@
   display: flex;
   justify-content: space-between;
   padding: 5px 14px 8px;
-  color: #59635f;
+  color: var(--text-tertiary);
   font-family: "IBM Plex Mono", monospace;
   font-size: 9px;
   letter-spacing: 0.11em;
@@ -964,13 +1088,14 @@
   align-items: center;
   width: 100%;
   min-height: 54px;
-  color: var(--text-300);
+  color: var(--text-secondary);
   text-align: left;
   background: transparent;
   border: 0;
-  border-top: 1px solid rgba(44, 55, 58, 0.58);
+  border-top: 1px solid var(--border-subtle);
   padding: 8px 13px;
   cursor: pointer;
+  transition: background 150ms ease;
 }
 
 .all-messages > span:first-child {
@@ -978,9 +1103,14 @@
   place-items: center;
   width: 32px;
   height: 32px;
-  color: var(--amber);
-  background: var(--ink-700);
-  border: 1px solid var(--ink-600);
+  color: var(--accent);
+  background: var(--bg-elevated-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+}
+
+.all-messages:hover {
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .all-messages strong,
@@ -990,14 +1120,14 @@
 
 .all-messages small {
   margin-top: 4px;
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-family: "IBM Plex Mono", monospace;
   font-size: 9px;
 }
 
 .all-messages.selected {
-  background: rgba(184, 134, 11, 0.07);
-  box-shadow: inset 2px 0 var(--amber);
+  background: rgba(240, 180, 70, 0.07);
+  box-shadow: inset 2px 0 var(--accent);
 }
 
 .group-row {
@@ -1010,17 +1140,18 @@
   text-align: left;
   background: transparent;
   border: 0;
-  border-top: 1px solid rgba(44, 55, 58, 0.58);
+  border-top: 1px solid var(--border-subtle);
   padding: 8px 13px;
+  transition: background 150ms ease;
 }
 
 .group-row:hover {
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .group-row.selected {
-  background: rgba(184, 134, 11, 0.07);
-  box-shadow: inset 2px 0 var(--amber);
+  background: rgba(240, 180, 70, 0.07);
+  box-shadow: inset 0 0 16px rgba(240, 180, 70, 0.06);
 }
 
 .group-select {
@@ -1042,9 +1173,10 @@
   place-items: center;
   width: 32px;
   height: 32px;
-  color: #9ba7a2;
-  background: var(--ink-700);
-  border: 1px solid var(--ink-600);
+  color: var(--text-secondary);
+  background: var(--bg-elevated-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
   font-family: "IBM Plex Mono", monospace;
   font-size: 11px;
 }
@@ -1068,7 +1200,7 @@
 
 .group-identity small {
   margin-top: 4px;
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-family: "IBM Plex Mono", monospace;
   font-size: 9px;
 }
@@ -1077,9 +1209,11 @@
   position: relative;
   width: 30px;
   height: 16px;
-  background: var(--ink-700);
-  border: 1px solid var(--ink-600);
+  background: var(--bg-elevated-2);
+  border: 1px solid var(--border-subtle);
   border-radius: 9px;
+  cursor: pointer;
+  transition: background 200ms ease, border-color 200ms ease;
 }
 
 .monitor-switch i {
@@ -1088,36 +1222,20 @@
   left: 2px;
   width: 10px;
   height: 10px;
-  background: var(--text-500);
+  background: var(--text-tertiary);
   border-radius: 50%;
-  transition: transform 150ms ease, background 150ms ease;
+  transition: transform 200ms ease, background 200ms ease;
 }
 
-/* 监控开关：活跃时为明亮绿，文字区用 CSS 变量保持可替换性 */
+/* 监控开关：活跃时为绿色 */
 .monitor-switch.active {
-  background: rgba(84, 201, 147, 0.15);
-  border-color: rgba(84, 201, 147, 0.5);
-}
-
-/* 暗色与亮色激活态：背景用绿色系，不依赖 --green（亮色下太深），直接用绿色 hex。 */
-.monitor-switch.active {
-  background: rgba(42, 138, 92, 0.12);
-  border-color: rgba(42, 138, 92, 0.55);
+  background: rgba(63, 185, 80, 0.15);
+  border-color: rgba(63, 185, 80, 0.5);
 }
 
 .monitor-switch.active i {
-  background: var(--green);
+  background: var(--success);
   transform: translateX(14px);
-}
-
-/* 亮色主题下确保激活开关显示绿色背景与绿色圆点 */
-[data-theme="light"] .monitor-switch.active {
-  background: rgba(42, 138, 92, 0.12);
-  border-color: rgba(42, 138, 92, 0.55);
-}
-
-[data-theme="light"] .monitor-switch.active i {
-  background: #2a8a5c;
 }
 
 .compact-empty {
@@ -1126,13 +1244,13 @@
 }
 
 .compact-empty span {
-  color: var(--amber);
+  color: var(--accent);
   font-family: "IBM Plex Mono", monospace;
   font-size: 9px;
 }
 
 .compact-empty p {
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-size: 12px;
 }
 
@@ -1149,24 +1267,28 @@
   flex-direction: column;
   gap: 6px;
   padding: 10px 20px;
-  background: var(--ink-850);
-  border-bottom: 1px solid var(--ink-700);
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+  transition: background 300ms ease, border-color 300ms ease;
 }
 
 .message-header-title h2 {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
-  color: var(--text-100);
+  color: var(--text-primary);
 }
 
 .header-group-ids-empty {
   margin: 0;
   padding: 0;
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-size: 11px;
   font-family: "IBM Plex Mono", monospace;
-  background: rgba(255, 0, 0, 0.1);
+  background: rgba(248, 81, 73, 0.1);
+  border-radius: 4px;
+  padding: 2px 6px;
+  display: inline-block;
 }
 
 .message-header-row {
@@ -1180,7 +1302,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-family: "IBM Plex Mono", monospace;
   font-size: 10px;
 }
@@ -1196,7 +1318,7 @@
 }
 
 .metric-live {
-  color: var(--green);
+  color: var(--success);
 }
 
 .pulse-dot {
@@ -1204,17 +1326,7 @@
   width: 6px;
   height: 6px;
   margin-right: 5px;
-  background: var(--green);
-  border-radius: 50%;
-  vertical-align: middle;
-}
-
-.pulse-dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  margin-right: 5px;
-  background: var(--green);
+  background: var(--success);
   border-radius: 50%;
   vertical-align: middle;
 }
@@ -1224,7 +1336,7 @@
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-family: "IBM Plex Mono", monospace;
   font-size: 10px;
 }
@@ -1235,8 +1347,9 @@
   flex: 1;
   overflow-y: auto;
   background:
-    linear-gradient(90deg, transparent 49.9%, rgba(255, 255, 255, 0.013) 50%, transparent 50.1%),
-    var(--ink-900);
+    linear-gradient(90deg, transparent 49.9%, rgba(255, 255, 255, 0.015) 50%, transparent 50.1%),
+    var(--bg-surface);
+  transition: background 300ms ease;
 }
 
 /* 历史分页状态悬浮在视口顶缘，不占用虚拟列表的滚动高度或行索引。 */
@@ -1247,9 +1360,10 @@
   width: fit-content;
   margin: 8px auto -24px;
   padding: 4px 10px;
-  color: var(--text-500);
-  background: rgba(17, 23, 24, 0.88);
-  border: 1px solid var(--ink-600);
+  color: var(--text-tertiary);
+  background: rgba(22, 27, 34, 0.88);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
   font-family: "IBM Plex Mono", monospace;
   font-size: 9px;
   pointer-events: none;
@@ -1260,12 +1374,12 @@
   place-items: center;
   align-content: center;
   height: 100%;
-  color: var(--text-500);
+  color: var(--text-tertiary);
   text-align: center;
 }
 
 .panel-empty strong {
-  color: var(--text-300);
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
@@ -1279,10 +1393,12 @@
   width: 58px;
   height: 58px;
   margin-bottom: 18px;
-  color: var(--amber);
-  border: 1px solid var(--ink-600);
+  color: var(--accent);
+  border: 1px solid var(--border-medium);
+  border-radius: 8px;
   font-family: "IBM Plex Mono", monospace;
   font-size: 22px;
+  background: var(--bg-elevated);
 }
 
 .loader-grid {
@@ -1294,8 +1410,9 @@
 
 .loader-grid i {
   height: 8px;
-  background: var(--amber);
-  animation: grid-flash 800ms infinite alternate;
+  background: var(--accent);
+  border-radius: 1px;
+  animation: grid-flash 800ms ease-in-out infinite alternate;
 }
 
 .loader-grid i:nth-child(2) { animation-delay: 200ms; }
@@ -1325,25 +1442,37 @@
   gap: 6px;
   margin: 6px 0;
   padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(44, 55, 58, 0.62);
-  border-radius: 6px;
-  transition: background-color 200ms ease;
+  background: rgba(255, 255, 255, 0.015);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  transition:
+    background-color 200ms ease,
+    border-color 200ms ease,
+    box-shadow 200ms ease;
 }
 
 .message-card:hover {
-  border-color: var(--ink-600);
+  border-color: var(--border-medium);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.028);
 }
 
 /* 新尾消息只改背景，1.2s 后由脚本去掉该类；减少动态偏好下关闭过渡。 */
 .message-card--new {
-  background-color: rgba(184, 134, 11, 0.14);
+  background-color: rgba(240, 180, 70, 0.12);
+  border-color: rgba(240, 180, 70, 0.25);
+  animation: message-new-in 800ms ease both;
+}
+
+@keyframes message-new-in {
+  from { background-color: rgba(240, 180, 70, 0.22); }
+  to   { background-color: rgba(240, 180, 70, 0.12); }
 }
 
 .message-source,
 .message-meta,
 .message-kind {
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-size: 11px;
   line-height: 1.5;
 }
@@ -1351,13 +1480,13 @@
 .message-source {
   min-width: 0;
   overflow: hidden;
-  color: var(--text-500);
+  color: var(--text-tertiary);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .message-source small {
-  color: var(--text-500);
+  color: var(--text-tertiary);
 }
 
 .message-meta {
@@ -1369,21 +1498,21 @@
 
 .message-sender,
 .message-meta time {
-  color: var(--text-500);
+  color: var(--text-tertiary);
 }
 
 .message-content,
 .message-text {
   margin: 0;
-  color: var(--text-100);
-  font-size: 15px;
+  color: var(--text-primary);
+  font-size: 14px;
   line-height: 1.6;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
 .message-text--emoji-only {
-  font-size: 28px;
+  font-size: 26px;
   line-height: 1.3;
 }
 
@@ -1403,7 +1532,7 @@
   position: absolute;
   top: 0;
   right: 0;
-  color: var(--text-500);
+  color: var(--text-tertiary);
 }
 
 .message-body img,
@@ -1412,8 +1541,9 @@
   width: min(100%, 420px);
   max-height: 320px;
   object-fit: contain;
-  background: var(--ink-850);
-  border: 1px solid var(--ink-600);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
 }
 
 .message-body audio {
@@ -1422,7 +1552,7 @@
 }
 
 .message-body small {
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-family: "IBM Plex Mono", monospace;
   font-size: 9px;
 }
@@ -1430,13 +1560,21 @@
 .media-load,
 .message-body a {
   justify-self: start;
-  color: var(--cyan);
+  color: var(--info);
   background: transparent;
-  border: 1px solid var(--ink-600);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
   padding: 6px 9px;
   font: 10px "IBM Plex Mono", monospace;
   text-decoration: none;
   cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+.media-load:hover:not(:disabled),
+.message-body a:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border-medium);
 }
 
 .media-load:disabled {
@@ -1454,12 +1592,13 @@
   align-items: center;
   justify-content: space-between;
   padding: 0 14px;
-  color: #59635f;
-  background: var(--ink-850);
-  border-top: 1px solid var(--ink-700);
+  color: var(--text-tertiary);
+  background: var(--bg-elevated);
+  border-top: 1px solid var(--border-subtle);
   font-family: "IBM Plex Mono", monospace;
   font-size: 8px;
   letter-spacing: 0.04em;
+  transition: background 300ms ease, border-color 300ms ease;
 }
 
 /* 业务滚动区：仅群列表、消息视口与登录表单可纵向滚动；Firefox 与 WebKit 共用低对比深色细滚动条，悬停/拖动提高对比度，不隐藏滚动条。 */
@@ -1469,7 +1608,7 @@
 .login-card {
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: rgba(132, 149, 149, 0.55) rgba(10, 15, 16, 0.35);
+  scrollbar-color: rgba(139, 148, 158, 0.55) rgba(13, 17, 23, 0.35);
 }
 
 .group-list::-webkit-scrollbar,
@@ -1484,14 +1623,14 @@
 .message-viewport::-webkit-scrollbar-track,
 .login-console::-webkit-scrollbar-track,
 .login-card::-webkit-scrollbar-track {
-  background: rgba(10, 15, 16, 0.35);
+  background: rgba(13, 17, 23, 0.35);
 }
 
 .group-list::-webkit-scrollbar-thumb,
 .message-viewport::-webkit-scrollbar-thumb,
 .login-console::-webkit-scrollbar-thumb,
 .login-card::-webkit-scrollbar-thumb {
-  background-color: rgba(132, 149, 149, 0.55);
+  background-color: rgba(139, 148, 158, 0.65);
   border: 2px solid transparent;
   border-radius: 8px;
   background-clip: padding-box;
@@ -1501,20 +1640,20 @@
 .message-viewport::-webkit-scrollbar-thumb:hover,
 .login-console::-webkit-scrollbar-thumb:hover,
 .login-card::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(176, 192, 192, 0.88);
+  background-color: rgba(176, 192, 192, 0.95);
 }
 
 .group-list::-webkit-scrollbar-thumb:active,
 .message-viewport::-webkit-scrollbar-thumb:active,
 .login-console::-webkit-scrollbar-thumb:active,
 .login-card::-webkit-scrollbar-thumb:active {
-  background-color: rgba(196, 208, 208, 0.95);
+  background-color: rgba(196, 208, 208, 1);
 }
 
 /* 动画：页面进入、连接状态、刷新与加载提示。 */
 @keyframes console-enter {
   from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes status-pulse {
@@ -1545,7 +1684,7 @@
   .login-intro {
     padding: 28px 32px;
     border-right: 0;
-    border-bottom: 1px solid var(--ink-600);
+    border-bottom: 1px solid var(--border-medium);
   }
 
   .login-intro::after {
@@ -1619,7 +1758,7 @@
     width: min(330px, 86vw);
     height: 100%;
     transform: translateX(-100%);
-    transition: transform 180ms ease;
+    transition: transform 220ms cubic-bezier(0.4, 0, 0.2, 1);
     box-shadow: 16px 0 40px rgba(0, 0, 0, 0.4);
   }
 
@@ -1643,18 +1782,18 @@
     justify-content: center;
     width: 28px;
     height: 56px;
-    background: var(--ink-800);
-    border: 1px solid var(--ink-600);
+    background: var(--bg-elevated-2);
+    border: 1px solid var(--border-medium);
     border-left: none;
     border-radius: 0 6px 6px 0;
-    color: var(--text-500);
+    color: var(--text-tertiary);
     cursor: pointer;
-    transition: background 0.15s, color 0.15s;
+    transition: background 150ms ease, color 150ms ease;
   }
 
   .narrow-sidebar-trigger:hover {
-    background: var(--ink-700);
-    color: var(--text-300);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
   }
 }
 
@@ -1679,118 +1818,126 @@
 
 /* 画布背景 */
 [data-theme="light"] .operations-shell {
-  background: #fafbfb;
+  background: var(--bg-surface);
 }
 
 /* 顶栏：浅灰带微暖，分隔线用中性灰 */
 [data-theme="light"] .topbar {
-  background: #f0f2f4;
-  border-bottom-color: #d8dce0;
+  background: var(--bg-elevated);
+  border-bottom-color: var(--border-subtle);
 }
 
 [data-theme="light"] .brand small {
-  color: #6e7f8a;
+  color: var(--text-tertiary);
 }
 
 /* 图标按钮：白色底 + 柔和边框 */
 [data-theme="light"] .icon-button {
-  background: #ffffff;
-  border-color: #d0d5da;
-  color: #3a4a54;
+  background: var(--bg-surface);
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
 [data-theme="light"] .icon-button:hover:not(:disabled) {
-  background: #f6f7f8;
-  border-color: #b8bec4;
+  background: var(--bg-elevated);
+  border-color: var(--border-medium);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.10);
 }
 
 /* 账号菜单 */
 [data-theme="light"] .account-menu-panel {
-  background: #ffffff;
-  border-color: #d0d5da;
+  background: var(--bg-surface);
+  border-color: var(--border-subtle);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.10), 0 2px 6px rgba(0, 0, 0, 0.06);
 }
 
 [data-theme="light"] .account-menu-item:hover:not(:disabled) {
-  background: #f4f6f8;
+  background: var(--bg-elevated);
 }
 
 /* 群组侧栏：层级递进 */
 [data-theme="light"] .group-sidebar {
-  background: #f4f6f8;
-  border-right-color: #d8dce0;
+  background: var(--bg-elevated-2);
+  border-right-color: var(--border-subtle);
 }
 
 [data-theme="light"] .sidebar-metrics {
-  border-bottom-color: #d8dce0;
+  border-bottom-color: var(--border-subtle);
 }
 
 [data-theme="light"] .sidebar-metrics div + div {
-  border-left-color: #d8dce0;
+  border-left-color: var(--border-subtle);
 }
 
 /* 消息头 */
 [data-theme="light"] .message-header {
-  background: #f0f2f4;
-  border-bottom-color: #d8dce0;
+  background: var(--bg-elevated);
+  border-bottom-color: var(--border-subtle);
 }
 
 /* 消息视口：干净画布 */
 [data-theme="light"] .message-viewport {
-  background: #fafbfb;
+  background: var(--bg-canvas);
 }
 
 /* 消息卡片 */
 [data-theme="light"] .message-card {
-  background: #ffffff;
-  border-color: #e0e4e8;
+  background: var(--bg-surface);
+  border-color: var(--border-subtle);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
 }
 
 [data-theme="light"] .message-card:hover {
-  border-color: #c8cdd2;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.07);
+  border-color: var(--border-medium);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  background: #fafbfc;
 }
 
 [data-theme="light"] .message-card--new {
-  background-color: rgba(184, 134, 11, 0.07);
-  border-color: rgba(184, 134, 11, 0.20);
+  background-color: rgba(176, 136, 0, 0.07);
+  border-color: rgba(176, 136, 0, 0.22);
 }
 
 /* 历史状态徽章 */
 [data-theme="light"] .history-status {
   background: rgba(255, 255, 255, 0.92);
-  border-color: #d0d5da;
-  color: #6e7f8a;
+  border-color: var(--border-subtle);
+  color: var(--text-tertiary);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
 }
 
 /* 消息页脚 */
 [data-theme="light"] .message-footer {
-  background: #f0f2f4;
-  border-top-color: #d8dce0;
-  color: #8a9aa4;
+  background: var(--bg-elevated);
+  border-top-color: var(--border-subtle);
+  color: var(--text-tertiary);
 }
 
 /* 媒体图片/视频 */
 [data-theme="light"] .message-body img,
 [data-theme="light"] .message-body video {
-  background: #f4f6f8;
-  border-color: #d8dce0;
+  background: var(--bg-elevated-2);
+  border-color: var(--border-subtle);
 }
 
 /* 媒体链接按钮 */
 [data-theme="light"] .media-load,
 [data-theme="light"] .message-body a {
-  border-color: #d0d5da;
-  color: #3d8088;
-  background: #f4f6f8;
+  border-color: var(--border-subtle);
+  color: var(--info);
+  background: transparent;
+}
+
+[data-theme="light"] .media-load:hover:not(:disabled),
+[data-theme="light"] .message-body a:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border-medium);
 }
 
 /* 全部消息按钮 */
 [data-theme="light"] .all-messages {
-  border-top-color: #e4e7ea;
+  border-top-color: var(--border-subtle);
 }
 
 [data-theme="light"] .all-messages:hover {
@@ -1798,13 +1945,13 @@
 }
 
 [data-theme="light"] .all-messages.selected {
-  background: rgba(184, 134, 11, 0.07);
-  box-shadow: inset 2px 0 var(--amber);
+  background: rgba(176, 136, 0, 0.07);
+  box-shadow: inset 2px 0 var(--accent);
 }
 
 /* 群列表行 */
 [data-theme="light"] .group-row {
-  border-top-color: #e4e7ea;
+  border-top-color: var(--border-subtle);
 }
 
 [data-theme="light"] .group-row:hover {
@@ -1812,92 +1959,101 @@
 }
 
 [data-theme="light"] .group-row.selected {
-  background: rgba(184, 134, 11, 0.07);
-  box-shadow: inset 2px 0 var(--amber);
+  background: rgba(176, 136, 0, 0.07);
+  box-shadow: inset 0 0 16px rgba(176, 136, 0, 0.06);
 }
 
 /* 监控开关 */
 [data-theme="light"] .monitor-switch {
-  background: #d8dce0;
-  border-color: #c0c6cc;
+  background: var(--bg-elevated-2);
+  border-color: var(--border-subtle);
 }
 
 [data-theme="light"] .monitor-switch i {
-  background: #8a9aa4;
+  background: var(--text-tertiary);
+}
+
+[data-theme="light"] .monitor-switch.active {
+  background: rgba(26, 127, 55, 0.12);
+  border-color: rgba(26, 127, 55, 0.55);
+}
+
+[data-theme="light"] .monitor-switch.active i {
+  background: var(--success);
 }
 
 /* 空状态 glyph */
 [data-theme="light"] .empty-glyph {
-  border-color: #d0d5da;
-  color: #c4841e;
-  background: #f6f7f8;
+  border-color: var(--border-subtle);
+  color: var(--accent);
+  background: var(--bg-elevated);
 }
 
 /* 加载动画 */
 [data-theme="light"] .loader-grid i {
-  background: #c4841e;
+  background: var(--accent);
 }
 
 /* 登录卡片 */
 [data-theme="light"] .login-card {
-  background: #ffffff;
-  border-color: #d0d5da;
+  background: var(--bg-surface);
+  border-color: var(--border-subtle);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.08), 0 4px 12px rgba(0, 0, 0, 0.04);
 }
 
 /* 登录 tab 栏 */
 [data-theme="light"] .login-method-tabs {
-  background: #e8ebee;
-  border-color: #d0d5da;
+  background: var(--bg-elevated-2);
+  border-color: var(--border-subtle);
 }
 
 [data-theme="light"] .login-method-tab:hover:not(.is-active) {
-  background: rgba(0, 0, 0, 0.04);
+  background: rgba(0, 0, 0, 0.03);
 }
 
 [data-theme="light"] .login-method-tab.is-active {
-  background: #ffffff;
+  background: var(--bg-surface);
 }
 
 /* 登录 intro */
 [data-theme="light"] .login-intro {
   background:
-    linear-gradient(145deg, rgba(184, 134, 11, 0.06), transparent 45%),
-    #f0f2f4;
-  border-right-color: #d8dce0;
+    linear-gradient(145deg, rgba(176, 136, 0, 0.06), transparent 45%),
+    var(--bg-elevated);
+  border-right-color: var(--border-subtle);
 }
 
 /* 登录控制台 */
 [data-theme="light"] .login-console {
-  background: #ffffff;
+  background: var(--bg-surface);
 }
 
 /* 协议列表 */
 [data-theme="light"] .protocol-track li {
-  border-top-color: #e0e4e8;
-  color: #6e7f8a;
+  border-top-color: var(--border-subtle);
+  color: var(--text-tertiary);
 }
 
 /* 全局错误/警告 */
 [data-theme="light"] .global-error {
-  background: #fdf2f1;
-  border-color: rgba(168, 62, 54, 0.30);
+  background: rgba(207, 34, 46, 0.06);
+  border-color: rgba(207, 34, 46, 0.30);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
   color: #8a3028;
 }
 
 [data-theme="light"] .global-error span {
-  color: #a83e36;
+  color: var(--danger);
 }
 
 [data-theme="light"] .global-warning {
-  background: #fdf6ea;
-  border-color: rgba(184, 134, 11, 0.35);
-  color: #8a6010;
+  background: rgba(176, 136, 0, 0.06);
+  border-color: rgba(176, 136, 0, 0.35);
+  color: #6e5008;
 }
 
 [data-theme="light"] .global-warning span {
-  color: #c4841e;
+  color: var(--accent);
 }
 
 /* 侧栏遮罩 */
@@ -1911,12 +2067,12 @@
 
 /* 列表标签 */
 [data-theme="light"] .list-label {
-  color: #8a9aa4;
+  color: var(--text-tertiary);
 }
 
 /* 连接状态指示点阴影 */
 [data-theme="light"] .status-badge i {
-  box-shadow: 0 0 0 3px rgba(110, 127, 138, 0.12);
+  box-shadow: 0 0 0 3px rgba(140, 149, 159, 0.12);
 }
 
 /* 滚动条（亮色） */
@@ -1924,21 +2080,21 @@
 [data-theme="light"] .message-viewport,
 [data-theme="light"] .login-console,
 [data-theme="light"] .login-card {
-  scrollbar-color: rgba(140, 154, 164, 0.45) rgba(240, 242, 244, 0.60);
+  scrollbar-color: rgba(140, 149, 159, 0.45) rgba(246, 248, 250, 0.60);
 }
 
 [data-theme="light"] .group-list::-webkit-scrollbar-track,
 [data-theme="light"] .message-viewport::-webkit-scrollbar-track,
 [data-theme="light"] .login-console::-webkit-scrollbar-track,
 [data-theme="light"] .login-card::-webkit-scrollbar-track {
-  background: rgba(240, 242, 244, 0.70);
+  background: rgba(246, 248, 250, 0.70);
 }
 
 [data-theme="light"] .group-list::-webkit-scrollbar-thumb,
 [data-theme="light"] .message-viewport::-webkit-scrollbar-thumb,
 [data-theme="light"] .login-console::-webkit-scrollbar-thumb,
 [data-theme="light"] .login-card::-webkit-scrollbar-thumb {
-  background-color: rgba(140, 154, 164, 0.50);
+  background-color: rgba(140, 149, 159, 0.50);
 }
 
 [data-theme="light"] .group-list::-webkit-scrollbar-thumb:hover,
@@ -1961,20 +2117,21 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  border: none;
-  border-radius: 6px;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
   background: transparent;
-  color: var(--text-500, #6e6e73);
+  color: var(--text-tertiary);
   cursor: pointer;
   font-size: 14px;
-  transition: background 0.15s, color 0.15s;
+  transition: background 180ms ease, color 180ms ease, border-color 180ms ease;
 }
 
 .collapse-btn:hover {
-  background: var(--ink-700, #38383e);
-  color: var(--text-200, #ebebf0);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border-color: var(--border-medium);
 }
 
 .collapse-icon {
@@ -1987,5 +2144,5 @@
 .header-lottery {
   margin-left: 16px;
   padding-left: 16px;
-  border-left: 1px solid var(--ink-700);
+  border-left: 1px solid var(--border-subtle);
 }

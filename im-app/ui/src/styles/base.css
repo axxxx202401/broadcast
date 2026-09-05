@@ -1,51 +1,62 @@
 /* 设计令牌：全局色彩、字体与圆角基准。 */
 :root {
   color-scheme: dark;
-  font-family: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  font-family: "IBM Plex Sans", "PingFang SC", "Noto Sans SC",
+               "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
   font-synthesis: none;
-  --ink-950: #080a0b;
-  --ink-900: #0b0e0f;
-  --ink-850: #101416;
-  --ink-800: #14191b;
-  --ink-700: #20282b;
-  --ink-600: #2c373a;
-  --text-100: #eef1ed;
-  --text-300: #bcc4bf;
-  --text-500: #7d8984;
-  --amber: #f0a93a;
-  --amber-soft: #c98424;
-  --green: #54c993;
-  --cyan: #68b8c1;
-  --red: #e2685c;
-  --focus: #efb75c;
-  --radius: 3px;
+
+  /* 暗色主题 — 画布到表面的四层递进 */
+  --bg-canvas:      #0d1117;
+  --bg-surface:     #161b22;
+  --bg-elevated:    #1c2128;
+  --bg-elevated-2:  #21262d;
+
+  /* 边框层次 */
+  --border-subtle:  #30363d;
+  --border-medium:  #3d444d;
+
+  /* 文字层次 */
+  --text-primary:   #e6edf3;
+  --text-secondary: #8b949e;
+  --text-tertiary:  #6e7681;
+
+  /* 语义色 */
+  --accent:       #f0b446;
+  --accent-soft:  #d4922e;
+  --success:      #3fb950;
+  --info:         #58a6ff;
+  --danger:       #f85149;
+  --focus-ring:   #d4922e;
+
+  --radius: 6px;
 }
 
 /* ===== 亮色主题 ===== */
-/*
- * 配色策略：
- * - 背景层次：#fafbfb（画布）→ #f0f2f3 → #e4e7e8 → #d8dce0，逐级递进
- * - 文字层次：#101820（主）→ #3a4a54（次）→ #6e7f8a（弱）
- * - 强调色：amber #b8860b，green #2a8a5c，cyan #3d8088，red #a83e36
- * - 描边：#d0d5d9，避免使用纯黑边框
- */
 [data-theme="light"] {
   color-scheme: light;
-  --ink-950: #fafbfb;
-  --ink-900: #ffffff;
-  --ink-850: #f0f2f3;
-  --ink-800: #e6e9eb;
-  --ink-700: #d8dce0;
-  --ink-600: #c8cdd2;
-  --text-100: #101820;
-  --text-300: #3a4a54;
-  --text-500: #6e7f8a;
-  --amber: #b8860b;
-  --amber-soft: #9a7209;
-  --green: #2a8a5c;
-  --cyan: #3d8088;
-  --red: #a83e36;
-  --focus: #b8860b;
+
+  /* 亮色主题 — 柔和灰画布 + 纯白卡片 */
+  --bg-canvas:      #f6f8fa;
+  --bg-surface:     #ffffff;
+  --bg-elevated:    #f0f3f6;
+  --bg-elevated-2:  #e8ecf0;
+
+  /* 边框层次 */
+  --border-subtle:  #d0d7de;
+  --border-medium:  #afb8c1;
+
+  /* 文字层次 */
+  --text-primary:   #1f2328;
+  --text-secondary: #656d76;
+  --text-tertiary:  #8c959f;
+
+  /* 语义色 */
+  --accent:       #b08800;
+  --accent-soft:  #9a7209;
+  --success:      #1a7f37;
+  --info:         #0969da;
+  --danger:       #cf222e;
+  --focus-ring:   #0969da;
 }
 
 /* 基础重置与应用画布：根节点锁死视口，禁止整页滚动。 */
@@ -64,11 +75,11 @@ body,
 }
 
 body {
-  color: var(--text-100);
+  color: var(--text-primary);
   background:
-    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
-    var(--ink-950);
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    var(--bg-canvas);
   background-size: 24px 24px;
   -webkit-font-smoothing: antialiased;
 }
@@ -76,9 +87,9 @@ body {
 /* 亮色：极淡网格，与背景融合 */
 [data-theme="light"] body {
   background:
-    linear-gradient(rgba(0, 0, 0, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 0, 0, 0.035) 1px, transparent 1px),
-    var(--ink-950);
+    linear-gradient(rgba(0, 0, 0, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.04) 1px, transparent 1px),
+    var(--bg-canvas);
 }
 
 /* 表单控件：继承排版并统一输入、焦点和标签规则。 */
@@ -97,48 +108,56 @@ input:focus-visible,
 select:focus-visible,
 summary:focus-visible,
 [tabindex]:focus-visible {
-  outline: 2px solid var(--focus);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
 input,
 select {
   min-width: 0;
-  color: var(--text-100);
-  background: var(--ink-900);
-  border: 1px solid var(--ink-600);
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-medium);
   border-radius: var(--radius);
   padding: 10px 11px;
+  transition: border-color 180ms ease, box-shadow 180ms ease;
 }
 
 input::placeholder {
-  color: #59635f;
+  color: var(--text-tertiary);
 }
 
 input:hover,
 select:hover {
-  border-color: #445155;
+  border-color: var(--border-subtle);
 }
 
 input:focus,
 select:focus {
-  border-color: var(--amber-soft);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(240, 180, 70, 0.12);
+}
+
+/* 亮色：focus ring 用蓝色 */
+[data-theme="light"] input:focus,
+[data-theme="light"] select:focus {
+  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.15);
 }
 
 /* 亮色：placeholder / hover 边框 */
 [data-theme="light"] input::placeholder {
-  color: #9aa8a2;
+  color: var(--text-tertiary);
 }
 
 [data-theme="light"] input:hover,
 [data-theme="light"] select:hover {
-  border-color: #9aa8a2;
+  border-color: var(--border-subtle);
 }
 
 label > span {
   display: block;
   margin-bottom: 6px;
-  color: var(--text-500);
+  color: var(--text-tertiary);
   font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
   font-size: 10px;
   font-weight: 600;
@@ -152,7 +171,7 @@ label > span {
   align-items: center;
   justify-content: center;
   gap: 14px;
-  min-height: 38px;
+  min-height: 40px;
   border: 1px solid transparent;
   border-radius: var(--radius);
   padding: 9px 14px;
@@ -160,7 +179,17 @@ label > span {
   font-weight: 700;
   letter-spacing: 0.025em;
   cursor: pointer;
-  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
+  transition:
+    border-color 180ms ease,
+    background 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease,
+    transform 80ms ease-out;
+  will-change: transform;
+}
+
+.button:active:not(:disabled) {
+  transform: translateY(1px);
 }
 
 .button:disabled,
@@ -171,39 +200,52 @@ label > span {
 
 .button.primary {
   color: #18140c;
-  background: var(--amber);
+  background: var(--accent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
 .button.primary:not(:disabled):hover {
-  background: #a07809;
+  background: var(--accent-soft);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 .button.secondary {
-  color: var(--text-300);
-  background: var(--ink-700);
-  border-color: var(--ink-600);
+  color: var(--text-secondary);
+  background: var(--bg-elevated-2);
+  border-color: var(--border-subtle);
 }
 
-.button.secondary:not(:disabled):hover,
-.button.ghost:not(:disabled):hover {
-  color: var(--text-100);
-  border-color: #526064;
+.button.secondary:not(:disabled):hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--border-medium);
 }
 
 .button.ghost {
-  color: var(--text-500);
+  color: var(--text-tertiary);
   background: transparent;
-  border-color: var(--ink-600);
+  border-color: var(--border-subtle);
+}
+
+.button.ghost:not(:disabled):hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.03);
+  border-color: var(--border-medium);
 }
 
 .button.danger {
   color: #f1a29a;
-  background: rgba(226, 104, 92, 0.08);
-  border-color: rgba(226, 104, 92, 0.35);
+  background: rgba(248, 81, 73, 0.10);
+  border-color: rgba(248, 81, 73, 0.35);
+}
+
+.button.danger:not(:disabled):hover {
+  background: rgba(248, 81, 73, 0.15);
+  border-color: rgba(248, 81, 73, 0.5);
 }
 
 .button.compact {
-  min-height: 32px;
+  min-height: 34px;
   padding: 6px 11px;
   font-size: 11px;
 }
@@ -211,7 +253,7 @@ label > span {
 /* 通用工具类：区块眉题和仅供辅助技术读取的文本。 */
 .eyebrow {
   margin: 0 0 8px;
-  color: var(--amber);
+  color: var(--accent);
   font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
   font-size: 10px;
   font-weight: 700;

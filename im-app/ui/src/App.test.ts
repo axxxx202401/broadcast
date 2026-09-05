@@ -183,7 +183,7 @@ describe('App 启动恢复', () => {
     const deferred = promiseWithResolvers<RestoreSessionResult>()
     vi.mocked(api.restoreSession).mockReturnValueOnce(deferred.promise)
     const wrapper = mountApp()
-    expect(wrapper.text()).toContain('正在恢复上次登录')
+    expect(wrapper.text()).toContain('正在恢复会话')
     expect(wrapper.findComponent(LoginPanel).exists()).toBe(false)
     deferred.resolve({ status: 'noAccount' })
     await flushPromises()
@@ -283,7 +283,7 @@ describe('App 启动恢复', () => {
 
     expect(wrapper.findComponent(LoginPanel).exists()).toBe(false)
     expect(wrapper.find('.operations-shell').exists()).toBe(false)
-    expect(wrapper.text()).toContain('正在恢复上次登录')
+    expect(wrapper.text()).toContain('正在恢复会话')
     expect(wrapper.text()).toContain('网络连接失败，请重试')
     expect(wrapper.text()).toContain('重试')
     expect(wrapper.text()).toContain('使用其他账号')
@@ -488,7 +488,7 @@ describe('App 头部账号菜单', () => {
 
     expect(wrapper.text()).toContain('正在切换账号')
     expect(wrapper.text()).toContain('网络连接失败，请重试')
-    expect(wrapper.text()).not.toContain('正在恢复上次登录')
+    expect(wrapper.text()).not.toContain('正在恢复会话')
 
     mocks.switchAccount.mockResolvedValueOnce({
       status: 'success',
