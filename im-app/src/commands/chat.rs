@@ -658,7 +658,10 @@ impl MessageEffects for ConnectionMessageEffects {
         // 新消息入库后：对加密消息尝试解密并回填 content_text，同时检查匹配开奖配置。
         if let Some(session) = session {
             let config = self.context.db.lottery_config.get(session.uid).await.ok();
-            let has_config = config.as_ref().map(|c| !c.current_issues.is_empty()).unwrap_or(false);
+            let has_config = config
+                .as_ref()
+                .map(|c| !c.current_issues.is_empty())
+                .unwrap_or(false);
             tracing::info!(
                 uid = session.uid,
                 has_config = has_config,
@@ -689,7 +692,9 @@ impl MessageEffects for ConnectionMessageEffects {
                                     {
                                         Ok(d) => {
                                             let text = match d.content {
-                                                crate::message_content::MediaContent::Text { text } => text,
+                                                crate::message_content::MediaContent::Text {
+                                                    text,
+                                                } => text,
                                                 _ => String::new(),
                                             };
                                             tracing::debug!(
@@ -756,7 +761,12 @@ impl MessageEffects for ConnectionMessageEffects {
                             tracing::info!(
                                 uid = session.uid,
                                 msg_id = record.msg_id,
-                                issue = config.current_issues.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","),
+                                issue = config
+                                    .current_issues
+                                    .iter()
+                                    .map(|i| i.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(","),
                                 "persist_monitored_batch: MATCHED lottery message"
                             );
                             sqlx::query("UPDATE messages SET matched = 1 WHERE msg_id = ?")
@@ -825,12 +835,17 @@ impl MessageEffects for ConnectionMessageEffects {
         let db_matched: std::collections::HashMap<i64, i32> = {
             let ids: Vec<String> = dtos.iter().map(|d| d.msg_id.clone()).collect();
             let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let sql = format!("SELECT msg_id, matched FROM messages WHERE msg_id IN ({})", placeholders);
+            let sql = format!(
+                "SELECT msg_id, matched FROM messages WHERE msg_id IN ({})",
+                placeholders
+            );
             let mut q = sqlx::query_as::<_, (i64, i32)>(&sql);
             for id_str in &ids {
                 q = q.bind(id_str.parse::<i64>().unwrap_or(0));
             }
-            q.fetch_all(&self.context.db.pool).await.unwrap_or_default()
+            q.fetch_all(&self.context.db.pool)
+                .await
+                .unwrap_or_default()
                 .into_iter()
                 .collect()
         };
@@ -2339,7 +2354,9 @@ pub async fn get_messages(
     let page = match group_id {
         Some(group_id) => {
             let group_id = super::parse_i64_id(&group_id, "group_id")?;
-            db.messages.get_by_group(group_id, limit, cursor, matched_only).await
+            db.messages
+                .get_by_group(group_id, limit, cursor, matched_only)
+                .await
         }
         None => db.messages.get_recent(limit, cursor, matched_only).await,
     }

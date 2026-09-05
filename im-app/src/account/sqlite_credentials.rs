@@ -9,7 +9,9 @@ use tokio::sync::Mutex;
 
 use super::credentials::CredentialStore;
 use super::paths::AppPaths;
-use super::secret_cipher::{decrypt_secret, encrypt_secret, load_or_create_master_key, MASTER_KEY_LEN};
+use super::secret_cipher::{
+    decrypt_secret, encrypt_secret, load_or_create_master_key, MASTER_KEY_LEN,
+};
 use super::AccountError;
 
 const SCHEMA_SQL: &str = "
@@ -56,8 +58,7 @@ impl SqliteCredentialStore {
         if let Some(parent) = db_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let master_key =
-            Arc::new(load_or_create_master_key(&paths.credential_key_file()).await?);
+        let master_key = Arc::new(load_or_create_master_key(&paths.credential_key_file()).await?);
         let dsn = format!("sqlite://{}", db_path.display());
         let options = SqliteConnectOptions::from_str(&dsn)?
             .create_if_missing(true)

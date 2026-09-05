@@ -323,7 +323,6 @@ impl MessageStore {
         }
         Ok(total_deleted)
     }
-
 }
 
 /// 校验业务页长，并返回供 SQL 多读一行的绑定值。

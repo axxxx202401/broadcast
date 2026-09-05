@@ -540,11 +540,16 @@ impl ReadTask {
                         let mid = frame.message_id;
                         // 用 catch_unwind 兜底：消息处理器 panic 不致于无声终止读任务。
                         // AssertUnwindSafe 保证 Future 跨 catch_unwind 边界后仍可继续 await。
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(mid, frame.content.clone())));
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            handler(mid, frame.content.clone())
+                        }));
                         match result {
                             Ok(future) => future.await?,
                             Err(panic_err) => {
-                                error!(message_id = mid, "Message handler panicked, terminating connection");
+                                error!(
+                                    message_id = mid,
+                                    "Message handler panicked, terminating connection"
+                                );
                                 let msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
                                     s.to_string()
                                 } else if let Some(s) = panic_err.downcast_ref::<String>() {
@@ -552,7 +557,9 @@ impl ReadTask {
                                 } else {
                                     "unknown panic".to_string()
                                 };
-                                return Err(AppError::TcpFrame(format!("message handler panicked: {msg}")));
+                                return Err(AppError::TcpFrame(format!(
+                                    "message handler panicked: {msg}"
+                                )));
                             }
                         }
                     }
@@ -588,9 +595,8 @@ impl Drop for ReadTask {
         if let Ok(mut writer) = self.stream.try_lock() {
             if let Some(mut w) = writer.take() {
                 let _ = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(
-                        tokio::io::AsyncWriteExt::shutdown(&mut w)
-                    )
+                    tokio::runtime::Handle::current()
+                        .block_on(tokio::io::AsyncWriteExt::shutdown(&mut w))
                 });
             }
         }

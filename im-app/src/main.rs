@@ -51,12 +51,7 @@ fn hardware_device_id() -> Option<String> {
             .ok()?;
         String::from_utf8(output.stdout)
             .ok()
-            .and_then(|s| {
-                s.lines()
-                    .skip(1)
-                    .next()
-                    .map(|v| v.trim().to_string())
-            })
+            .and_then(|s| s.lines().skip(1).next().map(|v| v.trim().to_string()))
             .filter(|v| !v.is_empty())
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -89,24 +84,29 @@ async fn main() {
     };
     if let Err(error) = std::fs::create_dir_all(&data_root) {
         tracing::error!(path = %data_root.display(), error = %error, "Failed to create data directory");
-        eprintln!("IM Monitor: failed to create data directory {}: {error}", data_root.display());
+        eprintln!(
+            "IM Monitor: failed to create data directory {}: {error}",
+            data_root.display()
+        );
         return;
     }
     let paths = account::AppPaths::new(data_root);
-    let credentials: Arc<dyn CredentialStore> = match account::SqliteCredentialStore::open(&paths).await {
-        Ok(store) => Arc::new(store),
-        Err(error) => {
-            tracing::error!(error = %error, "Failed to open credential store");
-            eprintln!("IM Monitor: failed to open credential store: {error}");
-            return;
-        }
-    };
+    let credentials: Arc<dyn CredentialStore> =
+        match account::SqliteCredentialStore::open(&paths).await {
+            Ok(store) => Arc::new(store),
+            Err(error) => {
+                tracing::error!(error = %error, "Failed to open credential store");
+                eprintln!("IM Monitor: failed to open credential store: {error}");
+                return;
+            }
+        };
 
     // sys_mac 持久化到磁盘，保证同一设备重装后仍使用相同设备标识。
     // 优先级：IM_SYS_MAC 环境变量 > 磁盘文件 > 硬件标识 > 随机 fallback。
     let sys_mac_path = paths.credential_key_file().with_file_name("sys_mac");
-    let persisted_mac =
-        std::fs::read_to_string(&sys_mac_path).ok().filter(|s| !s.trim().is_empty());
+    let persisted_mac = std::fs::read_to_string(&sys_mac_path)
+        .ok()
+        .filter(|s| !s.trim().is_empty());
     let sys_mac = if let Some(mac) = std::env::var("IM_SYS_MAC").ok().filter(|s| !s.is_empty()) {
         mac
     } else if let Some(mac) = persisted_mac {
@@ -205,9 +205,9 @@ async fn main() {
                 let account_db = state.account_db.clone();
                 let cleanup_fut = async move {
                     if let Ok(db) = account_db.active().await {
-                        let cutoff = chrono::Utc::now()
-                            .timestamp_millis()
-                            .saturating_sub(im_store::message::MESSAGE_RETENTION_DAYS as i64 * 24 * 3600 * 1000);
+                        let cutoff = chrono::Utc::now().timestamp_millis().saturating_sub(
+                            im_store::message::MESSAGE_RETENTION_DAYS as i64 * 24 * 3600 * 1000,
+                        );
                         let _ = db.messages.cleanup_old_messages(cutoff).await;
                     }
                 };

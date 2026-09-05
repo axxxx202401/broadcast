@@ -312,9 +312,20 @@ export function useMonitor() {
         return
       }
       // 历史页可能与实时批次重叠；向上翻页超限时裁掉尾部新消息，保留可继续浏览的旧窗口。
+      // 合并完成后检查：若本页最老消息仍等于合并前池底，说明已到头，停止分页。
+      const oldestBefore = messages.value[0]
       mergeAndPublishMessages(history.messages, 'keep-earliest')
-      nextMessageCursor.value = history.nextCursor
-      hasOlder.value = history.hasMore
+      const oldestAfter = messages.value[0]
+      const newestIncoming = history.messages[history.messages.length - 1]
+      if (newestIncoming && oldestAfter &&
+          newestIncoming.msg_id === oldestBefore?.msg_id &&
+          newestIncoming.send_time === oldestBefore?.send_time) {
+        nextMessageCursor.value = null
+        hasOlder.value = false
+      } else {
+        nextMessageCursor.value = history.nextCursor
+        hasOlder.value = history.hasMore
+      }
     } catch (reason) {
       if (isCurrentMessageRequest(requestId, messageRequestId, groupId, selectedGroupId.value)) {
         // 失败不改变原消息和游标；实时缓冲等待面板完成无新增握手后再发布。

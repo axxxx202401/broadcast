@@ -10,7 +10,7 @@ pub mod client;
 pub mod http_clients;
 /// 基于 Protobuf 的 IM 业务接口客户端。
 pub mod im_biz;
-/// 基于 JSON 的 OpenChat 用户接口客户端。
-pub mod openchat_user;
 /// 第三方开奖历史 API 客户端。
 pub mod lottery;
+/// 基于 JSON 的 OpenChat 用户接口客户端。
+pub mod openchat_user;

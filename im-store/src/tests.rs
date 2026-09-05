@@ -75,7 +75,11 @@ async fn message_batch_upserts_all_rows_in_one_transaction() {
         .await
         .unwrap();
 
-    let page = store.messages.get_by_group(13537, 10, None, false).await.unwrap();
+    let page = store
+        .messages
+        .get_by_group(13537, 10, None, false)
+        .await
+        .unwrap();
     assert_eq!(page.messages.len(), 2);
     assert_eq!(
         page.messages
@@ -203,7 +207,7 @@ async fn test_get_by_group() {
                 send_time: *time,
                 content_md5: format!("md5-{}", i),
                 raw_proto: None,
-            content_text: String::new(),
+                content_text: String::new(),
             })
             .await
             .unwrap();
@@ -226,7 +230,11 @@ async fn test_get_by_group() {
         .await
         .unwrap();
 
-    let first = store.messages.get_by_group(12345, 2, None, false).await.unwrap();
+    let first = store
+        .messages
+        .get_by_group(12345, 2, None, false)
+        .await
+        .unwrap();
     assert_eq!(first.messages.len(), 2);
     // 同一群组内按 (send_time, msg_id) 降序返回，并以本页最老消息作为下一页游标。
     assert_eq!(first.messages[0].msg_id, 2002);
@@ -257,7 +265,11 @@ async fn test_get_by_group() {
     assert_eq!(second.next_cursor, None);
 
     // 不存在的群组返回空列表。
-    let page = store.messages.get_by_group(0, 10, None, false).await.unwrap();
+    let page = store
+        .messages
+        .get_by_group(0, 10, None, false)
+        .await
+        .unwrap();
     assert!(page.messages.is_empty());
 }
 
@@ -276,13 +288,17 @@ async fn message_cursor_paginates_equal_send_times_without_duplicates_or_gaps() 
                 send_time: 100,
                 content_md5: String::new(),
                 raw_proto: None,
-            content_text: String::new(),
+                content_text: String::new(),
             })
             .await
             .unwrap();
     }
 
-    let first = store.messages.get_by_group(7, 2, None, false).await.unwrap();
+    let first = store
+        .messages
+        .get_by_group(7, 2, None, false)
+        .await
+        .unwrap();
     let second = store
         .messages
         .get_by_group(7, 2, first.next_cursor, false)
@@ -341,7 +357,7 @@ async fn test_get_recent_returns_all_groups_with_names() {
                 send_time: group_id,
                 content_md5: String::new(),
                 raw_proto: None,
-            content_text: String::new(),
+                content_text: String::new(),
             })
             .await
             .unwrap();
@@ -735,8 +751,16 @@ async fn message_store_rejects_invalid_pagination_limit() {
     let store = SqliteStore::new(":memory:").await.unwrap();
 
     // 游标字段已是 i64；存储层只需拒绝零页长和超过 200 的页长。
-    assert!(store.messages.get_by_group(1, 0, None, false).await.is_err());
-    assert!(store.messages.get_by_group(1, 201, None, false).await.is_err());
+    assert!(store
+        .messages
+        .get_by_group(1, 0, None, false)
+        .await
+        .is_err());
+    assert!(store
+        .messages
+        .get_by_group(1, 201, None, false)
+        .await
+        .is_err());
 }
 
 #[tokio::test]
@@ -804,7 +828,11 @@ async fn test_message_content_and_md5() {
         .await
         .unwrap();
 
-    let page = store.messages.get_by_group(12345, 10, None, false).await.unwrap();
+    let page = store
+        .messages
+        .get_by_group(12345, 10, None, false)
+        .await
+        .unwrap();
     assert_eq!(page.messages.len(), 1);
     assert_eq!(page.messages[0].content, b"binary file content");
     assert_eq!(page.messages[0].content_md5, "abc123");
@@ -919,17 +947,19 @@ async fn lottery_config_legacy_current_issue_migrated_to_array() {
     assert_eq!(row.api_url, "https://example.com/api");
     assert_eq!(row.current_issues, vec![3477887]);
     // 新列存在，旧列已删除。
-    let col_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('lottery_config') WHERE name = 'current_issues'")
-            .fetch_one(&store.pool)
-            .await
-            .unwrap();
+    let col_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('lottery_config') WHERE name = 'current_issues'",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
     assert_eq!(col_count, 1);
-    let old_col_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('lottery_config') WHERE name = 'current_issue'")
-            .fetch_one(&store.pool)
-            .await
-            .unwrap();
+    let old_col_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('lottery_config') WHERE name = 'current_issue'",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
     assert_eq!(old_col_count, 0);
 
     store.pool.close().await;
@@ -1129,11 +1159,10 @@ async fn test_cleanup_partial() {
     let deleted = store.messages.cleanup_old_messages(cutoff).await.unwrap();
     assert_eq!(deleted, 2);
 
-    let ids: Vec<i64> =
-        sqlx::query_scalar("SELECT msg_id FROM messages ORDER BY msg_id")
-            .fetch_all(&store.pool)
-            .await
-            .unwrap();
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT msg_id FROM messages ORDER BY msg_id")
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
     assert_eq!(ids, vec![3, 4, 5]);
 }
 
@@ -1157,7 +1186,7 @@ async fn test_cleanup_boundary_exact_send_time_preserved() {
         .unwrap();
 
     let cutoff = 1_700_000_000_000i64; // exact boundary
-    // One message exactly at cutoff — must be preserved.
+                                       // One message exactly at cutoff — must be preserved.
     store
         .messages
         .insert(&MessageRecord {
@@ -1193,11 +1222,10 @@ async fn test_cleanup_boundary_exact_send_time_preserved() {
     let deleted = store.messages.cleanup_old_messages(cutoff).await.unwrap();
     assert_eq!(deleted, 1);
 
-    let ids: Vec<i64> =
-        sqlx::query_scalar("SELECT msg_id FROM messages ORDER BY msg_id")
-            .fetch_all(&store.pool)
-            .await
-            .unwrap();
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT msg_id FROM messages ORDER BY msg_id")
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
     assert_eq!(ids, vec![10]);
 }
 

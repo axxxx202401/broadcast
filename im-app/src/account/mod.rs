@@ -32,12 +32,12 @@ pub mod pending_login;
 pub mod session;
 
 pub use credentials::CredentialStore;
-pub use sqlite_credentials::SqliteCredentialStore;
 pub use database::AccountDatabaseManager;
 pub use index::AccountIndexStore;
 pub use migration::LegacyDatabaseMigrator;
 pub use paths::AppPaths;
 pub use pending_login::PendingLoginCache;
+pub use sqlite_credentials::SqliteCredentialStore;
 
 /// 账号持久化与会话切换过程中可能出现的统一错误。
 ///

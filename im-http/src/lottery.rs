@@ -27,10 +27,7 @@ pub async fn fetch_draw_history(url: &str) -> Result<Vec<DrawItem>, String> {
         .map_err(|e| format!("failed to call lottery API: {e}"))?;
 
     if !resp.status().is_success() {
-        return Err(format!(
-            "lottery API returned status {}",
-            resp.status()
-        ));
+        return Err(format!("lottery API returned status {}", resp.status()));
     }
 
     let body: serde_json::Value = resp
@@ -38,10 +35,17 @@ pub async fn fetch_draw_history(url: &str) -> Result<Vec<DrawItem>, String> {
         .await
         .map_err(|e| format!("failed to parse lottery response: {e}"))?;
 
-    tracing::debug!(url, "lottery API response keys: {:?}", body.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+    tracing::debug!(
+        url,
+        "lottery API response keys: {:?}",
+        body.as_object().map(|o| o.keys().collect::<Vec<_>>())
+    );
 
     // 响应结构通常为 {"result": {"list": [...]}} 或 {"data": [...]} 或直接为数组；兼容三种格式。
-    if body.get("success").is_some_and(|v| v.as_bool() == Some(false)) {
+    if body
+        .get("success")
+        .is_some_and(|v| v.as_bool() == Some(false))
+    {
         let msg = body
             .get("message")
             .and_then(|v| v.as_str())

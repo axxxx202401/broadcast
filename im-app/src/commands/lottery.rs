@@ -35,9 +35,7 @@ pub struct DrawItemDto {
 ///
 /// 若配置表中无记录，返回空 URL 与空期号列表的默认值。
 #[tauri::command]
-pub async fn get_lottery_config(
-    state: State<'_, AppState>,
-) -> Result<LotteryConfigDto, String> {
+pub async fn get_lottery_config(state: State<'_, AppState>) -> Result<LotteryConfigDto, String> {
     let session = state
         .auth_session
         .read()
@@ -111,9 +109,7 @@ pub async fn set_lottery_config(
 ///
 /// 使用当前账号配置的 API URL；URL 为空时返回错误。
 #[tauri::command]
-pub async fn fetch_lottery_history(
-    state: State<'_, AppState>,
-) -> Result<Vec<DrawItemDto>, String> {
+pub async fn fetch_lottery_history(state: State<'_, AppState>) -> Result<Vec<DrawItemDto>, String> {
     let session = state
         .auth_session
         .read()
@@ -135,7 +131,11 @@ pub async fn fetch_lottery_history(
         return Err("Lottery API URL not configured".to_string());
     }
     let items = lottery::fetch_draw_history(&config.api_url).await?;
-    tracing::debug!(uid = session.uid, count = items.len(), "Fetched lottery history");
+    tracing::debug!(
+        uid = session.uid,
+        count = items.len(),
+        "Fetched lottery history"
+    );
     Ok(items
         .into_iter()
         .map(|item| DrawItemDto {

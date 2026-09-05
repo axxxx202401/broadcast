@@ -5,10 +5,10 @@
 
 /// 群组数据访问类型。
 pub mod group;
-/// 开奖配置数据访问类型。
-pub mod lottery_config;
 /// 当前账号 App 密钥对数据访问类型。
 pub mod key_pair;
+/// 开奖配置数据访问类型。
+pub mod lottery_config;
 /// 消息数据访问类型。
 pub mod message;
 /// SQLite 表结构定义。
