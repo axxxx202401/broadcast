@@ -79,21 +79,28 @@ async fn main() {
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     // 凭据库必须在 Tauri setup 之前异步打开：setup 运行在 Tokio runtime 内，不得嵌套 block_on。
-    let data_root = account::AppPaths::default_data_root().unwrap_or_else(|error| {
-        panic!("failed to resolve monitor data root: {error}");
-    });
-    std::fs::create_dir_all(&data_root).unwrap_or_else(|error| {
-        panic!(
-            "failed to create data directory {}: {error}",
-            data_root.display()
-        );
-    });
+    let data_root = match account::AppPaths::default_data_root() {
+        Ok(root) => root,
+        Err(error) => {
+            tracing::error!(error = %error, "Failed to resolve monitor data root; application cannot store credentials");
+            eprintln!("IM Monitor: failed to resolve data directory: {error}");
+            return;
+        }
+    };
+    if let Err(error) = std::fs::create_dir_all(&data_root) {
+        tracing::error!(path = %data_root.display(), error = %error, "Failed to create data directory");
+        eprintln!("IM Monitor: failed to create data directory {}: {error}", data_root.display());
+        return;
+    }
     let paths = account::AppPaths::new(data_root);
-    let credentials: Arc<dyn CredentialStore> = Arc::new(
-        account::SqliteCredentialStore::open(&paths)
-            .await
-            .unwrap_or_else(|error| panic!("failed to open credential store: {error}")),
-    );
+    let credentials: Arc<dyn CredentialStore> = match account::SqliteCredentialStore::open(&paths).await {
+        Ok(store) => Arc::new(store),
+        Err(error) => {
+            tracing::error!(error = %error, "Failed to open credential store");
+            eprintln!("IM Monitor: failed to open credential store: {error}");
+            return;
+        }
+    };
 
     // sys_mac 持久化到磁盘，保证同一设备重装后仍使用相同设备标识。
     // 优先级：IM_SYS_MAC 环境变量 > 磁盘文件 > 硬件标识 > 随机 fallback。

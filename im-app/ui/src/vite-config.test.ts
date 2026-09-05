@@ -30,7 +30,7 @@ describe('Vite 开发环境 CSP', () => {
     expect(DEV_CSP_HEADER).toContain('https://dn-staticdown.qbox.me')
     expect(DEV_CSP_HEADER).toContain('frame-src https://static.geetest.com')
     expect(DEV_CSP_HEADER).toContain(
-      "style-src 'self' 'unsafe-inline' https://static.geetest.com",
+      "style-src 'self' https://static.geetest.com",
     )
     expect(DEV_CSP_HEADER).not.toContain('script-src *')
     expect(DEV_CSP_HEADER).toContain("object-src 'none'")

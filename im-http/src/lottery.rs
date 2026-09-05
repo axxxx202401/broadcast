@@ -72,7 +72,7 @@ pub async fn fetch_draw_history(url: &str) -> Result<Vec<DrawItem>, String> {
         .collect();
 
     // 按期号降序，最新的在前。
-    draws.sort_by(|a, b| b.pre_draw_issue.cmp(&a.pre_draw_issue));
+    draws.sort_by_key(|a| std::cmp::Reverse(a.pre_draw_issue));
     Ok(draws)
 }
 

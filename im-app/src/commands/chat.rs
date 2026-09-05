@@ -45,8 +45,8 @@ const CHAT_LOGIN_TIMEOUT: Duration = Duration::from_secs(15);
 const CHAT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 /// 心跳或 2102 回执单次发送最长等待 15 秒。
 const CHAT_SEND_TIMEOUT: Duration = Duration::from_secs(15);
-/// 心跳间隔为 30 秒，短于服务端 60 秒超时窗口。
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+/// 心跳间隔为 45 秒，短于服务端 60 秒超时窗口。
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(45);
 /// 入站帧队列最多容纳 64 项，满载时回调等待以形成背压。
 const MESSAGE_QUEUE_CAPACITY: usize = 64;
 /// 所有尚未完成处理的入站帧正文合计最多占用 32 MiB。
@@ -1350,7 +1350,7 @@ async fn establish_connection(
             return Err(error);
         }
     };
-    let server_user_key_pair = login_user_key_metadata(login_success);
+    let server_user_key_pair = login_user_key_metadata(login_success)?;
 
     Ok(EstablishedConnection {
         client: chat_client,
@@ -1362,11 +1362,16 @@ async fn establish_connection(
     })
 }
 
-/// 提取 1201 中服务端公布的当前 App 公钥和版本；字段缺失时返回默认元数据。
+/// 提取 1201 中服务端公布的当前 App 公钥和版本。
+///
+/// `user_key_pair` 字段是后续消息加解密所依赖的服务器公钥元数据；缺失时登录失败，
+/// 避免使用空密钥对继续建立连接，导致后续所有消息解密静默失败。
 fn login_user_key_metadata(
     login_success: im_proto::PushLoginSuccessMessage,
-) -> im_proto::KeyPairBase {
-    login_success.user_key_pair.unwrap_or_default()
+) -> Result<im_proto::KeyPairBase, String> {
+    login_success
+        .user_key_pair
+        .ok_or_else(|| "服务端未返回 App 公钥元数据（user_key_pair）".to_string())
 }
 
 /// 在连接已发布为在线后恢复或登记当前账号的本地 App 密钥对。
@@ -2721,7 +2726,7 @@ mod tests {
     }
 
     #[test]
-    fn login_success_without_private_key_keeps_public_metadata() {
+    fn login_success_with_key_pair_returns_metadata() {
         let login = im_proto::PushLoginSuccessMessage {
             user_key_pair: Some(im_proto::KeyPairBase {
                 public_key: "server-public-key".to_string(),
@@ -2731,11 +2736,20 @@ mod tests {
             ..Default::default()
         };
 
-        let metadata = login_user_key_metadata(login);
+        let metadata = login_user_key_metadata(login).expect("should return metadata");
 
         assert_eq!(metadata.public_key, "server-public-key");
         assert_eq!(metadata.key_version, 1);
         assert!(metadata.private_key.is_empty());
+    }
+
+    #[test]
+    fn login_success_without_key_pair_returns_error() {
+        let login = im_proto::PushLoginSuccessMessage::default();
+
+        let result = login_user_key_metadata(login);
+
+        assert!(result.is_err());
     }
 
     // 自动连接：瞬时失败后保留同代认证会话并重试，第二次成功即停止。

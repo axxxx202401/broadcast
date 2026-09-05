@@ -27,8 +27,8 @@ pub type MessageFuture = Pin<Box<dyn Future<Output = AppResult<()>> + Send>>;
 /// 收到完整服务端帧后调用的消息回调。
 ///
 /// 参数依次为消息 ID 和解码后的正文。回调在后台读任务中按帧顺序等待完成；
-/// 回调期间不会分派下一帧。若回调 panic，Tokio 任务会异常终止，读循环尾部的
-/// 写端清理和断开通知不会执行。
+/// 回调期间不会分派下一帧。回调 panic 时通过 `catch_unwind` 捕获并记录错误，
+/// 随后以协议错误终止读循环，触发正常的写端清理与断开回调。
 pub type MessageHandler = Box<dyn Fn(u16, Vec<u8>) -> MessageFuture + Send + Sync>;
 /// 断开通知处理器返回的异步工作。
 ///
@@ -36,10 +36,9 @@ pub type MessageHandler = Box<dyn Fn(u16, Vec<u8>) -> MessageFuture + Send + Syn
 pub type DisconnectFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 /// 连接被关闭后调用的回调。
 ///
-/// 后台读任务因正常 EOF、读取或协议错误、消息处理器返回错误而受控退出时，会先清理
-/// 共享写端，再调用并等待该回调；[`ChatClient::disconnect`] 主动通知时也会等待它。
-/// 若消息处理器 panic 导致读任务异常终止，读循环尾部清理及该回调均不会执行。
-/// [`ChatClient::force_abort`] 和 `Drop` 是同步兜底，同样不会调用或等待该回调。
+/// 后台读任务因正常 EOF、读取或协议错误、消息处理器返回错误或 panic 而受控退出时，
+/// 会先清理共享写端，再调用并等待该回调；[`ChatClient::disconnect`] 主动通知时
+/// 也会等待它。[`ChatClient::force_abort`] 是同步兜底，不会调用或等待该回调。
 pub type DisconnectHandler = Box<dyn Fn() -> DisconnectFuture + Send + Sync>;
 
 /// 可独立持有的聊天连接发送端。
@@ -446,8 +445,8 @@ impl Drop for ChatClient {
 ///
 /// TCP 读取不对应帧边界，因此任务把每次新增字节追加到 `leftover`。完整帧被逐个消费，
 /// 尾部半包继续保留到下一次读取，避免把一次 `read` 误当成一帧或丢失跨读取的正文。
-/// 正常 EOF、读取/协议错误或消息处理器返回错误会离开循环，随后清理写端并等待断开回调；
-/// 消息处理器 panic 会让任务异常终止，因而绕过这段尾部处理。
+/// 正常 EOF、读取/协议错误或消息处理器返回/抛出错误均会离开循环，随后清理写端并
+/// 等待断开回调；`Drop` 作为同步兜底关闭写端，但不等待断开回调。
 struct ReadTask {
     reader: OwnedReadHalf,
     stream: Arc<tokio::sync::Mutex<Option<OwnedWriteHalf>>>,
@@ -461,8 +460,8 @@ struct ReadTask {
 impl ReadTask {
     /// 运行读取、增量解帧和受控退出后的连接清理。
     ///
-    /// 循环通过 `break` 结束时会移除并关闭共享写端，再等待断开回调。由消息处理器 panic
-    /// 导致的任务异常不经过循环后的语句，因此不会执行这两步。
+    /// 循环通过 `break` 结束时会移除并关闭共享写端，再等待断开回调。消息处理器 panic
+    /// 经 `catch_unwind` 捕获后以协议错误分支 `break`，同样经过尾部清理。
     async fn run(mut self) {
         loop {
             // 每次只追加本轮实际读取的字节，既保留半包，也允许一次读取包含多个帧。
@@ -537,7 +536,25 @@ impl ReadTask {
                         }
                     }
                     if let Some(handler) = &self.handler {
-                        handler(frame.message_id, frame.content).await?;
+                        let handler = handler.clone();
+                        let mid = frame.message_id;
+                        // 用 catch_unwind 兜底：消息处理器 panic 不致于无声终止读任务。
+                        // AssertUnwindSafe 保证 Future 跨 catch_unwind 边界后仍可继续 await。
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(mid, frame.content.clone())));
+                        match result {
+                            Ok(future) => future.await?,
+                            Err(panic_err) => {
+                                error!(message_id = mid, "Message handler panicked, terminating connection");
+                                let msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
+                                    s.to_string()
+                                } else if let Some(s) = panic_err.downcast_ref::<String>() {
+                                    s.clone()
+                                } else {
+                                    "unknown panic".to_string()
+                                };
+                                return Err(AppError::TcpFrame(format!("message handler panicked: {msg}")));
+                            }
+                        }
                     }
                 }
                 Err(FrameDecodeError::Incomplete { .. }) => return Ok(()),
@@ -560,6 +577,22 @@ impl ReadTask {
     async fn notify_disconnected(&self) {
         if let Some(handler) = &self.disconnect_handler {
             handler().await;
+        }
+    }
+}
+
+impl Drop for ReadTask {
+    fn drop(&mut self) {
+        // 同步兜底：读任务因 panic 异常终止时，Tokio 任务已结束，这里仅尝试关闭写端，
+        // 无法等待异步断开回调（Drop 是同步的）。正常路径由 run() 尾部处理。
+        if let Ok(mut writer) = self.stream.try_lock() {
+            if let Some(mut w) = writer.take() {
+                let _ = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(
+                        tokio::io::AsyncWriteExt::shutdown(&mut w)
+                    )
+                });
+            }
         }
     }
 }
