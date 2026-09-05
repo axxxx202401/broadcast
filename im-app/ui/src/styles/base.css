@@ -6,19 +6,19 @@
   font-synthesis: none;
 
   /* 暗色主题 — 画布到表面的四层递进 */
-  --bg-canvas:      #0d1117;
-  --bg-surface:     #161b22;
-  --bg-elevated:    #1c2128;
-  --bg-elevated-2:  #21262d;
+  --bg-canvas:      #0a0e14;
+  --bg-surface:     #1a1f28;
+  --bg-elevated:    #212732;
+  --bg-elevated-2:  #262d3a;
 
   /* 边框层次 */
-  --border-subtle:  #30363d;
-  --border-medium:  #3d444d;
+  --border-subtle:  #2d3340;
+  --border-medium:  #383f4d;
 
   /* 文字层次 */
   --text-primary:   #e6edf3;
-  --text-secondary: #8b949e;
-  --text-tertiary:  #6e7681;
+  --text-secondary: #848d9a;
+  --text-tertiary:  #636c76;
 
   /* 语义色 */
   --accent:       #f0b446;
@@ -28,35 +28,35 @@
   --danger:       #f85149;
   --focus-ring:   #d4922e;
 
-  --radius: 6px;
+  --radius: 10px;
 }
 
 /* ===== 亮色主题 ===== */
 [data-theme="light"] {
   color-scheme: light;
 
-  /* 亮色主题 — 柔和灰画布 + 纯白卡片 */
-  --bg-canvas:      #f6f8fa;
+  /* 亮色主题 — 柔和蓝灰画布 + 纯白卡片 */
+  --bg-canvas:      #f0f2f5;
   --bg-surface:     #ffffff;
-  --bg-elevated:    #f0f3f6;
-  --bg-elevated-2:  #e8ecf0;
+  --bg-elevated:    #e8ebf0;
+  --bg-elevated-2:  #e0e4ea;
 
   /* 边框层次 */
-  --border-subtle:  #d0d7de;
-  --border-medium:  #afb8c1;
+  --border-subtle:  #cdd3da;
+  --border-medium:  #b8c0ca;
 
   /* 文字层次 */
   --text-primary:   #1f2328;
   --text-secondary: #656d76;
-  --text-tertiary:  #8c959f;
+  --text-tertiary:  #858e99;
 
-  /* 语义色 */
-  --accent:       #b08800;
-  --accent-soft:  #9a7209;
+  /* 语义色 — 与暗色同色系，明度提升 */
+  --accent:       #c49a2f;
+  --accent-soft:  #a8852a;
   --success:      #1a7f37;
   --info:         #0969da;
   --danger:       #cf222e;
-  --focus-ring:   #0969da;
+  --focus-ring:   #c49a2f;
 }
 
 /* 基础重置与应用画布：根节点锁死视口，禁止整页滚动。 */
@@ -77,8 +77,8 @@ body,
 body {
   color: var(--text-primary);
   background:
-    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
     var(--bg-canvas);
   background-size: 24px 24px;
   -webkit-font-smoothing: antialiased;
@@ -87,8 +87,8 @@ body {
 /* 亮色：极淡网格，与背景融合 */
 [data-theme="light"] body {
   background:
-    linear-gradient(rgba(0, 0, 0, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 0, 0, 0.04) 1px, transparent 1px),
+    linear-gradient(rgba(0, 0, 0, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.06) 1px, transparent 1px),
     var(--bg-canvas);
 }
 
@@ -141,7 +141,7 @@ select:focus {
 /* 亮色：focus ring 用蓝色 */
 [data-theme="light"] input:focus,
 [data-theme="light"] select:focus {
-  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.15);
+  box-shadow: 0 0 0 3px rgba(196, 154, 47, 0.15);
 }
 
 /* 亮色：placeholder / hover 边框 */
