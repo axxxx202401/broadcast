@@ -22,10 +22,10 @@ describe('scroll layout', () => {
   })
 
   it('登录表单输入框与手机区号网格使用全宽布局', () => {
-    expect(consoleCss).toMatch(/\.login-primary-panel[\s\S]*height:\s*312px/)
+    expect(consoleCss).toMatch(/\.login-primary-panel[\s\S]*grid-template-rows:\s*auto\s+1fr/)
     expect(consoleCss).toMatch(/\.login-form-fields \.account-row\.is-phone[\s\S]*grid-template-columns:\s*110px minmax\(0,\s*1fr\)/)
-    expect(consoleCss).toMatch(/\.login-form-fields \.secret-field\.is-code[\s\S]*padding-right:\s*90px/)
-    expect(consoleCss).toMatch(/\.login-form-fields input[\s\S]*height:\s*40px/)
-    expect(consoleCss).toMatch(/\.login-shell[\s\S]*width:\s*560px/)
+    expect(consoleCss).toMatch(/\.login-form-fields \.secret-field\.is-code[\s\S]*padding-right:\s*100px/)
+    expect(consoleCss).toMatch(/\.login-form-fields input[\s\S]*height:\s*44px/)
+    expect(consoleCss).toMatch(/\.login-shell[\s\S]*width:\s*900px/)
   })
 })
