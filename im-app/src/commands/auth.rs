@@ -412,6 +412,17 @@ async fn run_complete_account_login(
         .await?;
     after_publish.await;
     ensure_login_generation_current(state, generation, uid).await?;
+    // 后台清理超过保留窗口的旧消息；不阻塞登录响应。
+    let cleanup_db = db.clone();
+    tokio::spawn(async move {
+        let cutoff = chrono::Utc::now()
+            .timestamp_millis()
+            .saturating_sub(im_store::message::MESSAGE_RETENTION_DAYS as i64 * 24 * 3600 * 1000);
+        match cleanup_db.messages.cleanup_old_messages(cutoff).await {
+            Ok(n) => tracing::info!(deleted = n, "message retention cleanup completed"),
+            Err(e) => tracing::warn!(error = %e, "message retention cleanup failed"),
+        }
+    });
 
     let pending = match request_validate_token(request) {
         Some(request_token) => state.pending_login.take(request_token).await,
