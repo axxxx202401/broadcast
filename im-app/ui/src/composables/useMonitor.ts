@@ -69,7 +69,7 @@ export function useMonitor() {
     if (!result.changed) return result
     messages.value = messageIndex.snapshot()
     console.debug(
-      `[useMonitor] mergeAndPublish: +${result.inserted} new, ${messages.value.length} total, matched=${messages.value.filter(m => m.matched !== 0).length}`,
+      `[useMonitor] mergeAndPublish: ${messages.value.length} total, matched=${messages.value.filter(m => m.matched !== 0).length}`,
     )
     return result
   }

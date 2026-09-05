@@ -66,11 +66,11 @@ pub async fn get_lottery_config(
     })
 }
 
-/// 保存当前账号的开奖配置，并重新计算已有消息的匹配标记。
+/// 保存当前账号的开奖配置。
 ///
-/// `current_issues` 为从 API 获取的期号列表（降序排列的最新若干条）；
-/// 生效后会遍历该账号下全部群组的既有消息重新评估 `matched` 字段；
-/// 该操作可能在群组较多时耗时较长。
+/// `current_issues` 为从 API 获取的期号列表（降序排列的最新若干条）。
+/// 历史消息的 `matched` 标记在入库时由 `persist_monitored_batch` 确定，
+/// 此处仅作持久化，不 recompute 历史消息。
 #[tauri::command]
 pub async fn set_lottery_config(
     state: State<'_, AppState>,
@@ -95,28 +95,15 @@ pub async fn set_lottery_config(
         issue_count = current_issues.len(),
         "Saving lottery config"
     );
-    let issues_for_recompute = current_issues.clone();
     db.lottery_config
         .upsert(&LotteryConfigRow {
             uid: session.uid,
             api_url,
-            current_issues: issues_for_recompute.clone(),
+            current_issues,
             updated_at,
         })
         .await
         .map_err(|e| e.to_string())?;
-
-    // 重新计算全部已有消息的 matched 标记。
-    let recompute_result = db.messages.recompute_matched_all(&issues_for_recompute).await;
-    match &recompute_result {
-        Ok(count) => tracing::info!(
-            uid = session.uid,
-            recomputed = count,
-            issue_count = issues_for_recompute.len(),
-            "set_lottery_config: recompute_matched_all done"
-        ),
-        Err(e) => tracing::warn!(uid = session.uid, "Failed to recompute matched: {e}"),
-    }
     Ok(())
 }
 

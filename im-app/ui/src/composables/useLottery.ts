@@ -64,8 +64,9 @@ export function useLottery(loggedIn?: { value: boolean }) {
     }
   }
 
-  /** 挂载时把默认 URL 写入后端持久化，再通过 Tauri 命令拉取，避免浏览器 CORS 拦截。 */
-  async function prefetchWithDefault(current_issues: number[]) {
+  /** 挂载时先拉取开奖历史，再以实际期号保存到后端，避免空数组覆盖已有配置。
+   * 若 DB 中已有非空 config，直接跳过，不做重复保存。 */
+  async function prefetchWithDefault(_current_issues: number[]) {
     const defaultUrl = config.value.api_url
     if (!defaultUrl) {
       await loadConfig()
@@ -73,10 +74,10 @@ export function useLottery(loggedIn?: { value: boolean }) {
       return
     }
     try {
-      await api.setLotteryConfig(defaultUrl, current_issues)
-      await loadConfig()
+      // 已有非空 config 时直接跳过，不重复保存。
+      if (config.value.current_issues.length > 0) return
+      // 先拉取历史，拿到实际期号后再保存，绝不传空数组。
       await fetchHistory()
-      // 首次加载后将拉取到的历史期号自动保存为配置，确保消息匹配能正常生效。
       if (drawHistory.value.length > 0) {
         const issues = drawHistory.value.map(item => item.preDrawIssue)
         await api.setLotteryConfig(defaultUrl, issues)
@@ -100,7 +101,7 @@ export function useLottery(loggedIn?: { value: boolean }) {
   /** 登录后（含恢复登录成功）触发一次拉取；未登录时静默跳过。 */
   function runPrefetch() {
     if (loggedIn?.value !== true) return
-    void prefetchWithDefault(currentIssues.value).then(schedulePoll)
+    void prefetchWithDefault([]).then(schedulePoll)
   }
 
   onMounted(() => {
