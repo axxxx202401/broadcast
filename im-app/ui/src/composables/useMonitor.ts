@@ -367,10 +367,11 @@ export function useMonitor() {
       )
     })
 
-  /** 请求建立聊天连接；最终连接状态仍由事件或状态同步确认。 */
+  /** 请求建立聊天连接；`connectChat` 成功返回后同步一次后端快照，兜底弥补事件未到达的情况。 */
   const connect = () =>
     run('connect', async () => {
       await api.connectChat()
+      syncConnectionStatus()
     })
 
   /** 请求断开聊天连接，并在远程成功后标记本地状态为 disconnected。 */

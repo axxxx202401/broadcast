@@ -132,7 +132,7 @@
 /* 发送验证码按钮：嵌在输入框右侧。 */
 .code-send-inline {
   position: absolute;
-  right: 8px;
+  right: 1px;
   flex: 0 0 auto;
   flex-shrink: 0;
   height: 24px;
