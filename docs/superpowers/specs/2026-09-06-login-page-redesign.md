@@ -306,7 +306,40 @@
 
 ---
 
-## 6. 测试策略
+## 6. 测试兼容性约束
+
+以下 CSS 类名被 `LoginPanel.test.ts` 直接引用，**必须保留**，不得重命名或删除：
+
+| 类名 | 测试引用位置 | 用途 |
+|------|-------------|------|
+| `.login-method-tab` | 多处 | tab 元素，`.is-active` 修饰选中态 |
+| `.login-submit` | `wrapper.get('.login-submit')` | 提交按钮 |
+| `.account-row` + `.is-phone` | `wrapper.find('.account-row.is-phone')` | 手机号行容器 |
+| `.account-cell` | `wrapper.get('.account-cell input')` | 账号输入框所在 label |
+| `.secret-field` + `.is-code` | `wrapper.get('.secret-field.is-code')` | 密码/验证码字段容器 |
+| `.field-control` | `wrapper.find('.field-control')` | 验证码模式下 input+按钮行 |
+| `.password-sentinel` + `.is-visible` | `wrapper.find('.password-sentinel.is-visible')` | 已保存密码标记 |
+| `.challenge-step` | `wrapper.find('.challenge-step')` | 二次验证区域 |
+| `.login-back` | `data-test="login-back"` + `wrapper.get('[data-test="login-back"]')` | 返回按钮 |
+| `.login-logo` | 无测试引用 | logo 图片 |
+| `.purpose` | 无测试引用 | slogan 段落 |
+| `.login-primary-panel` | `wrapper.get('.login-primary-panel')` | 主登录面板（用于测量高度一致性） |
+| `.login-form` | 无直接引用 | 表单元素 |
+| `.login-form-fields` | 无直接引用 | 字段容器 |
+| `.code-input-wrap` | 无直接引用 | 验证码输入+发送按钮容器 |
+| `.country-code-cell` | 无直接引用 | 国家区号 label |
+| `.pending-list` | 无直接引用 | 其他验证方式列表 |
+
+**HTML 结构变更原则：**
+- 新增双栏 wrapper（`.login-brand`、`.login-form-panel`）可以插入在 `.login-card` 内部的第一层
+- `.login-card` 本身保留，仅修改其 CSS 为双栏 grid
+- floating label 实现需要调整内部 label/input 关系，但不能改变外层 class 名称
+- `.login-primary-panel` 保持作为主登录表单区的 wrapper，测试用它测量高度
+- 所有 `data-test` 属性全部保留不动
+
+---
+
+## 7. 测试策略
 
 - 所有已有测试必须继续通过（不改行为逻辑）
 - 新增交互（floating label、eye toggle、tab indicator）无需额外测试，因它们纯 CSS/视觉层面
@@ -314,7 +347,7 @@
 
 ---
 
-## 7. 风险评估
+## 8. 风险评估
 
 | 风险 | 影响 | 缓解 |
 |------|------|------|
@@ -325,7 +358,7 @@
 
 ---
 
-## 8. 实施顺序建议
+## 9. 实施顺序建议
 
 1. **base.css**：更新 CSS 变量（先暗色后亮色，每个改完立即 build 验证）
 2. **console.css**：重写登录相关样式（双栏布局 → floating label → tab 动画）
