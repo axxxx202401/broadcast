@@ -1,7 +1,7 @@
 # 消息保留策略设计文档
 
 **日期：** 2026-09-05  
-**状态：** 待评审  
+**状态：** 已评审通过  
 **模块：** `im-store`、`im-app`
 
 ---
@@ -68,10 +68,15 @@ const CLEANUP_BATCH_SIZE: usize = 200;
 ```
 total_deleted = 0
 loop:
-    在事务中执行：
+    执行一次 DELETE（autocommit，无显式事务）：
         DELETE FROM messages
         WHERE send_time < keep_since
-        LIMIT BATCH_SIZE
+          AND msg_id IN (
+              SELECT msg_id FROM messages
+              WHERE send_time < keep_since
+              ORDER BY msg_id DESC
+              LIMIT BATCH_SIZE
+          )
     获取 affected_rows
     total_deleted += affected_rows
     if affected_rows < BATCH_SIZE:
@@ -79,9 +84,14 @@ loop:
 return total_deleted
 ```
 
+**为何使用 IN 子查询而非 `DELETE ... LIMIT`：**
+SQLite 不支持在 `DELETE` 语句上使用 `LIMIT`。使用 IN 子查询可以：
+- 实现与 `LIMIT` 相同的分批效果；
+- 通过 `ORDER BY msg_id DESC` 保证确定性：始终先删除最新的过期消息，避免任意选取。
+
 **关键点：**
-- 每批独立事务，SQLite 可在批间提交 WAL 并释放锁。
-- `LIMIT` 确保单批删除量可控，不会对并发查询造成长时间阻塞。
+- 每批为独立语句（autocommit），SQLite 可在批间提交 WAL 并释放锁。
+- `LIMIT` 子查询确保单批删除量可控，不会对并发查询造成长时间阻塞。
 - 当一批删除行数少于 `BATCH_SIZE` 时，说明已全部清理完毕。
 
 ---
