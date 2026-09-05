@@ -292,9 +292,9 @@ impl MessageStore {
 
     /// 删除所有 `send_time` 严格早于 `keep_since` 的消息。
     ///
-    /// 采用分批删除策略：每批在一个独立事务中执行 `DELETE ... LIMIT BATCH_SIZE`，
-    /// 批次之间提交事务以释放行锁并允许 WAL checkpoint。当一批删除行数少于
-    /// `BATCH_SIZE` 时表示已全部清理完毕。
+    /// 采用分批删除策略：每批执行一次 `DELETE ... LIMIT BATCH_SIZE`，每批在独立语句
+    /// 中隐式提交，批次之间互不影响。当一批删除行数少于 `BATCH_SIZE` 时表示已全部
+    /// 清理完毕。
     ///
     /// 返回实际删除的行数。SQL 执行失败时返回 [`sqlx::Error`]。
     pub async fn cleanup_old_messages(&self, keep_since: i64) -> sqlx::Result<usize> {
