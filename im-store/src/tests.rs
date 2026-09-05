@@ -935,3 +935,317 @@ async fn lottery_config_legacy_current_issue_migrated_to_array() {
     store.pool.close().await;
     std::fs::remove_file(path).unwrap();
 }
+
+/// Empty table: cleanup returns 0 and touches nothing.
+#[tokio::test]
+async fn test_cleanup_empty_table() {
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    // Insert a group so messages can be inserted (they need a valid group_id).
+    store
+        .groups
+        .insert_or_update(&GroupRow {
+            group_id: 1,
+            name: "g1".to_string(),
+            pic: String::new(),
+            host_id: None,
+            member_count: 0,
+            created_at: 0,
+            monitored: 1,
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let deleted = store.messages.cleanup_old_messages(now_ms).await.unwrap();
+    assert_eq!(deleted, 0);
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+/// All messages older than cutoff: every row is deleted.
+#[tokio::test]
+async fn test_cleanup_all_expired() {
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    store
+        .groups
+        .insert_or_update(&GroupRow {
+            group_id: 1,
+            name: "g1".to_string(),
+            pic: String::new(),
+            host_id: None,
+            member_count: 0,
+            created_at: 0,
+            monitored: 1,
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let cutoff = now_ms - 1000 * 60 * 60 * 24 * 8; // 8 days ago
+
+    for msg_id in 1..=5 {
+        store
+            .messages
+            .insert(&MessageRecord {
+                msg_id,
+                group_id: 1,
+                send_uid: 100,
+                msg_type: 0,
+                content: format!("msg-{msg_id}").into_bytes(),
+                send_time: cutoff - msg_id * 1000, // all before cutoff
+                content_md5: format!("md5-{msg_id}"),
+                raw_proto: None,
+                content_text: format!("msg-{msg_id}"),
+            })
+            .await
+            .unwrap();
+    }
+
+    let deleted = store.messages.cleanup_old_messages(cutoff).await.unwrap();
+    assert_eq!(deleted, 5);
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+/// All messages newer than cutoff: nothing is deleted.
+#[tokio::test]
+async fn test_cleanup_all_retained() {
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    store
+        .groups
+        .insert_or_update(&GroupRow {
+            group_id: 1,
+            name: "g1".to_string(),
+            pic: String::new(),
+            host_id: None,
+            member_count: 0,
+            created_at: 0,
+            monitored: 1,
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let cutoff = now_ms - 1000 * 60 * 60 * 24 * 6; // 6 days ago
+
+    for msg_id in 1..=3 {
+        store
+            .messages
+            .insert(&MessageRecord {
+                msg_id,
+                group_id: 1,
+                send_uid: 100,
+                msg_type: 0,
+                content: format!("msg-{msg_id}").into_bytes(),
+                send_time: now_ms - msg_id * 1000, // all after cutoff
+                content_md5: format!("md5-{msg_id}"),
+                raw_proto: None,
+                content_text: format!("msg-{msg_id}"),
+            })
+            .await
+            .unwrap();
+    }
+
+    let deleted = store.messages.cleanup_old_messages(cutoff).await.unwrap();
+    assert_eq!(deleted, 0);
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 3);
+}
+
+/// Mixed old and new messages: only expired ones are removed.
+#[tokio::test]
+async fn test_cleanup_partial() {
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    store
+        .groups
+        .insert_or_update(&GroupRow {
+            group_id: 1,
+            name: "g1".to_string(),
+            pic: String::new(),
+            host_id: None,
+            member_count: 0,
+            created_at: 0,
+            monitored: 1,
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let cutoff = now_ms - 1000 * 60 * 60 * 24 * 7; // 7 days ago
+
+    // 2 old messages (before cutoff)
+    for msg_id in 1..=2 {
+        store
+            .messages
+            .insert(&MessageRecord {
+                msg_id,
+                group_id: 1,
+                send_uid: 100,
+                msg_type: 0,
+                content: format!("old-{msg_id}").into_bytes(),
+                send_time: cutoff - msg_id * 1000,
+                content_md5: format!("md5-old-{msg_id}"),
+                raw_proto: None,
+                content_text: format!("old-{msg_id}"),
+            })
+            .await
+            .unwrap();
+    }
+    // 3 new messages (after cutoff)
+    for msg_id in 3..=5 {
+        store
+            .messages
+            .insert(&MessageRecord {
+                msg_id,
+                group_id: 1,
+                send_uid: 100,
+                msg_type: 0,
+                content: format!("new-{msg_id}").into_bytes(),
+                send_time: now_ms - (msg_id as i64) * 1000,
+                content_md5: format!("md5-new-{msg_id}"),
+                raw_proto: None,
+                content_text: format!("new-{msg_id}"),
+            })
+            .await
+            .unwrap();
+    }
+
+    let deleted = store.messages.cleanup_old_messages(cutoff).await.unwrap();
+    assert_eq!(deleted, 2);
+
+    let ids: Vec<i64> =
+        sqlx::query_scalar("SELECT msg_id FROM messages ORDER BY msg_id")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(ids, vec![3, 4, 5]);
+}
+
+/// Message whose send_time exactly equals cutoff is NOT deleted (strict less-than).
+#[tokio::test]
+async fn test_cleanup_boundary_exact_send_time_preserved() {
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    store
+        .groups
+        .insert_or_update(&GroupRow {
+            group_id: 1,
+            name: "g1".to_string(),
+            pic: String::new(),
+            host_id: None,
+            member_count: 0,
+            created_at: 0,
+            monitored: 1,
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+
+    let cutoff = 1_700_000_000_000i64; // exact boundary
+    // One message exactly at cutoff — must be preserved.
+    store
+        .messages
+        .insert(&MessageRecord {
+            msg_id: 10,
+            group_id: 1,
+            send_uid: 100,
+            msg_type: 0,
+            content: b"boundary".to_vec(),
+            send_time: cutoff,
+            content_md5: "boundary-md5".to_string(),
+            raw_proto: None,
+            content_text: "boundary".to_string(),
+        })
+        .await
+        .unwrap();
+    // One message 1ms before cutoff — must be deleted.
+    store
+        .messages
+        .insert(&MessageRecord {
+            msg_id: 11,
+            group_id: 1,
+            send_uid: 100,
+            msg_type: 0,
+            content: b"expired".to_vec(),
+            send_time: cutoff - 1,
+            content_md5: "expired-md5".to_string(),
+            raw_proto: None,
+            content_text: "expired".to_string(),
+        })
+        .await
+        .unwrap();
+
+    let deleted = store.messages.cleanup_old_messages(cutoff).await.unwrap();
+    assert_eq!(deleted, 1);
+
+    let ids: Vec<i64> =
+        sqlx::query_scalar("SELECT msg_id FROM messages ORDER BY msg_id")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(ids, vec![10]);
+}
+
+/// More than BATCH_SIZE (200) expired messages: multi-batch cleanup removes all.
+#[tokio::test]
+async fn test_cleanup_batches_exceed_batch_size() {
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    store
+        .groups
+        .insert_or_update(&GroupRow {
+            group_id: 1,
+            name: "g1".to_string(),
+            pic: String::new(),
+            host_id: None,
+            member_count: 0,
+            created_at: 0,
+            monitored: 1,
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+
+    let cutoff = 1_700_000_000_000i64;
+    // Insert 500 expired messages (more than one batch of 200).
+    for msg_id in 1..=500 {
+        store
+            .messages
+            .insert(&MessageRecord {
+                msg_id,
+                group_id: 1,
+                send_uid: 100,
+                msg_type: 0,
+                content: format!("batch-{msg_id}").into_bytes(),
+                send_time: cutoff - msg_id,
+                content_md5: format!("md5-batch-{msg_id}"),
+                raw_proto: None,
+                content_text: format!("batch-{msg_id}"),
+            })
+            .await
+            .unwrap();
+    }
+
+    let deleted = store.messages.cleanup_old_messages(cutoff).await.unwrap();
+    assert_eq!(deleted, 500);
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}

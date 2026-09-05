@@ -3,6 +3,11 @@ use sqlx::{Row, SqlitePool};
 /// 单页最多可读取的消息数。
 pub const MAX_MESSAGE_PAGE_LIMIT: usize = 200;
 
+/// 消息保留天数。
+pub const MESSAGE_RETENTION_DAYS: u64 = 7;
+/// 每批次最大删除行数，与分页上限保持一致。
+const CLEANUP_BATCH_SIZE: usize = 200;
+
 /// 消息 keyset 分页游标。
 ///
 /// 两个字段共同标识降序结果中的唯一边界；仅按 `send_time` 翻页会遗漏同一发送时间的
@@ -283,6 +288,40 @@ impl MessageStore {
             matched: row.get("matched"),
             content_text: row.get("content_text"),
         }))
+    }
+
+    /// 删除所有 `send_time` 严格早于 `keep_since` 的消息。
+    ///
+    /// 采用分批删除策略：每批在一个独立事务中执行 `DELETE ... LIMIT BATCH_SIZE`，
+    /// 批次之间提交事务以释放行锁并允许 WAL checkpoint。当一批删除行数少于
+    /// `BATCH_SIZE` 时表示已全部清理完毕。
+    ///
+    /// 返回实际删除的行数。SQL 执行失败时返回 [`sqlx::Error`]。
+    pub async fn cleanup_old_messages(&self, keep_since: i64) -> sqlx::Result<usize> {
+        let mut total_deleted = 0usize;
+        loop {
+            let result = sqlx::query(
+                "DELETE FROM messages \
+                 WHERE send_time < ? \
+                 AND msg_id IN (\
+                     SELECT msg_id FROM messages \
+                     WHERE send_time < ? \
+                     ORDER BY msg_id DESC \
+                     LIMIT ?\
+                 )",
+            )
+            .bind(keep_since)
+            .bind(keep_since)
+            .bind(CLEANUP_BATCH_SIZE as i64)
+            .execute(&self.pool)
+            .await?;
+            let rows = result.rows_affected() as usize;
+            total_deleted += rows;
+            if rows < CLEANUP_BATCH_SIZE {
+                break;
+            }
+        }
+        Ok(total_deleted)
     }
 
 }
