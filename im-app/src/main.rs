@@ -200,8 +200,19 @@ async fn main() {
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
-                // 退出请求触发全局取消令牌，使连接及消息后台任务开始收尾。
-                app_handle.state::<AppState>().shutdown.cancel();
+                // 退出前尝试清理过期消息，作为登录路径之外的兜底。
+                let state = app_handle.state::<AppState>();
+                let account_db = state.account_db.clone();
+                let cleanup_fut = async move {
+                    if let Ok(db) = account_db.active().await {
+                        let cutoff = chrono::Utc::now()
+                            .timestamp_millis()
+                            .saturating_sub(im_store::message::MESSAGE_RETENTION_DAYS as i64 * 24 * 3600 * 1000);
+                        let _ = db.messages.cleanup_old_messages(cutoff).await;
+                    }
+                };
+                tokio::spawn(cleanup_fut);
+                state.shutdown.cancel();
             }
         });
 }
