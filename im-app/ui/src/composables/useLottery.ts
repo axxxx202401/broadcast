@@ -52,7 +52,7 @@ export function useLottery(loggedIn?: { value: boolean }) {
     error.value = ''
     try {
       const items = await api.fetchLotteryHistory()
-      drawHistory.value = items.slice(0, 2)
+      drawHistory.value = items.slice(0, 20)
     } catch (reason) {
       // URL 未配置属于正常初始状态，不展示错误。
       const msg = errorMessage(reason)
