@@ -26,6 +26,6 @@ describe('scroll layout', () => {
     expect(consoleCss).toMatch(/\.login-form-fields \.account-row\.is-phone[\s\S]*grid-template-columns:\s*110px minmax\(0,\s*1fr\)/)
     expect(consoleCss).toMatch(/\.login-form-fields \.secret-field\.is-code[\s\S]*padding-right:\s*100px/)
     expect(consoleCss).toMatch(/\.login-form-fields input[\s\S]*height:\s*44px/)
-    expect(consoleCss).toMatch(/\.login-shell[\s\S]*width:\s*900px/)
+    expect(consoleCss).toMatch(/\.login-form-panel[\s\S]*width:\s*420px/)
   })
 })

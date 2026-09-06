@@ -140,27 +140,29 @@ const canSubmitPrimary = computed(() => {
 </script>
 
 <template>
-  <!-- 左栏品牌区：宽屏显示，窄屏隐藏 -->
   <main class="login-shell">
-    <div class="login-brand" aria-hidden="true">
-      <img src="/icon.svg" alt="" class="login-logo" />
-      <p class="purpose">进入实时监控控制台</p>
-    </div>
-
-    <!-- 右栏表单区 -->
     <section class="login-form-panel" aria-label="登录">
-      <button
-        v-if="props.canReturn"
-        class="button ghost login-back"
-        data-test="login-back"
-        type="button"
-        @click="emit('back')"
-      >
-        返回
-      </button>
+      <div class="login-card">
+        <!-- 顶部品牌区 -->
+        <div class="login-header">
+          <img src="/icon.svg" alt="" class="login-logo" />
+          <h1 class="login-title">IM 监控控制台</h1>
+          <p class="login-subtitle">登录以进入实时监控</p>
+        </div>
 
-      <!-- 主登录：账号选择、邮箱或手机、密码哨兵、提交。 -->
-      <template v-if="!auth.challengePending.value.length">
+        <div class="login-body">
+          <button
+            v-if="props.canReturn"
+            class="button ghost login-back"
+            data-test="login-back"
+            type="button"
+            @click="emit('back')"
+          >
+            返回
+          </button>
+
+          <!-- 主登录：账号选择、邮箱或手机、密码哨兵、提交。 -->
+          <template v-if="!auth.challengePending.value.length">
         <div v-if="props.accounts.length" class="account-picker">
           <label>
             <span>已保存账号</span>
@@ -406,8 +408,10 @@ const canSubmitPrimary = computed(() => {
         </section>
       </template>
 
-      <p v-if="auth.error.value" class="feedback error" role="alert">{{ auth.error.value }}</p>
-      <p v-if="auth.notice.value" class="feedback notice" role="status">{{ auth.notice.value }}</p>
+          <p v-if="auth.error.value" class="feedback error" role="alert">{{ auth.error.value }}</p>
+          <p v-if="auth.notice.value" class="feedback notice" role="status">{{ auth.notice.value }}</p>
+        </div>
+      </div>
     </section>
   </main>
 </template>
