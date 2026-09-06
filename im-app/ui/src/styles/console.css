@@ -203,7 +203,7 @@
   box-sizing: border-box;
   border: 1px solid var(--border-medium);
   border-radius: var(--radius);
-  background: var(--bg-elevated);
+  background: var(--bg-surface);
   color: var(--text-primary);
   font-size: 14px;
   transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
@@ -212,7 +212,6 @@
 .login-form-fields input:hover,
 .field-group input:hover {
   border-color: var(--border-subtle);
-  background: var(--bg-elevated-2);
 }
 
 .login-form-fields input:focus,
@@ -227,6 +226,15 @@
 [data-theme="light"] .login-form-fields input:focus,
 [data-theme="light"] .field-group input:focus {
   box-shadow: 0 0 0 3px rgba(196, 154, 47, 0.2);
+}
+
+/* 亮色主题：account picker select 强制白色背景，边框跟随 */
+[data-theme="light"] .account-picker select {
+  background: var(--bg-surface);
+  border-color: var(--border-medium);
+}
+[data-theme="light"] .account-picker select:hover {
+  border-color: var(--border-subtle);
 }
 
 /* 验证码模式 input 右侧留白给发送按钮。 */
@@ -390,6 +398,14 @@
 
 .account-picker select {
   width: 100%;
+  height: 44px;
+  padding: 10px 12px;
+  font-size: 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  transition: border-color 180ms ease, box-shadow 180ms ease;
 }
 
 /* 恢复启动页：居中卡片，带 logo、加载指示器和状态文案。 */

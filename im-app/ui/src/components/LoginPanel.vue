@@ -273,7 +273,7 @@ const canSubmitPrimary = computed(() => {
                     class="button secondary code-send-inline"
                     data-test="send-code"
                     type="button"
-                    :disabled="!!auth.busy.value || auth.gt4Loading.value || !auth.accountReady.value"
+                    :disabled="!!auth.busy.value || !auth.accountReady.value"
                     @click="auth.sendCode"
                   >
                     {{ auth.busy.value === 'captcha' ? '等待验证…' : auth.busy.value === 'code' ? '发送中…' : '发送验证码' }}
@@ -372,7 +372,7 @@ const canSubmitPrimary = computed(() => {
                 class="button secondary code-send-inline"
                 data-test="challenge-send-code"
                 type="button"
-                :disabled="!!auth.busy.value || auth.gt4Loading.value || auth.resendSeconds.value > 0"
+                :disabled="!!auth.busy.value || auth.resendSeconds.value > 0"
                 @click="auth.sendChallengeCode"
               >
                 {{

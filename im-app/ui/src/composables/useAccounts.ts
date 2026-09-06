@@ -285,6 +285,7 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
   function returnFromAddAccount(): Promise<RestoreSessionResult | null> {
     const uid = returnToUid.value
     if (!uid) return Promise.resolve(null)
+    // 同步清除待返回标记，防止返回按钮被重复触发。
     returnToUid.value = null
     return switchAccount(uid)
   }

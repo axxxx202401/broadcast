@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 import type { AccountSummary } from '../types/im'
 
 /**
  * 头部账号菜单：展示当前邮箱/手机号，并提供切换、添加、退出与移除入口。
  *
- * UID 仅作为次要“用户 ID”展示，不得以顶栏 `UID / ...` 形式出现。
- * `switching` 为真时展示“正在切换账号”并禁用全部账号动作，防止重复切换。
+ * UID 仅作为次要).replace(bxe2x80x9d, b用户 ID"展示，不得以顶栏 `UID / ...` 形式出现。
+ * `switching` 为真时展示"正在切换账号"并禁用全部账号动作，防止重复切换。
+ * 点击面板外部时自动收起。
  */
 const props = defineProps<{
   /** 当前已登录或选中的账号摘要。 */
@@ -31,6 +32,22 @@ const emit = defineEmits<{
 
 /** 菜单面板是否展开；列表节点始终挂载以便测试与键盘可达。 */
 const open = ref(false)
+
+/** 点击面板外部时收起菜单。 */
+function onDocumentClick(event: MouseEvent) {
+  const menu = document.querySelector('.account-menu') as HTMLElement | null
+  if (menu && !menu.contains(event.target as Node)) {
+    open.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', onDocumentClick)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('mousedown', onDocumentClick)
+})
 
 /** 可切换的其他已保存账号，排除当前 UID。 */
 const otherAccounts = computed(() =>

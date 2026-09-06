@@ -35,20 +35,20 @@
 [data-theme="light"] {
   color-scheme: light;
 
-  /* 亮色主题 — 柔和蓝灰画布 + 纯白卡片 */
-  --bg-canvas:      #f0f2f5;
+  /* 亮色主题 — 冷淡白 + 浅灰层级 */
+  --bg-canvas:      #f9fafb;
   --bg-surface:     #ffffff;
-  --bg-elevated:    #e8ebf0;
-  --bg-elevated-2:  #e0e4ea;
+  --bg-elevated:    #f6f7f9;
+  --bg-elevated-2:  #f2f3f7;
 
   /* 边框层次 */
-  --border-subtle:  #cdd3da;
-  --border-medium:  #b8c0ca;
+  --border-subtle:  #e6e8ee;
+  --border-medium:  #d8dbe4;
 
   /* 文字层次 */
-  --text-primary:   #1f2328;
-  --text-secondary: #656d76;
-  --text-tertiary:  #858e99;
+  --text-primary:   #1a1d23;
+  --text-secondary: #6b7280;
+  --text-tertiary:  #9ca3af;
 
   /* 语义色 — 与暗色同色系，明度提升 */
   --accent:       #c49a2f;
@@ -87,8 +87,8 @@ body {
 /* 亮色：极淡网格，与背景融合 */
 [data-theme="light"] body {
   background:
-    linear-gradient(rgba(0, 0, 0, 0.06) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 0, 0, 0.06) 1px, transparent 1px),
+    linear-gradient(rgba(0, 0, 0, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.04) 1px, transparent 1px),
     var(--bg-canvas);
 }
 
