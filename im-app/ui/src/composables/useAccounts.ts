@@ -306,19 +306,17 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
 
   /**
    * 快速返回：点击「返回」后立刻切换到主界面，不让登录页停留任何时间。
-   * 关键技巧：先用 await nextTick() 让 returnToUid=null 先 flushed，
-   * 再在同 tick 内把 phase 改为 ready，确保 LoginPanel 的 v-else-if 条件
-   * 不再匹配。Vue 批量刷新时两个 ref 变化会被合并到同一渲染 tick，
-   * 所以用户看不到登录页的瞬间。
+   * 同步清除 returnToUid 并立刻把 phase 改为 ready：Vue 会在同一个刷新 tick
+   * 内把两处 ref 变更一起提交，LoginPanel 与主界面原子切换，用户看不到登录页。
+   * IPC 在后台异步完成；成功时调用 onResult 通知调用方，失败时退回登录页。
    */
-  async function returnFromAddAccountQuick(onResult?: (result: RestoreSessionResult) => void): Promise<void> {
+  function returnFromAddAccountQuick(onResult?: (result: RestoreSessionResult) => void): void {
     const uid = returnToUid.value
     if (!uid) return
-    // 第一步：清除返回标记，等 Vue flush，触发一次重渲染（登录页消失）。
+    // 同步清除待返回标记，防止返回按钮被重复触发。
     returnToUid.value = null
-    await new Promise<void>((resolve) => setTimeout(resolve, 0))
-    // 第二步：phase 改为 ready，selectedAccount 设置完毕，同一 tick 内 flush，
-    // 用户只看到登录页瞬间消失、主界面立刻出现。
+    // phase 与 selectedAccount 在同 tick 内写入，LoginPanel 条件不再匹配，
+    // 主界面立刻出现；用户只看到一次渲染结果。
     phase.value = 'ready'
     selectedAccount.value = normalizeAccountSummary({
       uid,

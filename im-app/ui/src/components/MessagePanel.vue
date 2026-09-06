@@ -28,6 +28,7 @@ const props = withDefaults(defineProps<{
     drawHistory: import('vue').Ref<import('../services/tauri').DrawItem[]>
     loading: import('vue').Ref<boolean>
     error: import('vue').Ref<string>
+    loadConfig: () => Promise<void>
     saveConfig: (url: string, issues: number[]) => Promise<void>
     fetchHistory: () => Promise<void>
   }

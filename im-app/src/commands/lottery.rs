@@ -13,7 +13,6 @@ use crate::state::AppState;
 
 /// 暴露给前端的开奖配置。
 #[derive(serde::Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
 pub struct LotteryConfigDto {
     /// 用户填写的 API URL。
     pub api_url: String,

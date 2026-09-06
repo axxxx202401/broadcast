@@ -10,6 +10,7 @@ const props = withDefaults(defineProps<{
     drawHistory: { value: DrawItem[] }
     loading: { value: boolean }
     error: { value: string }
+    loadConfig: () => Promise<void>
     saveConfig: (url: string, issues: number[]) => Promise<void>
     fetchHistory: () => Promise<void>
   }
@@ -19,23 +20,26 @@ const src = props.lottery ?? useLottery()
 
 // 解包 prop 中的 ref，使模板可直接使用（与独立调用 useLottery() 行为一致）。
 const config = computed(() => src.config.value)
+
 const drawHistory = computed(() => src.drawHistory.value)
 const loading = computed(() => src.loading.value)
 const error = computed(() => src.error.value)
+const loadConfig = src.loadConfig
 const saveConfig = src.saveConfig
 const fetchHistory = src.fetchHistory
 
 /** 是否展开配置编辑区。 */
 const editing = ref(false)
-const editUrl = ref(config.value.api_url)
+const editUrl = ref('')
 
 const currentDraw = computed<DrawItem | null>(() => drawHistory.value[0] ?? null)
 const previousDraw = computed<DrawItem | null>(() => drawHistory.value[1] ?? null)
 
-function openEdit() {
-  editUrl.value = config.value.api_url
-  editing.value = true
-}
+async function openEdit() {
+    await loadConfig()
+    editUrl.value = config.value?.api_url ?? ''
+    editing.value = true
+  }
 
 async function confirmSave() {
   // 保存所有历史期号，用于消息匹配。
@@ -85,7 +89,7 @@ function cancelEdit() {
   <div v-else class="lottery-edit">
     <label class="edit-row">
       <span class="edit-label">API URL</span>
-      <input v-model="editUrl" type="url" placeholder="https://go124.com/api/hash/get28HistoryList/10091" />
+      <input v-model="editUrl" type="url" />
     </label>
     <div class="edit-actions">
       <button class="btn-ghost" type="button" @click="cancelEdit">取消</button>
@@ -100,7 +104,7 @@ function cancelEdit() {
   flex-direction: column;
   gap: 2px;
   font-size: 11px;
-  color: var(--text-400, #8e8e93);
+  color: var(--text-secondary);
 }
 
 .lottery-row {
@@ -118,7 +122,7 @@ function cancelEdit() {
 .issue-since {
   font-style: normal;
   font-size: 12px;
-  color: var(--text-500, #6e6e73);
+  color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -127,16 +131,16 @@ function cancelEdit() {
   font-family: "IBM Plex Mono", monospace;
   font-size: 12px;
   font-weight: 700;
-  color: var(--green, #54c993);
+  color: var(--success);
 }
 
 .issue-time {
   font-size: 10px;
-  color: var(--text-600, #636366);
+  color: var(--text-tertiary);
 }
 
 .lottery-err {
-  color: #ff453a;
+  color: var(--danger);
   font-size: 10px;
 }
 
@@ -149,7 +153,7 @@ function cancelEdit() {
   border: none;
   border-radius: 3px;
   background: transparent;
-  color: var(--text-500, #6e6e73);
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 11px;
   flex: 0 0 auto;
@@ -158,8 +162,8 @@ function cancelEdit() {
 }
 
 .lottery-btn:hover {
-  background: var(--ink-700, #38383e);
-  color: var(--text-300, #aeaeb2);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
 }
 
 .lottery-btn:disabled {
@@ -173,8 +177,8 @@ function cancelEdit() {
   flex-direction: column;
   gap: 6px;
   padding: 6px 12px;
-  background: var(--ink-850, #1c1c1e);
-  border-top: 1px solid var(--ink-700, #38383e);
+  background: var(--bg-elevated);
+  border-top: 1px solid var(--border-subtle);
 }
 
 .edit-row {
@@ -186,7 +190,7 @@ function cancelEdit() {
 .edit-label {
   font-size: 10px;
   font-weight: 600;
-  color: var(--text-500, #6e6e73);
+  color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -194,16 +198,30 @@ function cancelEdit() {
 .edit-row input {
   font-size: 12px;
   padding: 3px 8px;
-  border: 1px solid var(--ink-600, #48484a);
-  border-radius: 4px;
-  background: var(--ink-900, #1c1c1e);
-  color: var(--text-200, #ebebf0);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  color: var(--text-primary);
   outline: none;
   font-family: "IBM Plex Mono", monospace;
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.edit-row input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.edit-row input:hover {
+  border-color: var(--border-subtle);
 }
 
 .edit-row input:focus {
-  border-color: var(--green, #54c993);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(240, 180, 70, 0.12);
+}
+
+[data-theme="light"] .edit-row input:focus {
+  box-shadow: 0 0 0 3px rgba(196, 154, 47, 0.2);
 }
 
 .edit-actions {
@@ -216,7 +234,7 @@ function cancelEdit() {
 .btn-primary {
   font-size: 11px;
   padding: 3px 10px;
-  border-radius: 4px;
+  border-radius: var(--radius);
   border: none;
   cursor: pointer;
   font-weight: 500;
@@ -225,21 +243,21 @@ function cancelEdit() {
 
 .btn-ghost {
   background: transparent;
-  color: var(--text-400, #8e8e93);
+  color: var(--text-secondary);
 }
 
 .btn-ghost:hover {
-  background: var(--ink-700, #38383e);
-  color: var(--text-200, #ebebf0);
+  background: var(--bg-elevated-2);
+  color: var(--text-primary);
 }
 
 .btn-primary {
-  background: var(--green, #54c993);
-  color: var(--ink-900, #0b0e0f);
+  background: var(--accent);
+  color: #18140c;
   font-weight: 600;
 }
 
 .btn-primary:hover {
-  opacity: 0.85;
+  background: var(--accent-soft);
 }
 </style>

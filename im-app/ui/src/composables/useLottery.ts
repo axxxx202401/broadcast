@@ -16,7 +16,7 @@ const POLL_INTERVAL_MS = 30_000
  */
 export function useLottery(loggedIn?: { value: boolean }) {
   const config = ref<LotteryConfig>({
-    api_url: 'https://go124.com/api/hash/get28HistoryList/10091',
+    api_url: '',
     current_issues: [],
   })
   const drawHistory = ref<DrawItem[]>([])
@@ -127,6 +127,7 @@ export function useLottery(loggedIn?: { value: boolean }) {
     currentIssues,
     loading,
     error,
+    loadConfig,
     saveConfig,
     fetchHistory,
     /** 当收到含"开奖"的消息时手动触发一次刷新。 */
