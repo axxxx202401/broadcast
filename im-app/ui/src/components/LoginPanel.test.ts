@@ -285,10 +285,12 @@ describe('LoginPanel', () => {
 
   it('主登录表单展示认证错误', async () => {
     const auth = authStub()
-    auth.error.value = '登录密码不正确'
     const wrapper = mountPanel(auth)
+    auth.error.value = '登录密码不正确'
+    await flushPromises()
 
-    expect(wrapper.get('[role="alert"]').text()).toBe('登录密码不正确')
+    expect(wrapper.find('.login-toast.error').exists()).toBe(true)
+    expect(wrapper.get('.login-toast-msg').text()).toBe('登录密码不正确')
     expect(wrapper.find('.challenge-step').exists()).toBe(false)
   })
 

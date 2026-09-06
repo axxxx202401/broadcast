@@ -22,7 +22,7 @@ const emit = defineEmits<{
 }>()
 
 // 离开登录页时调用 destroyGt4 清理入口；具体实例与 DOM 清理由认证流程负责。
-onUnmounted(props.auth.destroyGt4)
+onUnmounted(() => { props.auth.destroyGt4(); if (toastTimer) clearTimeout(toastTimer) })
 
 // 服务端验证类型决定字段文案；密码类验证还决定输入框的遮蔽与自动填充语义。
 const isPasswordValidation = (type?: number) =>
@@ -65,19 +65,23 @@ const challengeMethodLabel = computed(() => {
 const showPassword = ref(false)
 const tabRefs = ref<(HTMLElement | null)[]>([])
 
-interface ToastState { visible: boolean; message: string; type: 'success' | 'info' }
+interface ToastState { visible: boolean; message: string; type: 'success' | 'info' | 'error' }
 const toast = ref<ToastState>({ visible: false, message: '', type: 'success' })
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 
-function showToast(message: string, type: 'success' | 'info' = 'success') {
+function showToast(message: string, type: 'success' | 'info' | 'error' = 'success') {
   if (toastTimer) clearTimeout(toastTimer)
   toast.value = { visible: true, message, type }
-  toastTimer = setTimeout(() => { toast.value.visible = false; toastTimer = null }, 2600)
+  toastTimer = setTimeout(() => { toast.value.visible = false; toastTimer = null }, 2800)
 }
 
 watchEffect(() => {
   const n = props.auth.notice.value
   if (n) { showToast(n, n.includes('验证码') ? 'success' : 'info'); props.auth.notice.value = '' }
+})
+
+watch(() => props.auth.error.value, (e) => {
+  if (e) { showToast(e, 'error') }
 })
 
 /** 将滑动 indicator 定位到当前激活的 tab。jsdom 中 getBoundingClientRect 可能返回零。 */
@@ -423,7 +427,6 @@ const canSubmitPrimary = computed(() => {
         </section>
       </template>
 
-          <p v-if="auth.error.value" class="feedback error" role="alert">{{ auth.error.value }}</p>
         </div>
 
         <!-- Toast 通知浮层 -->

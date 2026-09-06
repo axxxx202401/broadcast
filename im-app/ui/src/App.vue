@@ -111,9 +111,9 @@ const addAccount = () =>
     auth.resetAuthForm({ preserveSelectedAccount: false })
   })
 
-/** 从添加账号登录页返回上一账号；Token 有效则恢复主界面，失效则进入该账号登录页。 */
+/** 从添加账号登录页返回上一账号；同步切回主界面，IPC 在后台完成。 */
 const onReturnFromAddAccount = () => {
-  void accounts.returnFromAddAccount().then(applyRestoreOutcome)
+  accounts.returnFromAddAccountQuick((result) => applyRestoreOutcome(result))
 }
 
 /**

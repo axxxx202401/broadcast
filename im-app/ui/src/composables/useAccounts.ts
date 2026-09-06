@@ -279,15 +279,71 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
   }
 
   /**
-   * 从添加账号登录页回到上一账号：用记住的 UID 走切换恢复。
+   * 从添加账号登录页回到上一账号：用记住的 UID 恢复会话。
+   * 不经过 runRestore，避免 phase 短暂变为 'recovering' 导致界面闪烁。
    * 没有可返回 UID 时不发请求。
    */
-  function returnFromAddAccount(): Promise<RestoreSessionResult | null> {
+  async function returnFromAddAccount(): Promise<RestoreSessionResult | null> {
     const uid = returnToUid.value
-    if (!uid) return Promise.resolve(null)
+    if (!uid) return null
     // 同步清除待返回标记，防止返回按钮被重复触发。
     returnToUid.value = null
-    return switchAccount(uid)
+    try {
+      const result = await backend.switchAccount(uid)
+      // 跳过 runRestore 的代际门禁（beginAddAccount 后 operationToken 未递增），
+      // 直接应用结果以保持 phase 始终为 'needsLogin' 直到成功。
+      applyRestoreResult(result, operationToken)
+      return result
+    } catch (reason) {
+      // 切换失败：退回登录页，展示重试入口。
+      return applyRestoreResult({
+        status: 'retryable',
+        uid,
+        message: toRetryableMessage(reason),
+      }, operationToken)
+    }
+  }
+
+  /**
+   * 快速返回：点击「返回」后立刻切换到主界面，不让登录页停留任何时间。
+   * 关键技巧：先用 await nextTick() 让 returnToUid=null 先 flushed，
+   * 再在同 tick 内把 phase 改为 ready，确保 LoginPanel 的 v-else-if 条件
+   * 不再匹配。Vue 批量刷新时两个 ref 变化会被合并到同一渲染 tick，
+   * 所以用户看不到登录页的瞬间。
+   */
+  async function returnFromAddAccountQuick(onResult?: (result: RestoreSessionResult) => void): Promise<void> {
+    const uid = returnToUid.value
+    if (!uid) return
+    // 第一步：清除返回标记，等 Vue flush，触发一次重渲染（登录页消失）。
+    returnToUid.value = null
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    // 第二步：phase 改为 ready，selectedAccount 设置完毕，同一 tick 内 flush，
+    // 用户只看到登录页瞬间消失、主界面立刻出现。
+    phase.value = 'ready'
+    selectedAccount.value = normalizeAccountSummary({
+      uid,
+      displayAccount: accounts.value.find((a) => a.uid === uid)?.displayAccount ?? uid,
+      loginType: 4,
+      hasSavedPassword: false,
+      isCurrent: true,
+    })
+    // 后台异步恢复会话；成功后通知调用方，失败时退回登录页。
+    void backend.switchAccount(uid)
+      .then((result) => {
+        if (result.status === 'success') {
+          applyRestoreResult(result, operationToken)
+          onResult?.(result)
+        } else {
+          // needsLogin / noAccount：退回登录页。
+          phase.value = 'needsLogin'
+          applyRestoreResult(result, operationToken)
+        }
+      })
+      .catch((reason) => {
+        // IPC 失败：退回登录页并提示重试。
+        phase.value = 'recovering'
+        retryableMessage.value = toRetryableMessage(reason)
+      })
   }
 
   return {
@@ -313,5 +369,6 @@ export function useAccounts(dependencies: AccountsDependencies = {}) {
     applyManualLogin,
     beginAddAccount,
     returnFromAddAccount,
+    returnFromAddAccountQuick,
   }
 }
