@@ -429,6 +429,7 @@ Replace everything from the top of `console.css` through the end of `.account-pi
 .eye-toggle {
   position: absolute;
   right: 4px;
+  top: 6px;
   width: 32px;
   height: 32px;
   border: 0;

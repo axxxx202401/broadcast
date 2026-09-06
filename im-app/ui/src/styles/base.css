@@ -105,11 +105,14 @@ button {
 
 button:focus-visible,
 input:focus-visible,
-select:focus-visible,
 summary:focus-visible,
 [tabindex]:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
+}
+
+select:focus-visible {
+  outline: none;
 }
 
 input,
@@ -139,8 +142,7 @@ select:focus {
 }
 
 /* 亮色：focus ring 用蓝色 */
-[data-theme="light"] input:focus,
-[data-theme="light"] select:focus {
+[data-theme="light"] input:focus {
   box-shadow: 0 0 0 3px rgba(196, 154, 47, 0.15);
 }
 

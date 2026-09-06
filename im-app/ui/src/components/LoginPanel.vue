@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue'
 
 import type { useAuth } from '../composables/useAuth'
 import type { AccountSummary, PrimaryLoginType } from '../types/im'
@@ -64,6 +64,21 @@ const challengeMethodLabel = computed(() => {
 
 const showPassword = ref(false)
 const tabRefs = ref<(HTMLElement | null)[]>([])
+
+interface ToastState { visible: boolean; message: string; type: 'success' | 'info' }
+const toast = ref<ToastState>({ visible: false, message: '', type: 'success' })
+let toastTimer: ReturnType<typeof setTimeout> | null = null
+
+function showToast(message: string, type: 'success' | 'info' = 'success') {
+  if (toastTimer) clearTimeout(toastTimer)
+  toast.value = { visible: true, message, type }
+  toastTimer = setTimeout(() => { toast.value.visible = false; toastTimer = null }, 2600)
+}
+
+watchEffect(() => {
+  const n = props.auth.notice.value
+  if (n) { showToast(n, n.includes('验证码') ? 'success' : 'info'); props.auth.notice.value = '' }
+})
 
 /** 将滑动 indicator 定位到当前激活的 tab。jsdom 中 getBoundingClientRect 可能返回零。 */
 function positionTabIndicator() {
@@ -211,7 +226,7 @@ const canSubmitPrimary = computed(() => {
                     autocomplete="tel-country-code"
                   />
                 </label>
-                <div v-else class="field-group account-cell">
+                <div class="field-group account-cell" :class="{ 'is-phone': isPhoneMethod }">
                   <input
                     v-model.trim="auth.account.value"
                     :type="isPhoneMethod ? 'tel' : 'email'"
@@ -409,7 +424,20 @@ const canSubmitPrimary = computed(() => {
       </template>
 
           <p v-if="auth.error.value" class="feedback error" role="alert">{{ auth.error.value }}</p>
-          <p v-if="auth.notice.value" class="feedback notice" role="status">{{ auth.notice.value }}</p>
+        </div>
+
+        <!-- Toast 通知浮层 -->
+        <div v-if="toast.visible" class="login-toast" :class="toast.type" role="status" aria-live="polite">
+          <span class="login-toast-icon" aria-hidden="true">
+            <svg v-if="toast.type === 'success'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 6L9 17l-5-5"/>
+            </svg>
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/>
+              <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+          </span>
+          <span class="login-toast-msg">{{ toast.message }}</span>
         </div>
       </div>
     </section>
