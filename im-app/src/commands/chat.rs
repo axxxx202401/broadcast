@@ -99,6 +99,8 @@ pub struct MessageDto {
     pub stored_at: Option<i64>,
     /// 是否匹配当前账号的开奖规则；`1` 为匹配，`0` 为不匹配。
     pub matched: i32,
+    /// 已读时间戳（Unix ms）；0 表示未读。
+    pub read_at: i64,
 }
 
 /// 前端可安全回传的消息分页游标。
@@ -169,6 +171,7 @@ fn stored_message_parts(
         content_md5: message.content_md5.clone(),
         stored_at: None,
         matched: 0,
+        read_at: 0,
     };
     // 提取明文文本：version == 0 时内容未加密，直接转为 UTF-8；否则暂时留空，
     // 由调用方在持有解密密钥后补充（persist_monitored_batch 会在入库后立即更新）。
@@ -205,6 +208,7 @@ fn message_dto_from_row(row: im_store::message::MessageRow) -> MessageDto {
         content_md5: row.content_md5,
         stored_at: Some(row.stored_at),
         matched: row.matched,
+        read_at: row.read_at,
     }
 }
 
@@ -2624,6 +2628,34 @@ fn validate_message_page(
         }
     };
     Ok((limit, cursor))
+}
+
+/// 将满足条件的未读匹配消息标记为已读。
+///
+/// `group_id` 为 `None` 时跨群标记；为 `Some` 时只标指定群。
+/// 条件：`matched != 0 AND read_at = 0 AND msg_id <= to_msg_id`。
+/// 返回受影响的行数（0 表示已全部标记或无匹配消息）。
+#[tauri::command]
+pub async fn mark_group_read(
+    state: State<'_, AppState>,
+    group_id: Option<String>,
+    to_msg_id: String,
+) -> Result<usize, String> {
+    let session = authenticated_session_for_connect(&state.auth_session).await?;
+    let db = state
+        .account_db
+        .require(session.uid)
+        .await
+        .map_err(|error| error.to_string())?;
+    let to_msg_id = super::parse_i64_id(&to_msg_id, "to_msg_id")?;
+    let group_id = group_id.as_ref().map(|s| super::parse_i64_id(s, "group_id")).transpose()?;
+    tracing::info!(
+        uid = session.uid,
+        group_id = group_id.map(|g| g.to_string()).as_deref().unwrap_or("all"),
+        to_msg_id,
+        "mark_group_read"
+    );
+    db.messages.mark_read(group_id, to_msg_id).await.map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

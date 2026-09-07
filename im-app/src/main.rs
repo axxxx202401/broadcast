@@ -191,6 +191,7 @@ async fn main() {
             commands::chat::get_connection_status,
             commands::chat::get_messages,
             commands::chat::download_message_attachment,
+            commands::chat::mark_group_read,
             // 开奖配置与历史。
             commands::lottery::get_lottery_config,
             commands::lottery::set_lottery_config,
