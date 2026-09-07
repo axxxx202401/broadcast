@@ -40,10 +40,18 @@ export function useMonitor() {
   const search = ref('')
   /** 是否只显示匹配开奖规则的消息；默认 `true`（只显示匹配消息）。 */
   const showMatchedOnly = ref(true)
-  /** 消息排列方向：`newest-top`（最新消息在顶部）或 `newest-bottom`。默认 `newest-top`。 */
+  /** 消息排列方向：`newest-top`（最新消息在顶部）或 `newest-bottom`。默认 `newest-top`。持久化到 localStorage。 */
+  const MESSAGE_ORDER_KEY = 'im-message-order'
   const messageOrder = ref<'newest-top' | 'newest-bottom'>('newest-top')
+  try {
+    const stored = localStorage.getItem(MESSAGE_ORDER_KEY)
+    if (stored === 'newest-bottom') messageOrder.value = 'newest-bottom'
+  } catch {}
   function toggleOrder() {
-    messageOrder.value = messageOrder.value === 'newest-top' ? 'newest-bottom' : 'newest-top'
+    const next = messageOrder.value === 'newest-top' ? 'newest-bottom' : 'newest-top'
+    messageOrder.value = next
+    try { localStorage.setItem(MESSAGE_ORDER_KEY, next) } catch {}
+    void loadMessages(selectedGroupId.value)
   }
   const connectionStatus = ref<ConnectionStatus>('disconnected')
   const pending = ref<string | null>(null)

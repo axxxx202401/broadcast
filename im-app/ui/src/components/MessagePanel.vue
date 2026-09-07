@@ -113,6 +113,13 @@ const AUTO_SCROLL_THRESHOLD = 80
 const LOAD_OLDER_THRESHOLD = 80
 const SCROLL_DEBOUNCE_MS = 300
 
+/** 用户当前是否在视口底部附近（允许 80px 容差）。 */
+const isAtBottom = computed(() => {
+  const element = viewport.value
+  if (!element) return false
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_THRESHOLD
+})
+
 /** 滚动缓冲：记录视口内收集到的未读 msg_id，滚动停止后一次性提交。 */
 const scrollBuffer = ref<string[]>([])
 let scrollDebounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -385,9 +392,9 @@ watch(
         <strong>暂无已存储消息</strong>
         <p>选择需要监控的群后，新消息会显示在这里</p>
       </div>
-      <!-- 未读浮窗按钮：仅在有未读消息且不在底部时显示。 -->
+      <!-- 未读浮窗按钮：仅在有未读消息且不在视口底部时显示。 -->
       <button
-        v-if="unreadCount > 0"
+        v-if="unreadCount > 0 && !isAtBottom"
         class="unread-float-btn"
         :class="messageOrder === 'newest-top' ? 'unread-float-btn--top' : 'unread-float-btn--bottom'"
         @click="emit('mark-read')"
