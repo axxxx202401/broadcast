@@ -1277,3 +1277,37 @@ async fn test_cleanup_batches_exceed_batch_size() {
         .unwrap();
     assert_eq!(count, 0);
 }
+
+#[tokio::test]
+async fn test_migrate_messages_read_at_column() {
+    // 全新内存库：SCHEMA_SQL 应包含 read_at 列。
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'read_at'",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 1);
+
+    // 插入消息时 read_at 默认 0。
+    store.messages.insert(&MessageRecord {
+        msg_id: 1,
+        group_id: 1,
+        send_uid: 1,
+        msg_type: 0,
+        content: b"test".to_vec(),
+        send_time: 1,
+        content_md5: String::new(),
+        raw_proto: None,
+        content_text: String::new(),
+    }).await.unwrap();
+    let row: (i64,) = sqlx::query_as(
+        "SELECT read_at FROM messages WHERE msg_id = 1",
+    )
+    .bind(1)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(row.0, 0);
+}

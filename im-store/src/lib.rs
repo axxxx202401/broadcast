@@ -78,6 +78,7 @@ impl SqliteStore {
         migrate_messages_matched(&pool).await?;
         migrate_messages_content_text(&pool).await?;
         migrate_lottery_config_issues(&pool).await?;
+        migrate_messages_read_at(&pool).await?;
         Ok(Self {
             pool: pool.clone(),
             messages: MessageStore::new(pool.clone()).await,
@@ -206,6 +207,21 @@ async fn migrate_lottery_config_issues(pool: &SqlitePool) -> Result<(), sqlx::Er
         .execute(pool)
         .await?;
         sqlx::query("ALTER TABLE lottery_config DROP COLUMN current_issue")
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
+/// 检查 `messages` 表，并在缺失时补充 `read_at` 列。
+async fn migrate_messages_read_at(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let column_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'read_at'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if column_count == 0 {
+        sqlx::query("ALTER TABLE messages ADD COLUMN read_at INTEGER NOT NULL DEFAULT 0")
             .execute(pool)
             .await?;
     }

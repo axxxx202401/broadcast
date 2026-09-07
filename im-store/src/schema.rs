@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS messages (
     stored_at   INTEGER NOT NULL,
     raw_proto   BLOB,
     matched     INTEGER NOT NULL DEFAULT 0,
-    content_text TEXT DEFAULT ''
+    content_text TEXT DEFAULT '',
+    read_at     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS user_key_pairs (
