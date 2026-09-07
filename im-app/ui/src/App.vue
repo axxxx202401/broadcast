@@ -322,8 +322,11 @@ function onShowAllMessages() {
         :total-groups="monitor.groups.value.length"
         :monitored-count="monitor.monitoredCount.value"
         :lottery="lottery"
+        :unread-count="monitor.unreadCount.value"
         @load-older="monitor.loadOlderMessages"
         @older-settled="monitor.handleOlderSettled"
+        @mark-read="() => monitor.markAllAsRead()"
+        @scroll-stopped="(maxMsgId: string) => monitor.handleScrollStopped(maxMsgId)"
       />
     </div>
   </main>
