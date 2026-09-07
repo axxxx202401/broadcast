@@ -128,11 +128,17 @@ const AUTO_SCROLL_THRESHOLD = 80
 const LOAD_OLDER_THRESHOLD = 80
 const SCROLL_DEBOUNCE_MS = 300
 
-/** 用户当前是否在视口底部附近（允许 80px 容差）。 */
-const isAtBottom = computed(() => {
+/**
+ * 用户当前是否靠近最新消息端（允许 80px 容差）。
+ * - newest-top：virtualMessages = reverse，新消息在顶部，scrollTop 接近 0
+ * - newest-bottom：virtualMessages = DB顺序，新消息在底部，scrollTop 接近 scrollHeight
+ */
+const isNearNewEnd = computed(() => {
   const element = viewport.value
   if (!element) return false
-  return element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_THRESHOLD
+  return props.messageOrder === 'newest-top'
+    ? element.scrollTop <= AUTO_SCROLL_THRESHOLD
+    : (element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_THRESHOLD)
 })
 
 /**
@@ -452,7 +458,7 @@ watch(
       </div>
       <!-- 未读浮窗按钮：仅在有未读消息且不在视口底部时显示。 -->
       <button
-        v-if="unreadCount > 0 && !isAtBottom"
+        v-if="unreadCount > 0 && !isNearNewEnd"
         class="unread-float-btn"
         :class="messageOrder === 'newest-top' ? 'unread-float-btn--top' : 'unread-float-btn--bottom'"
         @click="emit('mark-read'); scrollToLatest()"
