@@ -46,13 +46,20 @@ export function useLottery(loggedIn?: { value: boolean }) {
     }
   }
 
-  /** 从远端拉取开奖历史并更新显示。URL 未配置时静默跳过。 */
+  /** 从远端拉取开奖历史并更新显示；同时将最新期号同步回后端 DB。URL 未配置时静默跳过。 */
   async function fetchHistory() {
     loading.value = true
     error.value = ''
     try {
       const items = await api.fetchLotteryHistory()
       drawHistory.value = items.slice(0, 20)
+      // 同步最新期号到 DB，确保消息匹配使用最新期号列表。
+      if (items.length > 0 && config.value.api_url) {
+        const issues = items.map(item => item.preDrawIssue)
+        await api.setLotteryConfig(config.value.api_url, issues)
+        // 重新加载配置以刷新前端状态。
+        await loadConfig()
+      }
     } catch (reason) {
       // URL 未配置属于正常初始状态，不展示错误。
       const msg = errorMessage(reason)

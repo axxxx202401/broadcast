@@ -662,10 +662,16 @@ impl MessageEffects for ConnectionMessageEffects {
                 .as_ref()
                 .map(|c| !c.current_issues.is_empty())
                 .unwrap_or(false);
+            let issues_list = config
+                .as_ref()
+                .map(|c| c.current_issues.clone())
+                .unwrap_or_default();
             tracing::info!(
                 uid = session.uid,
                 has_config = has_config,
-                issue_count = config.as_ref().map(|c| c.current_issues.len()).unwrap_or(0),
+                issue_count = issues_list.len(),
+                issues = ?issues_list,
+                api_url = config.as_ref().map(|c| c.api_url.as_str()).unwrap_or(""),
                 "persist_monitored_batch: lottery config check"
             );
             if has_config || records.iter().any(|r| r.content_text.is_empty()) {
@@ -701,7 +707,10 @@ impl MessageEffects for ConnectionMessageEffects {
                                                 msg_id = record.msg_id,
                                                 group_id = record.group_id,
                                                 version = msg.version,
+                                                msg_type = msg.msg_type,
+                                                send_uid = msg.send_uid,
                                                 text_len = text.len(),
+                                                text_trunc = %&text[..text.len().min(200)],
                                                 "persist_monitored_batch: decrypted message"
                                             );
                                             record.content_text = text;
@@ -717,6 +726,8 @@ impl MessageEffects for ConnectionMessageEffects {
                                             tracing::warn!(
                                                 msg_id = record.msg_id,
                                                 group_id = record.group_id,
+                                                version = msg.version,
+                                                msg_type = msg.msg_type,
                                                 error = %e,
                                                 "persist_monitored_batch: decryption failed"
                                             );
@@ -727,7 +738,10 @@ impl MessageEffects for ConnectionMessageEffects {
                                     tracing::debug!(
                                         msg_id = record.msg_id,
                                         group_id = record.group_id,
+                                        msg_type = msg.msg_type,
+                                        send_uid = msg.send_uid,
                                         text_len = record.content_text.len(),
+                                        text_trunc = %&record.content_text[..record.content_text.len().min(200)],
                                         "persist_monitored_batch: plaintext message (version=0)"
                                     );
                                 }
@@ -752,11 +766,20 @@ impl MessageEffects for ConnectionMessageEffects {
                     let mut updated = 0usize;
                     for record in &records {
                         let text = &record.content_text;
+                        // 打印所有非空消息的内容，方便排查匹配失败原因。
+                        tracing::debug!(
+                            uid = session.uid,
+                            msg_id = record.msg_id,
+                            msg_type = record.msg_type,
+                            send_uid = record.send_uid,
+                            content_text_len = text.len(),
+                            content_text_trunc = %&text[..text.len().min(300)],
+                            issues_count = config.current_issues.len(),
+                            issues = ?config.current_issues,
+                            "persist_monitored_batch: lottery check"
+                        );
                         let is_matched = text.contains("开奖")
-                            && config
-                                .current_issues
-                                .iter()
-                                .any(|issue| text.contains(&issue.to_string()));
+                            && issues_list.iter().any(|issue| text.contains(&issue.to_string()));
                         if is_matched {
                             tracing::info!(
                                 uid = session.uid,

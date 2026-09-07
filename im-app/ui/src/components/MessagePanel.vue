@@ -317,9 +317,9 @@ watch(
         <p>选择需要监控的群后，新消息会显示在这里</p>
       </div>
       <!-- 状态条覆盖在虚拟容器顶部，不参与列表高度和虚拟行索引。 -->
-      <div v-else class="history-status" role="status">
+      <!-- <div v-else class="history-status" role="status">
         {{ loadingOlder ? '正在加载更早消息…' : hasOlder ? '向上滚动加载更早消息' : '已到最早消息' }}
-      </div>
+      </div> -->
       <!-- 虚拟容器保留完整滚动高度，仅挂载可视区及 overscan 范围内的语义列表项。 -->
       <ol
         v-if="!loading && messages.length > 0"
