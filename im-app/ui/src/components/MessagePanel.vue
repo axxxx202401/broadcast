@@ -275,7 +275,9 @@ watch(
 )
 
 /**
- * 首批非空消息定位到底部；后续仅在更新前仍接近底部时跟随新消息。
+ * 首批非空消息定位到最新消息端；后续仅在用户仍靠近该端时跟随新消息。
+ * - newest-top：新消息在数组尾部，需滚到底部
+ * - newest-bottom：新消息在数组头部（reverse 后），需滚到顶部
  * 使用 `auto` 避免实时批次连续到达时累积平滑滚动动画。
  */
 watch(
@@ -285,28 +287,37 @@ watch(
     virtualMessages.value[0]?.msg_id,
     virtualMessages.value.at(-1)?.msg_id,
   ] as const,
-  async ([loading, count, _firstMessageId, lastMessageId], previous) => {
+  async ([loading, count, firstMessageId, lastMessageId], previous) => {
     if (loading || count === 0) return
 
-    const [wasLoading, previousCount, , previousLastMessageId] = previous ?? [true, 0]
+    const [wasLoading, previousCount, previousFirstId, previousLastId] = previous ?? [true, 0, undefined, undefined]
     const isInitialLoad = wasLoading || previousCount === 0
+
+    // 判断是否有新消息到达：最旧端或最新端的 msg_id 发生变化
+    const newHeadArrived = firstMessageId !== previousFirstId
+    const newTailArrived = lastMessageId !== previousLastId
+    const hasNewMessage = newHeadArrived || newTailArrived
+
     if (!isInitialLoad) {
-      // 实时窗口达到上限后 length 固定，必须以尾 ID 变化识别新消息；历史前插期间则由
-      // 锚点 watcher 独占滚动恢复，即使尾部同时因裁剪变化也绝不自动滚底。
-      if (lastMessageId === previousLastMessageId || prependAnchor || props.loadingOlder) return
+      // 实时窗口达到上限后 length 固定，必须以头部或尾部 ID 变化识别新消息；
+      // 历史前插期间由锚点 watcher 独占滚动恢复，即使两端同时变化也绝不自动滚动。
+      if (!hasNewMessage || prependAnchor || props.loadingOlder) return
+      // 用户不在最新消息端则不跟随
+      const element = viewport.value
+      const nearNewEnd = props.messageOrder === 'newest-bottom'
+        ? (element ? element.scrollTop <= AUTO_SCROLL_THRESHOLD : false)
+        : (element ? element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_THRESHOLD : false)
+      if (!nearNewEnd) return
     }
 
-    const element = viewport.value
-    const wasNearBottom = element
-      ? element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_THRESHOLD
-      : false
-    if (!isInitialLoad && !wasNearBottom) return
-    // 最新消息在顶部时（newest-top），新消息加到底部，用户手动滚到顶部查看；
-    // newest-bottom 时自动跟随新消息滚底。
-    if (props.messageOrder === 'newest-top') return
-
     await nextTick()
-    virtualizer.value.scrollToIndex(count - 1, { align: 'end', behavior: 'auto' })
+    if (props.messageOrder === 'newest-bottom') {
+      // 新消息在虚拟列表头部，滚到顶部
+      virtualizer.value.scrollToOffset(0, { align: 'start', behavior: 'auto' })
+    } else {
+      // 新消息在虚拟列表尾部，滚到底部
+      virtualizer.value.scrollToIndex(count - 1, { align: 'end', behavior: 'auto' })
+    }
   },
   { immediate: true },
 )
