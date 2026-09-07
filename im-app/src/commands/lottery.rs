@@ -30,9 +30,9 @@ pub struct DrawItemDto {
     pub pre_draw_time: String,
 }
 
-/// 读取当前账号的开奖配置。
+/// 读取当前账号的开奖配置；数据库未配置时回退到构建期注入的默认 API URL。
 ///
-/// 若配置表中无记录，返回空 URL 与空期号列表的默认值。
+/// 若配置表中无记录且未设置默认 URL，返回空 URL 与空期号列表。
 #[tauri::command]
 pub async fn get_lottery_config(state: State<'_, AppState>) -> Result<LotteryConfigDto, String> {
     let session = state
@@ -51,15 +51,23 @@ pub async fn get_lottery_config(state: State<'_, AppState>) -> Result<LotteryCon
         .get(session.uid)
         .await
         .map_err(|e| e.to_string())?;
-    tracing::debug!(
+    let default_api_url = state.config.read().await.lottery_default_api_url.clone();
+    let api_url = if row.api_url.is_empty() {
+        default_api_url.clone()
+    } else {
+        row.api_url.clone()
+    };
+    tracing::info!(
         uid = session.uid,
-        api_url = ?row.api_url,
+        db_api_url = ?row.api_url,
+        default_api_url = ?default_api_url,
+        resolved_api_url = ?api_url,
         issue_count = row.current_issues.len(),
         "Loaded lottery config"
     );
     Ok(LotteryConfigDto {
-        api_url: row.api_url,
-        current_issues: row.current_issues,
+        api_url,
+        current_issues: row.current_issues.clone(),
     })
 }
 
@@ -125,11 +133,16 @@ pub async fn fetch_lottery_history(state: State<'_, AppState>) -> Result<Vec<Dra
         .get(session.uid)
         .await
         .map_err(|e| e.to_string())?;
-    tracing::debug!(uid = session.uid, api_url = ?config.api_url, "Fetching lottery history");
-    if config.api_url.is_empty() {
+    let api_url = if config.api_url.is_empty() {
+        state.config.read().await.lottery_default_api_url.clone()
+    } else {
+        config.api_url
+    };
+    tracing::debug!(uid = session.uid, api_url = ?api_url, "Fetching lottery history");
+    if api_url.is_empty() {
         return Err("Lottery API URL not configured".to_string());
     }
-    let items = lottery::fetch_draw_history(&config.api_url).await?;
+    let items = lottery::fetch_draw_history(&api_url).await?;
     tracing::debug!(
         uid = session.uid,
         count = items.len(),

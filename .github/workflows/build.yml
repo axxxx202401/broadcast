@@ -52,6 +52,8 @@ jobs:
       IM_LOTTERY_MATCH_MODE: ${{ secrets.IM_LOTTERY_MATCH_MODE }}
       IM_LOTTERY_MATCH_UID_START: ${{ secrets.IM_LOTTERY_MATCH_UID_START }}
       IM_LOTTERY_MATCH_UID_END: ${{ secrets.IM_LOTTERY_MATCH_UID_END }}
+      # 开奖历史 API 默认 URL（可选）；用户在数据库中配置后以数据库为准。
+      IM_LOTTERY_DEFAULT_API_URL: ${{ secrets.IM_LOTTERY_DEFAULT_API_URL }}
 
     steps:
       - name: Check out source
@@ -135,6 +137,8 @@ jobs:
       IM_LOTTERY_MATCH_MODE: ${{ secrets.IM_LOTTERY_MATCH_MODE }}
       IM_LOTTERY_MATCH_UID_START: ${{ secrets.IM_LOTTERY_MATCH_UID_START }}
       IM_LOTTERY_MATCH_UID_END: ${{ secrets.IM_LOTTERY_MATCH_UID_END }}
+      # 开奖历史 API 默认 URL（可选）；用户在数据库中配置后以数据库为准。
+      IM_LOTTERY_DEFAULT_API_URL: ${{ secrets.IM_LOTTERY_DEFAULT_API_URL }}
 
     steps:
       - name: Check out source
@@ -209,6 +213,8 @@ jobs:
       IM_LOTTERY_MATCH_MODE: ${{ secrets.IM_LOTTERY_MATCH_MODE }}
       IM_LOTTERY_MATCH_UID_START: ${{ secrets.IM_LOTTERY_MATCH_UID_START }}
       IM_LOTTERY_MATCH_UID_END: ${{ secrets.IM_LOTTERY_MATCH_UID_END }}
+      # 开奖历史 API 默认 URL（可选）；用户在数据库中配置后以数据库为准。
+      IM_LOTTERY_DEFAULT_API_URL: ${{ secrets.IM_LOTTERY_DEFAULT_API_URL }}
 
     steps:
       - name: Check out source

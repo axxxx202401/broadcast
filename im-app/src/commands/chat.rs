@@ -765,8 +765,23 @@ impl MessageEffects for ConnectionMessageEffects {
                 );
             }
             // 检查匹配开奖配置。
+            // UID 模式不需要 current_issues，只需 DB 有配置即可匹配。
             if let Some(config) = config {
-                if !config.current_issues.is_empty() {
+                let app_config = self.context.config.read().await;
+                let match_mode = app_config.match_mode.clone();
+                let match_uid_start = app_config.match_uid_start;
+                let match_uid_end = app_config.match_uid_end;
+                drop(app_config);
+
+                let should_match = if match_mode == "uid" {
+                    // UID 模式：只要 DB 有配置就匹配
+                    true
+                } else {
+                    // Issue 模式：需要 current_issues 非空
+                    !config.current_issues.is_empty()
+                };
+
+                if should_match {
                     let mut updated = 0usize;
                     for record in &records {
                         let text = &record.content_text;
@@ -778,6 +793,9 @@ impl MessageEffects for ConnectionMessageEffects {
                             send_uid = record.send_uid,
                             content_text_len = text.len(),
                             content_text_trunc = %&text[..text.len().min(300)],
+                            match_mode = match_mode,
+                            match_uid_start,
+                            match_uid_end,
                             issues_count = config.current_issues.len(),
                             issues = ?config.current_issues,
                             "persist_monitored_batch: lottery check"
@@ -785,17 +803,14 @@ impl MessageEffects for ConnectionMessageEffects {
                         // 根据 match_mode 选择匹配方式：
                         // - "issue"（默认）：开奖文本 + 期号匹配。
                         // - "uid"：开奖文本 + 发信人 UID 在配置范围内匹配。
-                        let app_config = self.context.config.read().await;
-                        let match_mode = app_config.match_mode.as_str();
                         let is_matched = if match_mode == "uid" {
                             text.contains("开奖")
-                                && record.send_uid >= app_config.match_uid_start
-                                && record.send_uid <= app_config.match_uid_end
+                                && record.send_uid >= match_uid_start
+                                && record.send_uid <= match_uid_end
                         } else {
                             text.contains("开奖")
                                 && issues_list.iter().any(|issue| text.contains(&issue.to_string()))
                         };
-                        drop(app_config);
                         if is_matched {
                             tracing::info!(
                                 uid = session.uid,

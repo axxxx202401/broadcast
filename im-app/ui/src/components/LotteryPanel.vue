@@ -72,7 +72,7 @@ function cancelEdit() {
         <span :class="{ spinning: loading }" aria-hidden="true">↻</span>
       </button>
     </div>
-    <div v-if="previousDraw" class="lottery-row">
+    <div class="lottery-row">
       <span class="issue">
         <em class="issue-since">上期期号</em>
         <strong class="issue-num">{{ previousDraw?.preDrawIssue ?? '—' }}</strong>

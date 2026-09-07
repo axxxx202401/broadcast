@@ -25,6 +25,9 @@ pub struct AppConfig {
     /// 匹配模式下监听的发信人 UID 范围上限；仅 `match_mode == "uid"` 时生效。
     #[serde(default)]
     pub match_uid_end: i64,
+    /// 开奖历史 API 默认 URL；用户未在数据库中配置时作为回退值使用。
+    #[serde(default)]
+    pub lottery_default_api_url: String,
 }
 
 fn default_match_mode() -> String {
@@ -76,6 +79,7 @@ impl Default for AppConfig {
             match_mode: default_match_mode(),
             match_uid_start: 0,
             match_uid_end: i64::MAX,
+            lottery_default_api_url: String::new(),
         }
     }
 }
@@ -87,6 +91,13 @@ impl AppConfig {
     /// 未设置时使用默认值（`issue` 模式，匹配全部期号）。环境变量由构建脚本提供；
     /// 运行已经生成的安装包时再设置变量不会改变配置。
     pub fn from_build_env() -> AppResult<Self> {
+        eprintln!(
+            "from_build_env: 开始读取环境变量"
+        );
+        eprintln!(
+            "IM_LOTTERY_DEFAULT_API_URL compile-time value = {:?}",
+            option_env!("IM_LOTTERY_DEFAULT_API_URL")
+        );
         let mut values: Vec<(&str, Option<&str>)> = vec![
             ("IM_OPENCHAT_USER_URL", option_env!("IM_OPENCHAT_USER_URL")),
             ("IM_BIZ_URL", option_env!("IM_BIZ_URL")),
@@ -110,6 +121,8 @@ impl AppConfig {
             ("IM_LOTTERY_MATCH_MODE", option_env!("IM_LOTTERY_MATCH_MODE")),
             ("IM_LOTTERY_MATCH_UID_START", option_env!("IM_LOTTERY_MATCH_UID_START")),
             ("IM_LOTTERY_MATCH_UID_END", option_env!("IM_LOTTERY_MATCH_UID_END")),
+            // 开奖历史 API 默认 URL（可选）；未设置时数据库为空则无法拉取历史。
+            ("IM_LOTTERY_DEFAULT_API_URL", option_env!("IM_LOTTERY_DEFAULT_API_URL")),
         ];
         let match_mode = values
             .iter()
@@ -130,16 +143,33 @@ impl AppConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(i64::MAX);
         // 将可选的匹配参数设为 None，避免 from_values 将其当作必填项报错。
+        // 注意：IM_LOTTERY_DEFAULT_API_URL 不设为 None，需要保留实际值。
         for entry in values.iter_mut() {
-            if matches!(entry.0, "IM_LOTTERY_MATCH_MODE" | "IM_LOTTERY_MATCH_UID_START" | "IM_LOTTERY_MATCH_UID_END") {
+            if matches!(
+                entry.0,
+                "IM_LOTTERY_MATCH_MODE"
+                    | "IM_LOTTERY_MATCH_UID_START"
+                    | "IM_LOTTERY_MATCH_UID_END"
+            ) {
                 entry.1 = None;
             }
         }
         let base = Self::from_values(&values)?;
+        let lottery_default_api_url = values
+            .iter()
+            .find_map(|(name, value)| (*name == "IM_LOTTERY_DEFAULT_API_URL").then_some(*value))
+            .flatten()
+            .unwrap_or("")
+            .to_string();
+        eprintln!(
+            "from_build_env: lottery_default_api_url = {}",
+            lottery_default_api_url
+        );
         Ok(Self {
             match_mode,
             match_uid_start,
             match_uid_end,
+            lottery_default_api_url,
             ..base
         })
     }
@@ -194,6 +224,7 @@ impl AppConfig {
             match_mode: default_match_mode(),
             match_uid_start: 0,
             match_uid_end: i64::MAX,
+            lottery_default_api_url: String::new(),
         })
     }
 }
