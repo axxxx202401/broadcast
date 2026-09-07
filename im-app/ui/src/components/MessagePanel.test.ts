@@ -72,6 +72,7 @@ function makeMessage(index: number): MessageDto {
     content_md5: '',
     stored_at: null,
     matched: 0,
+    read_at: 0,
   }
 }
 

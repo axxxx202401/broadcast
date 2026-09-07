@@ -32,6 +32,7 @@ function message(decodedContent: MessageDto['decoded_content']): MessageDto {
     content_md5: '',
     stored_at: null,
     matched: 0,
+    read_at: 0,
   }
 }
 

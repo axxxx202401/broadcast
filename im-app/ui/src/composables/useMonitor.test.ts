@@ -70,6 +70,7 @@ const message = (id: string, groupId: string, sendTime: number): MessageDto => (
   content_md5: id,
   stored_at: null,
   matched: 0,
+  read_at: 0,
 })
 
 /** 构造后端消息页，默认表示已经到达最早记录。 */
