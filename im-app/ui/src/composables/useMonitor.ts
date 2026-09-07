@@ -526,9 +526,8 @@ export function useMonitor() {
           if (maxMsg) {
             void api.markGroupRead(selectedGroupId.value, maxMsg.msg_id)
             const now = Date.now()
-            messages.value = messages.value.map((m) =>
-              m.matched !== 0 && m.read_at === 0 ? { ...m, read_at: now } : m,
-            )
+            messageIndex.markRead((m) => m.matched !== 0 && m.read_at === 0, now)
+            messages.value = messageIndex.snapshot()
           }
         }
       }),
@@ -571,9 +570,8 @@ export function useMonitor() {
       console.debug(`[useMonitor] markAllAsRead: affected=${affected}`)
       if (affected === 0) return
       const now = Date.now()
-      messages.value = messages.value.map((m) =>
-        m.matched !== 0 && m.read_at === 0 ? { ...m, read_at: now } : m,
-      )
+      messageIndex.markRead((m) => m.matched !== 0 && m.read_at === 0, now)
+      messages.value = messageIndex.snapshot()
     } catch (e) {
       console.error('[useMonitor] markAllAsRead error:', e)
     }

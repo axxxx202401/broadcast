@@ -104,6 +104,22 @@ export class MessageIndex {
     return [...this.ordered]
   }
 
+  /**
+   * 原地把满足条件的消息标记为已读并同步 both byId 和 ordered。
+   * 仅修改 read_at，不改变顺序；调用方负责发布 snapshot()。
+   */
+  markRead(match: (m: MessageDto) => boolean, readAt: number): void {
+    for (let i = 0; i < this.ordered.length; i++) {
+      const entry = this.ordered[i]
+      if (!entry) continue
+      if (match(entry)) {
+        const updated = { ...entry, read_at: readAt }
+        this.ordered[i] = updated
+        this.byId.set(entry.msg_id, updated)
+      }
+    }
+  }
+
   private findInsertionIndex(message: MessageDto): number {
     const last = this.ordered.at(-1)
     if (!last || this.compare(last, message) <= 0) return this.ordered.length
