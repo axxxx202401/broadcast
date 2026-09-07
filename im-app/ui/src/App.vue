@@ -328,6 +328,7 @@ function onShowAllMessages() {
         @older-settled="monitor.handleOlderSettled"
         @mark-read="() => monitor.markAllAsRead()"
         @scroll-stopped="(maxMsgId: string) => monitor.handleScrollStopped(maxMsgId)"
+        @auto-mark-read="() => monitor.markAllAsRead()"
         @toggle-order="monitor.toggleOrder"
       />
     </div>

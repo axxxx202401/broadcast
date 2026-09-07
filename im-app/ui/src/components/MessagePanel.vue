@@ -57,6 +57,8 @@ const emit = defineEmits<{
   'toggle-order': []
   /** 人工滚动停止，携带视口内收集到的最大未读 msg_id。 */
   'scroll-stopped': [maxMsgId: string]
+  /** 用户位于最新消息端且新消息到达，自动标记已读（不依赖滚动 debounce）。 */
+  'auto-mark-read': []
 }>()
 
 const viewport = ref<HTMLElement | null>(null)
@@ -361,6 +363,8 @@ watch(
         ? (element ? element.scrollTop <= AUTO_SCROLL_THRESHOLD : false)   // 顶部 = 最新消息端
         : (element ? element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_THRESHOLD : false)  // 底部 = 最新消息端
       if (!nearNewEnd) return
+      // 用户在最新消息端 + 新消息到达：立即通知父组件标记已读，不依赖 scroll debounce。
+      emit('auto-mark-read')
     }
 
     await nextTick()
