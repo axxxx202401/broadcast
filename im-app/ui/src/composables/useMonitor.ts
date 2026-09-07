@@ -518,9 +518,18 @@ export function useMonitor() {
         if (loggedIn.value) void loadMessages(selectedGroupId.value)
         // 首次加载完成后，把历史消息中所有未读匹配消息标记为已读，
         // 避免老数据满屏未读提示干扰新的监控会话。
+        // 取 msg_id 最大的一条，确保所有历史消息都在 mark_read 的更新范围内。
         if (loggedIn.value && messages.value.length > 0) {
-          const lastMsg = messages.value[messages.value.length - 1]
-          if (lastMsg) void api.markGroupRead(selectedGroupId.value, lastMsg.msg_id)
+          const maxMsg = messages.value.reduce((a, b) =>
+            parseInt(a.msg_id) >= parseInt(b.msg_id) ? a : b,
+          )
+          if (maxMsg) {
+            void api.markGroupRead(selectedGroupId.value, maxMsg.msg_id)
+            const now = Date.now()
+            messages.value = messages.value.map((m) =>
+              m.matched !== 0 && m.read_at === 0 ? { ...m, read_at: now } : m,
+            )
+          }
         }
       }),
     ]).then((results) => {
@@ -550,16 +559,24 @@ export function useMonitor() {
 
   /** 将指定范围内未读匹配消息标记为已读；仅做本地更新，不重新拉取列表。 */
   async function markAllAsRead(toMsgId?: string) {
-    if (unreadCount.value === 0) return
     const groupId = selectedGroupId.value
     const targetMsgId = toMsgId ?? messages.value[messages.value.length - 1]?.msg_id
-    if (!targetMsgId) return
-    const affected = await api.markGroupRead(groupId, targetMsgId)
-    if (affected === 0) return
-    const now = Date.now()
-    messages.value = messages.value.map((m) =>
-      m.matched !== 0 && m.read_at === 0 ? { ...m, read_at: now } : m,
-    )
+    console.debug(`[useMonitor] markAllAsRead: groupId=${groupId}, targetMsgId=${targetMsgId}`)
+    if (!targetMsgId) {
+      console.debug('[useMonitor] markAllAsRead: no targetMsgId, skip')
+      return
+    }
+    try {
+      const affected = await api.markGroupRead(groupId, targetMsgId)
+      console.debug(`[useMonitor] markAllAsRead: affected=${affected}`)
+      if (affected === 0) return
+      const now = Date.now()
+      messages.value = messages.value.map((m) =>
+        m.matched !== 0 && m.read_at === 0 ? { ...m, read_at: now } : m,
+      )
+    } catch (e) {
+      console.error('[useMonitor] markAllAsRead error:', e)
+    }
   }
 
   /** 人工滚动停止后，把滚动范围内未读匹配消息标记为已读。 */

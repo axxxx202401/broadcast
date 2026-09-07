@@ -505,19 +505,6 @@ watch(
         <strong>暂无已存储消息</strong>
         <p>选择需要监控的群后，新消息会显示在这里</p>
       </div>
-      <!-- 未读浮窗按钮：仅在有未读消息且不在视口底部时显示。 -->
-      <button
-        v-if="unreadCount > 0 && isAwayFromNewEnd"
-        class="unread-float-btn"
-        :class="messageOrder === 'newest-top' ? 'unread-float-btn--top' : 'unread-float-btn--bottom'"
-        @click="emit('mark-read'); scrollToLatest()"
-        :aria-label="`标记全部已读，共 ${unreadCount} 条未读`"
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M12 5v14M5 12l7 7 7-7"/>
-        </svg>
-        <span class="unread-float-btn__badge" aria-hidden="true">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
-      </button>
     <!-- 状态条覆盖在虚拟容器顶部，不参与列表高度和虚拟行索引。 -->
       <!-- <div v-else class="history-status" role="status">
         {{ loadingOlder ? '正在加载更早消息…' : hasOlder ? '向上滚动加载更早消息' : '已到最早消息' }}
@@ -550,6 +537,23 @@ watch(
         </li>
       </ol>
     </div>
+    <!-- 未读浮窗按钮：放在视口外部，相对于 message-panel 固定定位，不随滚动位移。 -->
+    <button
+      v-if="unreadCount > 0 && isAwayFromNewEnd"
+      class="unread-float-btn"
+      :class="messageOrder === 'newest-top' ? 'unread-float-btn--top' : 'unread-float-btn--bottom'"
+      @click="emit('mark-read'); scrollToLatest()"
+      :aria-label="`标记全部已读，共 ${unreadCount} 条未读`"
+    >
+      <!-- newest-top 时箭头朝上（指向最新消息方向）；newest-bottom 时箭头朝下。 -->
+      <svg v-if="messageOrder === 'newest-top'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 19V5M5 12l7-7 7 7"/>
+      </svg>
+      <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 5v14M5 12l7 7 7-7"/>
+      </svg>
+      <span class="unread-float-btn__badge" aria-hidden="true">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+    </button>
 
     <footer class="message-footer">
       <span v-if="group">群 ID：{{ group.group_id }}</span>

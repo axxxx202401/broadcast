@@ -72,10 +72,16 @@ export class MessageIndex {
     for (const message of incoming) uniqueIncoming.set(message.msg_id, message)
 
     let trimmed = 0
-    for (const message of uniqueIncoming.values()) {
-      const previous = this.byId.get(message.msg_id)
+    for (const incoming of uniqueIncoming.values()) {
+      const previous = this.byId.get(incoming.msg_id)
+      // 实时消息通道传来的消息 read_at 始终为 0（hardcoded），
+      // 若旧条目已有已读时间戳则保留，避免已读消息被覆盖回未读状态。
+      let message = incoming
       if (previous) {
         const previousIndex = this.ordered.indexOf(previous)
+        if (previous.read_at > 0 && message.read_at === 0) {
+          message = { ...message, read_at: previous.read_at }
+        }
         this.byId.set(message.msg_id, message)
         if (previous.send_time === message.send_time) {
           this.ordered[previousIndex] = message
@@ -83,7 +89,7 @@ export class MessageIndex {
         }
         this.ordered.splice(previousIndex, 1)
       } else {
-        this.byId.set(message.msg_id, message)
+        this.byId.set(incoming.msg_id, incoming)
       }
 
       const insertionIndex = this.findInsertionIndex(message)

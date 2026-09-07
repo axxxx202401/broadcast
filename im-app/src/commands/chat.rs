@@ -884,16 +884,16 @@ impl MessageEffects for ConnectionMessageEffects {
         })
         .await;
 
-        // 从数据库读取最新的 matched 值，因为 persist_monitored_batch 可能已更新。
-        // stored_message_parts 中 matched 硬编码为 0，此处修正为 DB 中的实际值。
-        let db_matched: std::collections::HashMap<i64, i32> = {
+        // 从数据库读取最新的 matched 和 read_at 值，因为 persist_monitored_batch 可能已更新。
+        // stored_message_parts 中 matched 硬编码为 0，read_at 硬编码为 0，此处修正为 DB 中的实际值。
+        let db_values: std::collections::HashMap<i64, (i32, i64)> = {
             let ids: Vec<String> = dtos.iter().map(|d| d.msg_id.clone()).collect();
             let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let sql = format!(
-                "SELECT msg_id, matched FROM messages WHERE msg_id IN ({})",
+                "SELECT msg_id, matched, read_at FROM messages WHERE msg_id IN ({})",
                 placeholders
             );
-            let mut q = sqlx::query_as::<_, (i64, i32)>(&sql);
+            let mut q = sqlx::query_as::<_, (i64, i32, i64)>(&sql);
             for id_str in &ids {
                 q = q.bind(id_str.parse::<i64>().unwrap_or(0));
             }
@@ -901,17 +901,19 @@ impl MessageEffects for ConnectionMessageEffects {
                 .await
                 .unwrap_or_default()
                 .into_iter()
+                .map(|(id, matched, read_at)| (id, (matched, read_at)))
                 .collect()
         };
         tracing::debug!(
-            fetched = db_matched.len(),
+            fetched = db_values.len(),
             total = dtos.len(),
-            "publish_monitored_batch: loaded matched from DB"
+            "publish_monitored_batch: loaded matched/read_at from DB"
         );
         for dto in &mut dtos {
             if let Ok(msg_id) = dto.msg_id.parse::<i64>() {
-                if let Some(&matched) = db_matched.get(&msg_id) {
+                if let Some(&(matched, read_at)) = db_values.get(&msg_id) {
                     dto.matched = matched;
+                    dto.read_at = read_at;
                 }
             }
         }

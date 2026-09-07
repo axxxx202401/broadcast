@@ -878,7 +878,7 @@
   height: 16px;
 }
 
-/* 未读浮窗按钮：圆形，右下角 */
+/* 未读浮窗按钮：圆形，固定在消息面板右下角/右上角，不随内容滚动位移。 */
 .unread-float-btn {
   position: absolute;
   bottom: 20px;
@@ -906,12 +906,12 @@
   height: 20px;
 }
 .unread-float-btn--top {
-  top: 80px;
+  top: 120px;
   bottom: auto;
 }
 .unread-float-btn--bottom {
   top: auto;
-  bottom: 20px;
+  bottom: 40px;
 }
 .unread-float-btn__badge {
   position: absolute;
@@ -1132,6 +1132,7 @@
   min-width: 0;
   min-height: 0;
   flex-direction: column;
+  position: relative;
 }
 
 .message-header {
