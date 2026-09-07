@@ -476,19 +476,20 @@ watch(
       >
         <li
           v-for="item in virtualItems"
-          :key="messages[item.index].msg_id"
+          :key="virtualMessages[item.index]!.msg_id"
           :ref="measureElement"
           :data-index="item.index"
           :style="{ transform: `translateY(${item.start}px)` }"
         >
           <!-- 行内只挂卡片；边距与边框在 article 上，避免绝对定位 li 外边距折叠。 -->
+          <!-- item.index 指向 virtualMessages（可能已反转），必须从 virtualMessages 取消息。 -->
           <MessageCard
-            v-if="messages[item.index]"
-            :message="messages[item.index]"
+            v-if="virtualMessages[item.index]"
+            :message="virtualMessages[item.index]"
             :show-group="!group"
             :class="{
-              'message-card--new': highlightedIds.has(messages[item.index].msg_id),
-              'message-card--unread': messages[item.index]?.matched !== 0 && messages[item.index]?.read_at === 0,
+              'message-card--new': highlightedIds.has(virtualMessages[item.index]!.msg_id),
+              'message-card--unread': virtualMessages[item.index]?.matched !== 0 && virtualMessages[item.index]?.read_at === 0,
             }"
           />
         </li>
