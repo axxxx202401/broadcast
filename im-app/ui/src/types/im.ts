@@ -70,6 +70,8 @@ export interface MessageDto {
   stored_at: number | null
   /** 是否匹配当前账号的开奖规则；`1` 为匹配，`0` 为不匹配。 */
   matched: number
+  /** 已读时间戳（Unix ms）；0 表示未读。 */
+  read_at: number
 }
 
 /** 指向一页中最老消息的复合 keyset 游标。 */

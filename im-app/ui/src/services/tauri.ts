@@ -177,4 +177,10 @@ export const api = {
     invoke<void>('set_lottery_config', { apiUrl, currentIssues }),
   /** 从远端拉取开奖历史，按期号降序排列；URL 未配置时拒绝。 */
   fetchLotteryHistory: () => invoke<DrawItem[]>('fetch_lottery_history'),
+  /**
+   * 将指定范围内未读匹配消息标记为已读。
+   * `groupId` 为 `null` 时全群标记；非空时只标该群。
+   */
+  markGroupRead: (groupId: string | null, toMsgId: string) =>
+    invoke<number>('mark_group_read', { groupId, toMsgId }),
 }
