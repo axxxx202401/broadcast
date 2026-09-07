@@ -276,8 +276,8 @@ watch(
 
 /**
  * 首批非空消息定位到最新消息端；后续仅在用户仍靠近该端时跟随新消息。
- * - newest-top：新消息在数组尾部，需滚到底部
- * - newest-bottom：新消息在数组头部（reverse 后），需滚到顶部
+ * - newest-top：virtualMessages = DB顺序（最旧→最新），新消息在尾部 index count-1，滚到底部
+ * - newest-bottom：virtualMessages = reverse，新消息在头部 index 0，滚到顶部 offset 0
  * 使用 `auto` 避免实时批次连续到达时累积平滑滚动动画。
  */
 watch(
@@ -293,29 +293,29 @@ watch(
     const [wasLoading, previousCount, previousFirstId, previousLastId] = previous ?? [true, 0, undefined, undefined]
     const isInitialLoad = wasLoading || previousCount === 0
 
-    // 判断是否有新消息到达：最旧端或最新端的 msg_id 发生变化
-    const newHeadArrived = firstMessageId !== previousFirstId
-    const newTailArrived = lastMessageId !== previousLastId
-    const hasNewMessage = newHeadArrived || newTailArrived
+    // 判断是否有新消息到达：取决于排序方向，最新端不同
+    const newMessageArrived = props.messageOrder === 'newest-bottom'
+      ? firstMessageId !== previousFirstId  // newest-bottom: 新消息在头部
+      : lastMessageId !== previousLastId    // newest-top: 新消息在尾部
 
     if (!isInitialLoad) {
-      // 实时窗口达到上限后 length 固定，必须以头部或尾部 ID 变化识别新消息；
-      // 历史前插期间由锚点 watcher 独占滚动恢复，即使两端同时变化也绝不自动滚动。
-      if (!hasNewMessage || prependAnchor || props.loadingOlder) return
+      // 实时窗口达到上限后 length 固定，必须以最新端 ID 变化识别新消息；
+      // 历史前插期间由锚点 watcher 独占滚动恢复，绝不自动滚动。
+      if (!newMessageArrived || prependAnchor || props.loadingOlder) return
       // 用户不在最新消息端则不跟随
       const element = viewport.value
       const nearNewEnd = props.messageOrder === 'newest-bottom'
-        ? (element ? element.scrollTop <= AUTO_SCROLL_THRESHOLD : false)
-        : (element ? element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_THRESHOLD : false)
+        ? (element ? element.scrollTop <= AUTO_SCROLL_THRESHOLD : false)   // 顶部 = 最新消息端
+        : (element ? element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_THRESHOLD : false)  // 底部 = 最新消息端
       if (!nearNewEnd) return
     }
 
     await nextTick()
     if (props.messageOrder === 'newest-bottom') {
-      // 新消息在虚拟列表头部，滚到顶部
+      // 新消息在虚拟列表头部 (index 0)，滚到顶部
       virtualizer.value.scrollToOffset(0, { align: 'start', behavior: 'auto' })
     } else {
-      // 新消息在虚拟列表尾部，滚到底部
+      // 新消息在虚拟列表尾部 (index count-1)，滚到底部
       virtualizer.value.scrollToIndex(count - 1, { align: 'end', behavior: 'auto' })
     }
   },
@@ -355,25 +355,28 @@ function clearHighlightTimers() {
 onUnmounted(clearHighlightTimers)
 
 /**
- * 比较上一次尾部 `msg_id`：仅非初次、非历史前插的新尾 ID 进入高亮集合。
- * 初次载入、loading 结束后的首批、以及 `prependAnchor` / `loadingOlder` 期间的尾变化一律忽略。
+ * 比较最新消息端 `msg_id` 的变化：仅非初次、非历史前插的新消息进入高亮集合。
+ * - newest-top：新消息在尾部 at(-1)
+ * - newest-bottom：新消息在头部 [0]（reverse 后）
  */
 watch(
   () => [
     props.loading,
     virtualMessages.value.length,
-    virtualMessages.value.at(-1)?.msg_id,
+    props.messageOrder === 'newest-bottom'
+      ? virtualMessages.value[0]?.msg_id
+      : virtualMessages.value.at(-1)?.msg_id,
   ] as const,
-  ([loading, count, lastMessageId], previous) => {
-    if (loading || count === 0 || lastMessageId === undefined) return
+  ([loading, count, newEndMessageId], previous) => {
+    if (loading || count === 0 || newEndMessageId === undefined) return
 
-    const [wasLoading, previousCount, previousLastMessageId] = previous ?? [true, 0, undefined]
+    const [wasLoading, previousCount, previousNewEndId] = previous ?? [true, 0, undefined]
     const isInitialLoad = wasLoading || previousCount === 0
     if (isInitialLoad) return
     if (prependAnchor || props.loadingOlder) return
-    if (lastMessageId === previousLastMessageId) return
+    if (newEndMessageId === previousNewEndId) return
 
-    markNewTailMessage(lastMessageId)
+    markNewTailMessage(newEndMessageId)
   },
 )
 </script>
