@@ -71,6 +71,8 @@ pub struct MessageRow {
     pub matched: i32,
     /// 解密后的明文文本，对应 `messages.content_text`。
     pub content_text: String,
+    /// 已读时间戳（Unix ms）；0 表示未读。
+    pub read_at: i64,
 }
 
 /// 一页按时间倒序排列的消息。
@@ -171,7 +173,7 @@ impl MessageStore {
         let rows = if let Some(cursor) = cursor {
             sqlx::query(
                 r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
-                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text
+                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text, m.read_at
                    FROM messages m
                    LEFT JOIN groups g ON g.group_id = m.group_id
                    WHERE m.group_id = ?
@@ -191,7 +193,7 @@ impl MessageStore {
         } else {
             sqlx::query(
                 r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
-                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text
+                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text, m.read_at
                    FROM messages m
                    LEFT JOIN groups g ON g.group_id = m.group_id
                    WHERE m.group_id = ?
@@ -223,7 +225,7 @@ impl MessageStore {
         let rows = if let Some(cursor) = cursor {
             sqlx::query(
                 r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
-                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text
+                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text, m.read_at
                    FROM messages m
                    JOIN groups g ON g.group_id = m.group_id
                    WHERE g.monitored = 1 AND g.available = 1
@@ -242,7 +244,7 @@ impl MessageStore {
         } else {
             sqlx::query(
                 r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
-                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text
+                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text, m.read_at
                    FROM messages m
                    JOIN groups g ON g.group_id = m.group_id
                    WHERE g.monitored = 1 AND g.available = 1
@@ -265,7 +267,7 @@ impl MessageStore {
     pub async fn get_by_id(&self, msg_id: i64) -> sqlx::Result<Option<MessageRow>> {
         let row = sqlx::query(
             r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
-                      m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text
+                      m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text, m.read_at
                FROM messages m
                LEFT JOIN groups g ON g.group_id = m.group_id
                WHERE m.msg_id = ?"#,
@@ -287,7 +289,40 @@ impl MessageStore {
             group_name: row.get("group_name"),
             matched: row.get("matched"),
             content_text: row.get("content_text"),
+            read_at: row.get("read_at"),
         }))
+    }
+
+    /// 将指定群组中满足条件的未读匹配消息标记为已读。
+    ///
+    /// `group_id` 为 `None` 时跨群标记；`Some(id)` 时只标该群。
+    /// 条件：`matched != 0 AND read_at = 0 AND msg_id <= to_msg_id`。
+    /// 返回受影响的行数。
+    pub async fn mark_read(
+        &self,
+        group_id: Option<i64>,
+        to_msg_id: i64,
+    ) -> sqlx::Result<usize> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let result = if let Some(gid) = group_id {
+            sqlx::query(
+                "UPDATE messages SET read_at = ? WHERE group_id = ? AND matched != 0 AND read_at = 0 AND msg_id <= ?",
+            )
+            .bind(now)
+            .bind(gid)
+            .bind(to_msg_id)
+            .execute(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "UPDATE messages SET read_at = ? WHERE matched != 0 AND read_at = 0 AND msg_id <= ?",
+            )
+            .bind(now)
+            .bind(to_msg_id)
+            .execute(&self.pool)
+            .await?
+        };
+        Ok(result.rows_affected() as usize)
     }
 
     /// 删除所有 `send_time` 严格早于 `keep_since` 的消息。
@@ -355,6 +390,7 @@ fn message_page(rows: Vec<sqlx::sqlite::SqliteRow>, limit: usize) -> MessagePage
             group_name: row.get("group_name"),
             matched: row.get("matched"),
             content_text: row.get("content_text"),
+            read_at: row.get("read_at"),
         })
         .collect::<Vec<_>>();
     let next_cursor = has_more && !messages.is_empty();
