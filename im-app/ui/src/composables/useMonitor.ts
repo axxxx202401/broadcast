@@ -40,6 +40,11 @@ export function useMonitor() {
   const search = ref('')
   /** 是否只显示匹配开奖规则的消息；默认 `true`（只显示匹配消息）。 */
   const showMatchedOnly = ref(true)
+  /** 消息排列方向：`newest-top`（最新消息在顶部）或 `newest-bottom`。默认 `newest-top`。 */
+  const messageOrder = ref<'newest-top' | 'newest-bottom'>('newest-top')
+  function toggleOrder() {
+    messageOrder.value = messageOrder.value === 'newest-top' ? 'newest-bottom' : 'newest-top'
+  }
   const connectionStatus = ref<ConnectionStatus>('disconnected')
   const pending = ref<string | null>(null)
   const error = ref('')
@@ -572,6 +577,8 @@ export function useMonitor() {
     search,
     /** 是否只显示匹配开奖规则的消息，默认 `true`。 */
     showMatchedOnly,
+    messageOrder,
+    toggleOrder,
     /** 经过 `showMatchedOnly` 过滤后的消息列表。 */
     filteredMessages,
     /** 当前未读匹配消息数。 */
