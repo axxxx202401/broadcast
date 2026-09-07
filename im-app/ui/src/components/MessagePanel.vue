@@ -32,6 +32,10 @@ const props = withDefaults(defineProps<{
     saveConfig: (url: string, issues: number[]) => Promise<void>
     fetchHistory: () => Promise<void>
   }
+  /** 当前未读匹配消息数。 */
+  unreadCount?: number
+  /** 消息排序方向：`newest-top`（默认，最新消息在顶部）或 `newest-bottom`。 */
+  messageOrder?: 'newest-top' | 'newest-bottom'
 }>(), {
   hasOlder: false,
   loadingOlder: false,
@@ -39,12 +43,20 @@ const props = withDefaults(defineProps<{
   monitoredGroupIds: () => [],
   totalGroups: 0,
   monitoredCount: 0,
+  unreadCount: 0,
+  messageOrder: 'newest-top',
 })
 const emit = defineEmits<{
   /** 视口接近顶部且仍有历史时，请求父组件读取下一页。 */
   'load-older': []
   /** 当前历史轮次已完成锚点恢复或无新增/失败收尾，可以发布期间缓冲的实时消息。 */
   'older-settled': [token: number]
+  /** 用户点击"标记全部已读"浮窗按钮。 */
+  'mark-read': []
+  /** 用户点击排序切换按钮。 */
+  'toggle-order': []
+  /** 人工滚动停止，携带视口内收集到的最大未读 msg_id。 */
+  'scroll-stopped': [maxMsgId: string]
 }>()
 
 const viewport = ref<HTMLElement | null>(null)
@@ -83,6 +95,7 @@ const virtualizerOptions = computed(() => ({
   overscan: 8,
   getItemKey: (index: number) => props.messages[index]?.msg_id ?? index,
   measureElement: measureMessageRow,
+  reverse: props.messageOrder === 'newest-bottom',
   // 非零初值避免首帧 `outerSize === 0` 时不算可视范围，媒体重测与锚点恢复才能挂到行。
   initialRect: { width: 800, height: 600 },
 }))
@@ -98,6 +111,11 @@ const measureElement: VNodeRef = (element) => {
 
 const AUTO_SCROLL_THRESHOLD = 80
 const LOAD_OLDER_THRESHOLD = 80
+const SCROLL_DEBOUNCE_MS = 300
+
+/** 滚动缓冲：记录视口内收集到的未读 msg_id，滚动停止后一次性提交。 */
+const scrollBuffer = ref<string[]>([])
+let scrollDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 /** 发起向上加载时的首条消息锚点、行内偏移和总高度回退信息。 */
 let prependAnchor: {
@@ -113,7 +131,42 @@ let olderSettleCycle = 0
  * 顶部阈值内只发出一次请求，直至父组件完成该轮加载。
  * 已请求但用户仍停在顶部时，只刷新行内偏移，避免程序化滚底留下的 `scrollOffset = 0` 污染锚点。
  */
-function handleScroll() {
+function handleScrollAndBuffer(event: Event) {
+  handleScroll(event)
+  handleScrollBuffer(event)
+}
+
+function handleScrollBuffer(event: Event) {
+  const element = event.currentTarget as HTMLElement
+  // 收集视口内未读 msg_id：读取虚拟列表当前渲染的行。
+  const currentIds = virtualItems.value
+    .filter((item) => {
+      const msg = props.messages[item.index]
+      return msg && msg.matched !== 0 && msg.read_at === 0
+    })
+    .map((item) => props.messages[item.index]!.msg_id)
+
+  if (currentIds.length > 0) {
+    const next = [...new Set([...scrollBuffer.value, ...currentIds])]
+    scrollBuffer.value = next
+  }
+
+  if (scrollDebounceTimer) clearTimeout(scrollDebounceTimer)
+  scrollDebounceTimer = setTimeout(() => {
+    if (scrollBuffer.value.length === 0) return
+    const maxMsgId = scrollBuffer.value
+      .map((id) => props.messages.find((m) => m.msg_id === id))
+      .filter(Boolean)
+      .map((m) => parseInt(m!.msg_id))
+      .reduce((a, b) => Math.max(a, b), 0)
+    if (maxMsgId > 0) {
+      emit('scroll-stopped', maxMsgId.toString())
+    }
+    scrollBuffer.value = []
+  }, SCROLL_DEBOUNCE_MS)
+}
+
+function handleScroll(event: Event) {
   const element = viewport.value
   if (
     !element
@@ -213,6 +266,8 @@ watch(
       ? element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_THRESHOLD
       : false
     if (!isInitialLoad && !wasNearBottom) return
+    // 最新消息在顶部时，实时批次只自动滚底；否则由用户手动定位。
+    if (props.messageOrder === 'newest-top') return
 
     await nextTick()
     virtualizer.value.scrollToIndex(count - 1, { align: 'end', behavior: 'auto' })
@@ -300,13 +355,27 @@ watch(
             <span>{{ messages.length }} 条消息</span>
           </div>
         </div>
+        <!-- 排序切换按钮 -->
+        <button
+          class="icon-button order-toggle-btn"
+          @click="emit('toggle-order')"
+          :title="messageOrder === 'newest-top' ? '切换到从下往上排列' : '切换到从上往下排列'"
+          aria-label="切换消息排序方向"
+        >
+          <svg v-if="messageOrder === 'newest-top'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 19V5M5 12l7-7 7 7"/>
+          </svg>
+          <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 5v14M19 12l-7 7-7-7"/>
+          </svg>
+        </button>
         <!-- 开奖信息：紧凑竖排，与统计信息并排显示在标题栏右侧。 -->
         <LotteryPanel v-if="lottery" class="header-lottery" :lottery="lottery" />
       </div>
     </header>
 
     <!-- 内容区按优先级呈现加载中、未选择群组、已选但为空、消息列表四种状态。 -->
-    <div ref="viewport" class="message-viewport" aria-live="polite" @scroll="handleScroll">
+    <div ref="viewport" class="message-viewport" aria-live="polite" @scroll="handleScrollAndBuffer">
       <div v-if="loading" class="panel-empty">
         <span class="loader-grid" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
         <p>正在读取本地历史记录</p>
@@ -316,7 +385,20 @@ watch(
         <strong>暂无已存储消息</strong>
         <p>选择需要监控的群后，新消息会显示在这里</p>
       </div>
-      <!-- 状态条覆盖在虚拟容器顶部，不参与列表高度和虚拟行索引。 -->
+      <!-- 未读浮窗按钮：仅在有未读消息且不在底部时显示。 -->
+      <button
+        v-if="unreadCount > 0"
+        class="unread-float-btn"
+        :class="messageOrder === 'newest-top' ? 'unread-float-btn--top' : 'unread-float-btn--bottom'"
+        @click="emit('mark-read')"
+        :aria-label="`标记全部已读，共 ${unreadCount} 条未读`"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 5v14M5 12l7 7 7-7"/>
+        </svg>
+        <span class="unread-float-btn__badge" aria-hidden="true">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+      </button>
+    <!-- 状态条覆盖在虚拟容器顶部，不参与列表高度和虚拟行索引。 -->
       <!-- <div v-else class="history-status" role="status">
         {{ loadingOlder ? '正在加载更早消息…' : hasOlder ? '向上滚动加载更早消息' : '已到最早消息' }}
       </div> -->
@@ -339,7 +421,10 @@ watch(
             v-if="messages[item.index]"
             :message="messages[item.index]"
             :show-group="!group"
-            :class="{ 'message-card--new': highlightedIds.has(messages[item.index].msg_id) }"
+            :class="{
+              'message-card--new': highlightedIds.has(messages[item.index].msg_id),
+              'message-card--unread': messages[item.index]?.matched !== 0 && messages[item.index]?.read_at === 0,
+            }"
           />
         </li>
       </ol>
