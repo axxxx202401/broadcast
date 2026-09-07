@@ -87,15 +87,27 @@ function measureMessageRow(element: HTMLLIElement, entry: ResizeObserverEntry | 
   return Math.round(element.getBoundingClientRect().height)
 }
 
+/**
+ * 虚拟列表渲染序列：DB 端始终按 msg_id 升序（最旧→最新）。
+ * `newest-top` 直接沿用该顺序（CSS flex column 从上到下渲染）；
+ * `newest-bottom` 反转后由虚拟列表从索引 0 开始向下填充，
+ * 视觉上最新消息出现在底部。TanStack Virtual v3.17 不支持 reverse 选项，
+ * 通过手动反转数组实现等效效果。
+ */
+const virtualMessages = computed<MessageDto[]>(() =>
+  props.messageOrder === 'newest-bottom'
+    ? [...props.messages].reverse()
+    : props.messages,
+)
+
 // 加载态和空态把 count 归零，确保这两种状态不会生成虚拟行；消息键沿用协议 msg_id。
 const virtualizerOptions = computed(() => ({
-  count: props.loading ? 0 : props.messages.length,
+  count: props.loading ? 0 : virtualMessages.value.length,
   getScrollElement: () => viewport.value,
-  estimateSize: (index: number) => estimateMessageHeight(props.messages[index]),
+  estimateSize: (index: number) => estimateMessageHeight(virtualMessages.value[index]),
   overscan: 8,
-  getItemKey: (index: number) => props.messages[index]?.msg_id ?? index,
+  getItemKey: (index: number) => virtualMessages.value[index]?.msg_id ?? index,
   measureElement: measureMessageRow,
-  reverse: props.messageOrder === 'newest-bottom',
   // 非零初值避免首帧 `outerSize === 0` 时不算可视范围，媒体重测与锚点恢复才能挂到行。
   initialRect: { width: 800, height: 600 },
 }))
@@ -119,6 +131,22 @@ const isAtBottom = computed(() => {
   if (!element) return false
   return element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_THRESHOLD
 })
+
+/**
+ * 点击浮窗按钮后滚动到最新消息位置：
+ * - newest-top：scrollToOffset(0) → 顶部（最新消息在索引 0）
+ * - newest-bottom：scrollToIndex(count-1, end) → 底部（最新消息在尾部）
+ */
+async function scrollToLatest() {
+  const element = viewport.value
+  if (!element) return
+  await nextTick()
+  if (props.messageOrder === 'newest-top') {
+    virtualizer.value.scrollToOffset(0, { align: 'start', behavior: 'smooth' })
+  } else {
+    virtualizer.value.scrollToIndex(virtualMessages.value.length - 1, { align: 'end', behavior: 'smooth' })
+  }
+}
 
 /** 滚动缓冲：记录视口内收集到的未读 msg_id，滚动停止后一次性提交。 */
 const scrollBuffer = ref<string[]>([])
@@ -148,10 +176,10 @@ function handleScrollBuffer(event: Event) {
   // 收集视口内未读 msg_id：读取虚拟列表当前渲染的行。
   const currentIds = virtualItems.value
     .filter((item) => {
-      const msg = props.messages[item.index]
+      const msg = virtualMessages.value[item.index]
       return msg && msg.matched !== 0 && msg.read_at === 0
     })
-    .map((item) => props.messages[item.index]!.msg_id)
+    .map((item) => virtualMessages.value[item.index]!.msg_id)
 
   if (currentIds.length > 0) {
     const next = [...new Set([...scrollBuffer.value, ...currentIds])]
@@ -183,7 +211,7 @@ function handleScroll(event: Event) {
   ) return
 
   prependAnchor = {
-    messageId: prependAnchor?.messageId ?? props.messages[0]?.msg_id,
+    messageId: prependAnchor?.messageId ?? virtualMessages.value[0]?.msg_id,
     totalSize: prependAnchor?.totalSize ?? virtualizer.value.getTotalSize(),
     scrollOffset: element.scrollTop,
   }
@@ -197,12 +225,12 @@ function handleScroll(event: Event) {
  * 不走 `scrollToIndex`：其对齐 reconcile 会抹掉行内偏移。无新增、失败或锚点缺失时安全降级。
  */
 async function restorePrependAnchor(anchor: typeof prependAnchor) {
-  if (!anchor || props.messages[0]?.msg_id === anchor.messageId) return
+  if (!anchor || virtualMessages.value[0]?.msg_id === anchor.messageId) return
   await nextTick()
   const element = viewport.value
   if (!element) return
   const anchorIndex = anchor.messageId
-    ? props.messages.findIndex(({ msg_id }) => msg_id === anchor.messageId)
+    ? virtualMessages.value.findIndex(({ msg_id }) => msg_id === anchor.messageId)
     : -1
   if (anchorIndex >= 0) {
     const anchorStart = virtualizer.value.getOffsetForIndex(anchorIndex, 'start')?.[0]
@@ -253,9 +281,9 @@ watch(
 watch(
   () => [
     props.loading,
-    props.messages.length,
-    props.messages[0]?.msg_id,
-    props.messages.at(-1)?.msg_id,
+    virtualMessages.value.length,
+    virtualMessages.value[0]?.msg_id,
+    virtualMessages.value.at(-1)?.msg_id,
   ] as const,
   async ([loading, count, _firstMessageId, lastMessageId], previous) => {
     if (loading || count === 0) return
@@ -273,7 +301,8 @@ watch(
       ? element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_THRESHOLD
       : false
     if (!isInitialLoad && !wasNearBottom) return
-    // 最新消息在顶部时，实时批次只自动滚底；否则由用户手动定位。
+    // 最新消息在顶部时（newest-top），新消息加到底部，用户手动滚到顶部查看；
+    // newest-bottom 时自动跟随新消息滚底。
     if (props.messageOrder === 'newest-top') return
 
     await nextTick()
@@ -321,8 +350,8 @@ onUnmounted(clearHighlightTimers)
 watch(
   () => [
     props.loading,
-    props.messages.length,
-    props.messages.at(-1)?.msg_id,
+    virtualMessages.value.length,
+    virtualMessages.value.at(-1)?.msg_id,
   ] as const,
   ([loading, count, lastMessageId], previous) => {
     if (loading || count === 0 || lastMessageId === undefined) return
@@ -397,7 +426,7 @@ watch(
         v-if="unreadCount > 0 && !isAtBottom"
         class="unread-float-btn"
         :class="messageOrder === 'newest-top' ? 'unread-float-btn--top' : 'unread-float-btn--bottom'"
-        @click="emit('mark-read')"
+        @click="emit('mark-read'); scrollToLatest()"
         :aria-label="`标记全部已读，共 ${unreadCount} 条未读`"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
