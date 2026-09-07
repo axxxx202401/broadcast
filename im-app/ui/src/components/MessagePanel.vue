@@ -135,10 +135,18 @@ const SCROLL_DEBOUNCE_MS = 300
  */
 const isNearNewEnd = computed(() => {
   const element = viewport.value
-  if (!element) return false
-  return props.messageOrder === 'newest-top'
+  if (!element) {
+    console.debug(`[MessagePanel] isNearNewEnd: viewport=null → false`)
+    return false
+  }
+  const distToBottom = element.scrollHeight - element.scrollTop - element.clientHeight
+  const result = props.messageOrder === 'newest-top'
     ? element.scrollTop <= AUTO_SCROLL_THRESHOLD
-    : (element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_THRESHOLD)
+    : (distToBottom <= AUTO_SCROLL_THRESHOLD)
+  console.debug(
+    `[MessagePanel] isNearNewEnd: order=${props.messageOrder}, scrollTop=${element.scrollTop}, scrollHeight=${element.scrollHeight}, clientHeight=${element.clientHeight}, distToBottom=${distToBottom}, result=${result}`,
+  )
+  return result
 })
 
 /**
@@ -399,6 +407,23 @@ watch(
 
     markNewTailMessage(newEndMessageId)
   },
+)
+
+/** 监控 unreadCount 和 isNearNewEnd，打印浮窗是否应该显示。 */
+watch(
+  () => [props.unreadCount, props.messages.length, isNearNewEnd.value] as const,
+  ([unreadCount, msgCount, nearEnd]) => {
+    console.debug(
+      `[MessagePanel] float-btn: unreadCount=${unreadCount}, msgs=${msgCount}, isNearNewEnd=${nearEnd}, should-show=${unreadCount > 0 && !nearEnd}`,
+    )
+    if (unreadCount > 0 && msgCount > 0) {
+      const unread = props.messages.filter(m => m.read_at === 0)
+      console.debug(
+        `[MessagePanel] float-btn: unread msgs=${unread.length}, first_unread=${unread[0]?.msg_id?.substring(0,8)}@${unread[0]?.read_at}, last_unread=${unread.at(-1)?.msg_id?.substring(0,8)}@${unread.at(-1)?.read_at}`,
+      )
+    }
+  },
+  { immediate: true },
 )
 </script>
 
