@@ -20,6 +20,7 @@ Windows、macOS 和 Linux 安装包。
 
 Rust 在编译时读取：
 
+**必填（服务端连接与设备参数）：**
 - `IM_OPENCHAT_USER_URL`
 - `IM_BIZ_URL`
 - `IM_CHAT_HOST`
@@ -32,6 +33,11 @@ Rust 在编译时读取：
 - `IM_PLAT`
 - `IM_LANGUAGE`
 - `IM_SYS_MODEL`
+
+**可选（开奖消息匹配）：**
+- `IM_LOTTERY_MATCH_MODE`：`"issue"`（默认，开奖 + 期号匹配）或 `"uid"`（开奖 + 发信人 UID 范围匹配）
+- `IM_LOTTERY_MATCH_UID_START`：UID 匹配范围下限，默认 `0`
+- `IM_LOTTERY_MATCH_UID_END`：UID 匹配范围上限，默认 `i64::MAX`
 
 `sysMac` 继续在构造设备配置时随机生成。URL、端口、整数和 16 字节 AES-128 key 在应用
 初始化前校验。`AppConfig::default()` 只提供不访问远端服务的测试占位配置；桌面入口使用
@@ -86,8 +92,81 @@ code/msg 诊断字段，不拼接账号或验证结果。
 ## GitHub Actions
 
 工作流通过 `workflow_dispatch` 选择 `test|production`，Job 绑定同名 GitHub
-Environment。普通地址、端口和协议编号使用 Environment Variables；两个 AES key 与
-Version Secret Name 使用 Environment Secrets。
+Environment。敏感值（AES key、Version Secret Name）配置为 Environment Secrets；
+其余参数可配置为 Environment Variables 或 Secrets（Actions 中统一通过 `${{ secrets.* }}` 读取）。
+
+### 环境变量清单
+
+| 变量名 | 类型 | 说明 |
+|---|---|---|
+| `IM_OPENCHAT_USER_URL` | Secret/Var | OpenChat 用户服务基础 URL |
+| `IM_BIZ_URL` | Secret/Var | IM 业务服务基础 URL |
+| `IM_CHAT_HOST` | Secret/Var | 聊天长连接主机 |
+| `IM_CHAT_PORT` | Secret/Var | 聊天长连接端口 |
+| `IM_VERSION_SECRET_NAME` | **Secret** | 版本请求头签名密钥名 |
+| `IM_BODY_AES_KEY` | **Secret** | 消息体加密 AES-128 密钥（16字节） |
+| `IM_HEADER_AES_KEY` | **Secret** | 消息头加密 AES-128 密钥（16字节） |
+| `IM_APP_VER` | Secret/Var | 客户端版本号 |
+| `IM_PACKAGE_CODE` | Secret/Var | 安装包版本码 |
+| `IM_PLAT` | Secret/Var | 平台编码 |
+| `IM_LANGUAGE` | Secret/Var | 语言编码 |
+| `IM_SYS_MODEL` | Secret/Var | 设备型号 |
+| `VITE_GT4_CAPTCHA_ID` | Secret/Var | GT4 验证码 ID |
+| `IM_LOTTERY_MATCH_MODE` | Secret/Var（可选） | 开奖匹配模式：`issue` 或 `uid` |
+| `IM_LOTTERY_MATCH_UID_START` | Secret/Var（可选） | UID 匹配下限，默认 0 |
+| `IM_LOTTERY_MATCH_UID_END` | Secret/Var（可选） | UID 匹配上限，默认 i64::MAX |
+
+### GitHub Environments 配置步骤
+
+1. 进入仓库 → **Settings → Environments**
+2. 点击 **New environment**，创建 `test` 和 `production` 两个环境
+3. 分别进入每个环境，点击 **Add secret** 或 **Add variable**
+4. 按上表填入对应值
+
+> **Secret vs Variable 选择建议**：AES key 和 Version Secret Name 等敏感值存入
+> Secrets；其他参数（URL、端口、版本号等）可存入 Variables，查看构建日志时无需
+> 担心泄露。两者在 Actions 中均通过 `${{ secrets.* }}` 或 `${{ vars.* }}` 访问。
+
+### 从本地文件批量推送 Secrets 和 Variables
+
+推荐使用 `gh` CLI 通过 dotenv 文件批量导入，避免逐个手动设置。
+
+**前置准备：**
+```bash
+# 安装 gh CLI（macOS）
+brew install gh
+
+# 登录 GitHub
+gh auth login
+```
+
+**推送 Environment Secrets（敏感值）：**
+```bash
+# 测试环境
+gh secret set -f config/.env.test --env test
+
+# 生产环境
+gh secret set -f config/.env.production --env production
+```
+
+**推送 Environment Variables（非敏感参数）：**
+```bash
+# 测试环境
+gh variable set -f config/.env.test --env test
+
+# 生产环境
+gh variable set -f config/.env.production --env production
+```
+
+> **注意**：`.env.test` 与 `.env.production` 中的变量会被同时作为 Secret 和 Variable 推送到对应 Environment。
+> GitHub 中同一名称的 Secret 和 Variable 互不影响，Actions 中 `${{ secrets.XXX }}` 和 `${{ vars.XXX }}` 均可读取。
+>
+> 推送前确保 `.env` 文件已填写完整且未被 Git 跟踪（`.gitignore` 已忽略）。
+> 推送结果可用以下命令验证：
+> ```bash
+> gh secret list --env test
+> gh variable list --env test
+> ```
 
 矩阵包含：
 
