@@ -778,8 +778,20 @@ impl MessageEffects for ConnectionMessageEffects {
                             issues = ?config.current_issues,
                             "persist_monitored_batch: lottery check"
                         );
-                        let is_matched = text.contains("开奖")
-                            && issues_list.iter().any(|issue| text.contains(&issue.to_string()));
+                        // 根据 match_mode 选择匹配方式：
+                        // - "issue"（默认）：开奖文本 + 期号匹配。
+                        // - "uid"：开奖文本 + 发信人 UID 在配置范围内匹配。
+                        let app_config = self.context.config.read().await;
+                        let match_mode = app_config.match_mode.as_str();
+                        let is_matched = if match_mode == "uid" {
+                            text.contains("开奖")
+                                && record.send_uid >= app_config.match_uid_start
+                                && record.send_uid <= app_config.match_uid_end
+                        } else {
+                            text.contains("开奖")
+                                && issues_list.iter().any(|issue| text.contains(&issue.to_string()))
+                        };
+                        drop(app_config);
                         if is_matched {
                             tracing::info!(
                                 uid = session.uid,

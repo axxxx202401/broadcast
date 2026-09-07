@@ -16,6 +16,19 @@ pub struct AppConfig {
     pub server: ServerConfig,
     /// 请求和长连接登录上报的客户端设备参数。
     pub device: DeviceConfig,
+    /// 开奖消息匹配模式：`"issue"`（默认）按开奖 + 期号匹配；`"uid"` 按开奖 + 发信人 UID 范围匹配。
+    #[serde(default = "default_match_mode")]
+    pub match_mode: String,
+    /// 匹配模式下监听的发信人 UID 范围下限；仅 `match_mode == "uid"` 时生效。
+    #[serde(default)]
+    pub match_uid_start: i64,
+    /// 匹配模式下监听的发信人 UID 范围上限；仅 `match_mode == "uid"` 时生效。
+    #[serde(default)]
+    pub match_uid_end: i64,
+}
+
+fn default_match_mode() -> String {
+    "issue".to_string()
 }
 
 /// 服务地址、端口及传输加密参数。
@@ -60,6 +73,9 @@ impl Default for AppConfig {
         Self {
             server: ServerConfig::default(),
             device: DeviceConfig::new(),
+            match_mode: default_match_mode(),
+            match_uid_start: 0,
+            match_uid_end: i64::MAX,
         }
     }
 }
@@ -67,11 +83,11 @@ impl Default for AppConfig {
 impl AppConfig {
     /// 从编译当前二进制时注入的环境变量构造应用配置。
     ///
-    /// 所有变量均为必填项。该方法只在错误中记录变量名和约束，不回显配置值，避免密钥
-    /// 进入启动日志。环境变量由构建脚本提供；运行已经生成的安装包时再设置变量不会改变
-    /// 配置。
+    /// 服务端连接与设备参数为必填项。开奖匹配参数（`IM_LOTTERY_MATCH_*`）为可选：
+    /// 未设置时使用默认值（`issue` 模式，匹配全部期号）。环境变量由构建脚本提供；
+    /// 运行已经生成的安装包时再设置变量不会改变配置。
     pub fn from_build_env() -> AppResult<Self> {
-        Self::from_values(&[
+        let mut values: Vec<(&str, Option<&str>)> = vec![
             ("IM_OPENCHAT_USER_URL", option_env!("IM_OPENCHAT_USER_URL")),
             ("IM_BIZ_URL", option_env!("IM_BIZ_URL")),
             ("IM_CHAT_HOST", option_env!("IM_CHAT_HOST")),
@@ -90,7 +106,42 @@ impl AppConfig {
             // [`DeviceConfig::resolve_sys_mac`] 从磁盘加载或生成新标识。
             ("IM_SYS_MAC", option_env!("IM_SYS_MAC")),
             ("IM_SYS_MODEL", option_env!("IM_SYS_MODEL")),
-        ])
+            // 开奖匹配参数为可选；缺失时使用默认值。
+            ("IM_LOTTERY_MATCH_MODE", option_env!("IM_LOTTERY_MATCH_MODE")),
+            ("IM_LOTTERY_MATCH_UID_START", option_env!("IM_LOTTERY_MATCH_UID_START")),
+            ("IM_LOTTERY_MATCH_UID_END", option_env!("IM_LOTTERY_MATCH_UID_END")),
+        ];
+        let match_mode = values
+            .iter()
+            .find_map(|(name, value)| (*name == "IM_LOTTERY_MATCH_MODE").then_some(*value))
+            .flatten()
+            .unwrap_or("issue")
+            .to_string();
+        let match_uid_start: i64 = values
+            .iter()
+            .find_map(|(name, value)| (*name == "IM_LOTTERY_MATCH_UID_START").then_some(*value))
+            .flatten()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let match_uid_end: i64 = values
+            .iter()
+            .find_map(|(name, value)| (*name == "IM_LOTTERY_MATCH_UID_END").then_some(*value))
+            .flatten()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(i64::MAX);
+        // 将可选的匹配参数设为 None，避免 from_values 将其当作必填项报错。
+        for entry in values.iter_mut() {
+            if matches!(entry.0, "IM_LOTTERY_MATCH_MODE" | "IM_LOTTERY_MATCH_UID_START" | "IM_LOTTERY_MATCH_UID_END") {
+                entry.1 = None;
+            }
+        }
+        let base = Self::from_values(&values)?;
+        Ok(Self {
+            match_mode,
+            match_uid_start,
+            match_uid_end,
+            ..base
+        })
     }
 
     /// 从给定键值对构造配置，供不读取真实构建环境的单元测试覆盖校验分支。
@@ -140,6 +191,9 @@ impl AppConfig {
                 sys_mac: resolve_sys_mac(values)?,
                 sys_model: required_text(values, "IM_SYS_MODEL")?.to_string(),
             },
+            match_mode: default_match_mode(),
+            match_uid_start: 0,
+            match_uid_end: i64::MAX,
         })
     }
 }
