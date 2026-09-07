@@ -129,10 +129,13 @@ const LOAD_OLDER_THRESHOLD = 80
 const SCROLL_DEBOUNCE_MS = 300
 
 /**
- * 用户当前是否靠近最新消息端（允许 80px 容差）。
- * - newest-top：virtualMessages = reverse，新消息在顶部，scrollTop 接近 0
- * - newest-bottom：virtualMessages = DB顺序，新消息在底部，scrollTop 接近 scrollHeight
+ * 用户是否曾主动滚离最新消息端（离开后才显示浮窗，避免自动滚顶后按钮永远消失）。
+ * 用户向下滚过一定距离后记为"已离开"，滚回最新消息端后再次记为"未离开"。
+ * - newest-top：滚离 = scrollTop > threshold；回到顶部 = scrollTop <= threshold
+ * - newest-bottom：滚离 = distToBottom > threshold；回到底部 = distToBottom <= threshold
  */
+const isAwayFromNewEnd = ref(false)
+
 const isNearNewEnd = computed(() => {
   const element = viewport.value
   if (!element) {
@@ -140,13 +143,19 @@ const isNearNewEnd = computed(() => {
     return false
   }
   const distToBottom = element.scrollHeight - element.scrollTop - element.clientHeight
-  const result = props.messageOrder === 'newest-top'
+  const nearEnd = props.messageOrder === 'newest-top'
     ? element.scrollTop <= AUTO_SCROLL_THRESHOLD
     : (distToBottom <= AUTO_SCROLL_THRESHOLD)
+  // 只在远离时更新标记：用户滚开后记住，滚回最新消息端才重置
+  if (nearEnd) {
+    isAwayFromNewEnd.value = false
+  } else {
+    isAwayFromNewEnd.value = true
+  }
   console.debug(
-    `[MessagePanel] isNearNewEnd: order=${props.messageOrder}, scrollTop=${element.scrollTop}, scrollHeight=${element.scrollHeight}, clientHeight=${element.clientHeight}, distToBottom=${distToBottom}, result=${result}`,
+    `[MessagePanel] isNearNewEnd: order=${props.messageOrder}, scrollTop=${element.scrollTop}, scrollHeight=${element.scrollHeight}, clientHeight=${element.clientHeight}, distToBottom=${distToBottom}, nearEnd=${nearEnd}, isAwayFromNewEnd=${isAwayFromNewEnd.value}`,
   )
-  return result
+  return nearEnd
 })
 
 /**
@@ -186,6 +195,21 @@ let olderSettleCycle = 0
 function handleScrollAndBuffer(event: Event) {
   handleScroll(event)
   handleScrollBuffer(event)
+  updateAwayFromNewEnd()
+}
+
+/**
+ * 根据当前滚动位置更新 isAwayFromNewEnd 标记。
+ * 在每次滚动事件里主动调用，确保浮窗在用户滚离顶部后立刻可见。
+ */
+function updateAwayFromNewEnd() {
+  const element = viewport.value
+  if (!element) return
+  const distToBottom = element.scrollHeight - element.scrollTop - element.clientHeight
+  const nearEnd = props.messageOrder === 'newest-top'
+    ? element.scrollTop <= AUTO_SCROLL_THRESHOLD
+    : (distToBottom <= AUTO_SCROLL_THRESHOLD)
+  isAwayFromNewEnd.value = !nearEnd
 }
 
 function handleScrollBuffer(event: Event) {
@@ -409,12 +433,12 @@ watch(
   },
 )
 
-/** 监控 unreadCount 和 isNearNewEnd，打印浮窗是否应该显示。 */
+/** 监控 unreadCount 和 isAwayFromNewEnd，打印浮窗是否应该显示。 */
 watch(
-  () => [props.unreadCount, props.messages.length, isNearNewEnd.value] as const,
-  ([unreadCount, msgCount, nearEnd]) => {
+  () => [props.unreadCount, props.messages.length, isAwayFromNewEnd.value] as const,
+  ([unreadCount, msgCount, awayFromNewEnd]) => {
     console.debug(
-      `[MessagePanel] float-btn: unreadCount=${unreadCount}, msgs=${msgCount}, isNearNewEnd=${nearEnd}, should-show=${unreadCount > 0 && !nearEnd}`,
+      `[MessagePanel] float-btn: unreadCount=${unreadCount}, msgs=${msgCount}, isAwayFromNewEnd=${awayFromNewEnd}, should-show=${unreadCount > 0 && awayFromNewEnd}`,
     )
     if (unreadCount > 0 && msgCount > 0) {
       const unread = props.messages.filter(m => m.read_at === 0)
@@ -483,7 +507,7 @@ watch(
       </div>
       <!-- 未读浮窗按钮：仅在有未读消息且不在视口底部时显示。 -->
       <button
-        v-if="unreadCount > 0 && !isNearNewEnd"
+        v-if="unreadCount > 0 && isAwayFromNewEnd"
         class="unread-float-btn"
         :class="messageOrder === 'newest-top' ? 'unread-float-btn--top' : 'unread-float-btn--bottom'"
         @click="emit('mark-read'); scrollToLatest()"
