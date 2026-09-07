@@ -173,6 +173,10 @@ export function useMonitor() {
       ? messages.value.filter((m) => m.matched !== 0)
       : messages.value,
   )
+  /** 当前未读匹配消息数。 */
+  const unreadCount = computed(() =>
+    filteredMessages.value.filter((m) => m.read_at === 0).length,
+  )
   const connectDisabled = computed(
     () => pending.value !== null || connectionStatus.value === 'connecting',
   )
@@ -495,6 +499,12 @@ export function useMonitor() {
       }),
       listen('message_keys_ready', () => {
         if (loggedIn.value) void loadMessages(selectedGroupId.value)
+        // 首次加载完成后，把历史消息中所有未读匹配消息标记为已读，
+        // 避免老数据满屏未读提示干扰新的监控会话。
+        if (loggedIn.value && messages.value.length > 0) {
+          const lastMsg = messages.value[messages.value.length - 1]
+          if (lastMsg) void api.markGroupRead(selectedGroupId.value, lastMsg.msg_id)
+        }
       }),
     ]).then((results) => {
       // 两项均 settle 后若组件已经卸载，此处才调用成功注册项返回的 unlisten。
@@ -543,6 +553,8 @@ export function useMonitor() {
     showMatchedOnly,
     /** 经过 `showMatchedOnly` 过滤后的消息列表。 */
     filteredMessages,
+    /** 当前未读匹配消息数。 */
+    unreadCount,
     /** 事件与轮询共同维护的聊天连接状态。 */
     connectionStatus,
     monitoredCount,
