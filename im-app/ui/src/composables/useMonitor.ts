@@ -49,6 +49,7 @@ export function useMonitor() {
   } catch {}
   function toggleOrder() {
     const next = messageOrder.value === 'newest-top' ? 'newest-bottom' : 'newest-top'
+    console.debug(`[useMonitor] toggleOrder: ${messageOrder.value} → ${next}`)
     messageOrder.value = next
     try { localStorage.setItem(MESSAGE_ORDER_KEY, next) } catch {}
     void loadMessages(selectedGroupId.value)
@@ -289,6 +290,9 @@ export function useMonitor() {
         )
         // 历史返回期间可能已收到实时消息，合并而非覆盖可保留两条来源。
         mergeAndPublishMessages(history.messages)
+        console.debug(
+          `[useMonitor] after merge: first3=${messages.value.slice(0, 3).map(m => `${m.msg_id.substring(0,8)}@${m.send_time}`).join(', ')}, last3=${messages.value.slice(-3).map(m => `${m.msg_id.substring(0,8)}@${m.send_time}`).join(', ')}`,
+        )
         nextMessageCursor.value = history.nextCursor
         hasOlder.value = history.hasMore
       }
@@ -544,7 +548,7 @@ export function useMonitor() {
     for (const unlisten of unlisteners) unlisten()
   })
 
-  /** 将指定范围内未读匹配消息标记为已读，并刷新视图。 */
+  /** 将指定范围内未读匹配消息标记为已读；仅做本地更新，不重新拉取列表。 */
   async function markAllAsRead(toMsgId?: string) {
     if (unreadCount.value === 0) return
     const groupId = selectedGroupId.value
@@ -556,7 +560,6 @@ export function useMonitor() {
     messages.value = messages.value.map((m) =>
       m.matched !== 0 && m.read_at === 0 ? { ...m, read_at: now } : m,
     )
-    void loadMessages(groupId)
   }
 
   /** 人工滚动停止后，把滚动范围内未读匹配消息标记为已读。 */

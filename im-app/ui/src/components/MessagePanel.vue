@@ -93,11 +93,15 @@ function measureMessageRow(element: HTMLLIElement, entry: ResizeObserverEntry | 
  * `newest-bottom`：直接沿用 DB 顺序，最新消息在尾部显示在底部。
  * TanStack Virtual v3.17 不支持 reverse 选项，通过手动反转数组实现等效效果。
  */
-const virtualMessages = computed<MessageDto[]>(() =>
-  props.messageOrder === 'newest-top'
+const virtualMessages = computed<MessageDto[]>(() => {
+  const result = props.messageOrder === 'newest-top'
     ? [...props.messages].reverse()
-    : props.messages,
-)
+    : props.messages
+  console.debug(
+    `[MessagePanel] virtualMessages: order=${props.messageOrder}, count=${result.length}, first3=${result.slice(0, 3).map(m => `${m.msg_id.substring(0,8)}@${m.send_time}`).join(', ')}, last3=${result.slice(-3).map(m => `${m.msg_id.substring(0,8)}@${m.send_time}`).join(', ')}`,
+  )
+  return result
+})
 
 // 加载态和空态把 count 归零，确保这两种状态不会生成虚拟行；消息键沿用协议 msg_id。
 const virtualizerOptions = computed(() => ({
@@ -296,6 +300,9 @@ watch(
     virtualMessages.value.at(-1)?.msg_id,
   ] as const,
   async ([loading, count, firstMessageId, lastMessageId], previous) => {
+    console.debug(
+      `[MessagePanel] scroll-watcher: order=${props.messageOrder}, loading=${loading}, count=${count}, first=${firstMessageId?.substring(0,8)}, last=${lastMessageId?.substring(0,8)}, prev=[${previous?.[2]}→${previous?.[3]}]`,
+    )
     if (loading || count === 0) return
 
     const [wasLoading, previousCount, previousFirstId, previousLastId] = previous ?? [true, 0, undefined, undefined]
