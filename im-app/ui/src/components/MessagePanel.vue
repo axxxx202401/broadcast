@@ -89,10 +89,9 @@ function measureMessageRow(element: HTMLLIElement, entry: ResizeObserverEntry | 
 
 /**
  * 虚拟列表渲染序列：DB 端始终按 msg_id 升序（最旧→最新）。
- * `newest-top` 直接沿用该顺序（CSS flex column 从上到下渲染）；
- * `newest-bottom` 反转后由虚拟列表从索引 0 开始向下填充，
- * 视觉上最新消息出现在底部。TanStack Virtual v3.17 不支持 reverse 选项，
- * 通过手动反转数组实现等效效果。
+ * `newest-top`：直接沿用 DB 顺序（CSS flex column 从上到下渲染，新消息在底部）。
+ * `newest-bottom`：反转数组，使虚拟列表从上到下渲染时最新消息在底部。
+ * TanStack Virtual v3.17 不支持 reverse 选项，通过手动反转数组实现等效效果。
  */
 const virtualMessages = computed<MessageDto[]>(() =>
   props.messageOrder === 'newest-bottom'
@@ -134,8 +133,8 @@ const isAtBottom = computed(() => {
 
 /**
  * 点击浮窗按钮后滚动到最新消息位置：
- * - newest-top：scrollToOffset(0) → 顶部（最新消息在索引 0）
- * - newest-bottom：scrollToIndex(count-1, end) → 底部（最新消息在尾部）
+ * - newest-top：virtualMessages = DB顺序，新消息在尾部 index count-1，滚到底部
+ * - newest-bottom：virtualMessages = reverse，新消息在头部 index 0，滚到顶部 offset(0)
  */
 async function scrollToLatest() {
   const element = viewport.value
