@@ -89,12 +89,12 @@ function measureMessageRow(element: HTMLLIElement, entry: ResizeObserverEntry | 
 
 /**
  * 虚拟列表渲染序列：DB 端始终按 msg_id 升序（最旧→最新）。
- * `newest-top`：直接沿用 DB 顺序（CSS flex column 从上到下渲染，新消息在底部）。
- * `newest-bottom`：反转数组，使虚拟列表从上到下渲染时最新消息在底部。
+ * `newest-top`：反转数组，index 0 = 最新消息显示在顶部。
+ * `newest-bottom`：直接沿用 DB 顺序，最新消息在尾部显示在底部。
  * TanStack Virtual v3.17 不支持 reverse 选项，通过手动反转数组实现等效效果。
  */
 const virtualMessages = computed<MessageDto[]>(() =>
-  props.messageOrder === 'newest-bottom'
+  props.messageOrder === 'newest-top'
     ? [...props.messages].reverse()
     : props.messages,
 )
@@ -133,8 +133,8 @@ const isAtBottom = computed(() => {
 
 /**
  * 点击浮窗按钮后滚动到最新消息位置：
- * - newest-top：virtualMessages = DB顺序，新消息在尾部 index count-1，滚到底部
- * - newest-bottom：virtualMessages = reverse，新消息在头部 index 0，滚到顶部 offset(0)
+ * - newest-top：virtualMessages = reverse，新消息在头部 index 0，滚到顶部 offset(0)
+ * - newest-bottom：virtualMessages = DB顺序，新消息在尾部 index count-1，滚到底部
  */
 async function scrollToLatest() {
   const element = viewport.value
@@ -210,7 +210,13 @@ function handleScroll(event: Event) {
   ) return
 
   prependAnchor = {
-    messageId: prependAnchor?.messageId ?? virtualMessages.value[0]?.msg_id,
+    // newest-top（reverse）：prepend 发生在虚拟列表尾部，用 at(-1) 做锚点
+    // newest-bottom（DB顺序）：prepend 发生在虚拟列表头部，用 [0] 做锚点
+    messageId: prependAnchor?.messageId ?? (
+      props.messageOrder === 'newest-top'
+        ? virtualMessages.value.at(-1)?.msg_id
+        : virtualMessages.value[0]?.msg_id
+    ),
     totalSize: prependAnchor?.totalSize ?? virtualizer.value.getTotalSize(),
     scrollOffset: element.scrollTop,
   }
@@ -224,7 +230,10 @@ function handleScroll(event: Event) {
  * 不走 `scrollToIndex`：其对齐 reconcile 会抹掉行内偏移。无新增、失败或锚点缺失时安全降级。
  */
 async function restorePrependAnchor(anchor: typeof prependAnchor) {
-  if (!anchor || virtualMessages.value[0]?.msg_id === anchor.messageId) return
+  // newest-top（reverse）：prepend 发生在虚拟列表尾部，用户位置不受影响，无需恢复
+  if (props.messageOrder === 'newest-top') return
+  const anchorCheckId = virtualMessages.value[0]?.msg_id
+  if (!anchor || anchorCheckId === anchor.messageId) return
   await nextTick()
   const element = viewport.value
   if (!element) return
@@ -275,8 +284,8 @@ watch(
 
 /**
  * 首批非空消息定位到最新消息端；后续仅在用户仍靠近该端时跟随新消息。
- * - newest-top：virtualMessages = DB顺序（最旧→最新），新消息在尾部 index count-1，滚到底部
- * - newest-bottom：virtualMessages = reverse，新消息在头部 index 0，滚到顶部 offset 0
+ * - newest-top：virtualMessages = reverse，新消息在头部 index 0，滚到顶部 offset 0
+ * - newest-bottom：virtualMessages = DB顺序，新消息在尾部 index count-1，滚到底部
  * 使用 `auto` 避免实时批次连续到达时累积平滑滚动动画。
  */
 watch(
@@ -293,9 +302,9 @@ watch(
     const isInitialLoad = wasLoading || previousCount === 0
 
     // 判断是否有新消息到达：取决于排序方向，最新端不同
-    const newMessageArrived = props.messageOrder === 'newest-bottom'
-      ? firstMessageId !== previousFirstId  // newest-bottom: 新消息在头部
-      : lastMessageId !== previousLastId    // newest-top: 新消息在尾部
+    const newMessageArrived = props.messageOrder === 'newest-top'
+      ? firstMessageId !== previousFirstId   // newest-top: 新消息在头部（reverse）
+      : lastMessageId !== previousLastId     // newest-bottom: 新消息在尾部（DB顺序）
 
     if (!isInitialLoad) {
       // 实时窗口达到上限后 length 固定，必须以最新端 ID 变化识别新消息；
@@ -303,14 +312,14 @@ watch(
       if (!newMessageArrived || prependAnchor || props.loadingOlder) return
       // 用户不在最新消息端则不跟随
       const element = viewport.value
-      const nearNewEnd = props.messageOrder === 'newest-bottom'
+      const nearNewEnd = props.messageOrder === 'newest-top'
         ? (element ? element.scrollTop <= AUTO_SCROLL_THRESHOLD : false)   // 顶部 = 最新消息端
         : (element ? element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_THRESHOLD : false)  // 底部 = 最新消息端
       if (!nearNewEnd) return
     }
 
     await nextTick()
-    if (props.messageOrder === 'newest-bottom') {
+    if (props.messageOrder === 'newest-top') {
       // 新消息在虚拟列表头部 (index 0)，滚到顶部
       virtualizer.value.scrollToOffset(0, { align: 'start', behavior: 'auto' })
     } else {
@@ -355,14 +364,14 @@ onUnmounted(clearHighlightTimers)
 
 /**
  * 比较最新消息端 `msg_id` 的变化：仅非初次、非历史前插的新消息进入高亮集合。
- * - newest-top：新消息在尾部 at(-1)
- * - newest-bottom：新消息在头部 [0]（reverse 后）
+ * - newest-top：virtualMessages = reverse，新消息在头部 [0]
+ * - newest-bottom：virtualMessages = DB顺序，新消息在尾部 at(-1)
  */
 watch(
   () => [
     props.loading,
     virtualMessages.value.length,
-    props.messageOrder === 'newest-bottom'
+    props.messageOrder === 'newest-top'
       ? virtualMessages.value[0]?.msg_id
       : virtualMessages.value.at(-1)?.msg_id,
   ] as const,

@@ -102,7 +102,7 @@ async function settleVirtualizer() {
 }
 
 /** 挂载可按行指定高度的消息面板，并同步测量 mock 使用的消息快照。 */
-function mountMeasuredPanel(options: { rowHeights: number[] }) {
+function mountMeasuredPanel(options: { rowHeights: number[]; messageOrder?: 'newest-top' | 'newest-bottom' }) {
   const messages = options.rowHeights.map((_, index) => makeMessage(index))
   options.rowHeights.forEach((height, index) => {
     rowHeightByMsgId.set(messages[index].msg_id, height)
@@ -119,6 +119,7 @@ function mountMeasuredPanel(options: { rowHeights: number[] }) {
       olderRequestToken: 3,
       hasOlder: true,
       messages,
+      messageOrder: options.messageOrder ?? 'newest-bottom',
     },
   })
   return attachedPanel
@@ -287,10 +288,10 @@ describe('MessagePanel', () => {
     expect(rectCalls.get(rowElement)).toBeGreaterThan(measurementsBeforeResize)
   })
 
-  it('新消息到达前距底部不超过阈值时无动画滚到底部', async () => {
+  it('newest-bottom: 新消息到达前距底部不超过阈值时无动画滚到底部', async () => {
     const messages = Array.from({ length: 20 }, (_, index) => makeMessage(index))
     const wrapper = mount(MessagePanel, {
-      props: { group: null, loading: false, messages },
+      props: { group: null, loading: false, messages, messageOrder: 'newest-bottom' },
     })
     await settleVirtualizer()
 
@@ -309,10 +310,10 @@ describe('MessagePanel', () => {
     expect(scrollSpy).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'auto' }))
   })
 
-  it('用户远离底部阅读旧消息时不抢滚动', async () => {
+  it('newest-bottom: 用户远离底部阅读旧消息时不抢滚动', async () => {
     const messages = Array.from({ length: 20 }, (_, index) => makeMessage(index))
     const wrapper = mount(MessagePanel, {
-      props: { group: null, loading: false, messages },
+      props: { group: null, loading: false, messages, messageOrder: 'newest-bottom' },
     })
     await settleVirtualizer()
 
@@ -331,10 +332,10 @@ describe('MessagePanel', () => {
     expect(scrollSpy).not.toHaveBeenCalled()
   })
 
-  it('满1000条实时尾部更新且首尾同时变化时近底用户继续自动跟随', async () => {
+  it('newest-bottom: 满1000条实时尾部更新且首尾同时变化时近底用户继续自动跟随', async () => {
     const messages = Array.from({ length: 1000 }, (_, index) => makeMessage(index))
     const wrapper = mount(MessagePanel, {
-      props: { group: null, loading: false, messages },
+      props: { group: null, loading: false, messages, messageOrder: 'newest-bottom' },
     })
     await settleVirtualizer()
 
@@ -364,10 +365,10 @@ describe('MessagePanel', () => {
     expect(scrollSpy).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'auto' }))
   })
 
-  it('满1000条实时尾部更新时远离底部仍不抢滚动', async () => {
+  it('newest-bottom: 满1000条实时尾部更新时远离底部仍不抢滚动', async () => {
     const messages = Array.from({ length: 1000 }, (_, index) => makeMessage(index))
     const wrapper = mount(MessagePanel, {
-      props: { group: null, loading: false, messages },
+      props: { group: null, loading: false, messages, messageOrder: 'newest-bottom' },
     })
     await settleVirtualizer()
 
@@ -421,7 +422,7 @@ describe('MessagePanel', () => {
     expect(wrapper.emitted('load-older')).toHaveLength(1)
   })
 
-  it('前插历史消息后维持锚点且不执行自动滚底', async () => {
+  it('newest-bottom: 前插历史消息后维持锚点且不执行自动滚底', async () => {
     const messages = Array.from({ length: 20 }, (_, index) => makeMessage(index + 20))
     const wrapper = mount(MessagePanel, {
       props: {
@@ -431,6 +432,7 @@ describe('MessagePanel', () => {
         olderRequestToken: 6,
         hasOlder: true,
         messages,
+        messageOrder: 'newest-bottom',
       },
     })
     await settleVirtualizer()
@@ -465,7 +467,7 @@ describe('MessagePanel', () => {
     ).toBe(true)
   })
 
-  it('前插与尾裁后总数仍为1000时按消息ID恢复锚点且不滚底', async () => {
+  it('newest-bottom: 前插与尾裁后总数仍为1000时按消息ID恢复锚点且不滚底', async () => {
     const messages = Array.from({ length: 1000 }, (_, index) => makeMessage(index + 200))
     const wrapper = mount(MessagePanel, {
       props: {
@@ -475,6 +477,7 @@ describe('MessagePanel', () => {
         olderRequestToken: 7,
         hasOlder: true,
         messages,
+        messageOrder: 'newest-bottom',
       },
     })
     await settleVirtualizer()
@@ -512,7 +515,7 @@ describe('MessagePanel', () => {
     expect(wrapper.emitted('older-settled')).toEqual([[7]])
   })
 
-  it('卡片高度变化后仍保持历史前插锚点', async () => {
+  it('newest-bottom: 卡片高度变化后仍保持历史前插锚点', async () => {
     const wrapper = mountMeasuredPanel({ rowHeights: [72, 140, 88] })
     await scrollNearTopAndPrepend(wrapper, olderMessages())
     expect(viewport(wrapper).scrollTop).toBeCloseTo(anchorOffsetBeforeLoad(), 0)
