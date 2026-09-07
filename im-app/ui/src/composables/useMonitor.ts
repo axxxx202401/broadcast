@@ -531,6 +531,27 @@ export function useMonitor() {
     for (const unlisten of unlisteners) unlisten()
   })
 
+  /** 将指定范围内未读匹配消息标记为已读，并刷新视图。 */
+  async function markAllAsRead(toMsgId?: string) {
+    if (unreadCount.value === 0) return
+    const groupId = selectedGroupId.value
+    const targetMsgId = toMsgId ?? messages.value[messages.value.length - 1]?.msg_id
+    if (!targetMsgId) return
+    const affected = await api.markGroupRead(groupId, targetMsgId)
+    if (affected === 0) return
+    const now = Date.now()
+    messages.value = messages.value.map((m) =>
+      m.matched !== 0 && m.read_at === 0 ? { ...m, read_at: now } : m,
+    )
+    void loadMessages(groupId)
+  }
+
+  /** 人工滚动停止后，把滚动范围内未读匹配消息标记为已读。 */
+  async function handleScrollStopped(maxMsgId: string) {
+    if (unreadCount.value === 0) return
+    await markAllAsRead(maxMsgId)
+  }
+
   return {
     /** 当前是否持有本地登录会话。 */
     loggedIn,
@@ -574,5 +595,7 @@ export function useMonitor() {
     disconnect,
     logout,
     detachLocalSession,
+    markAllAsRead,
+    handleScrollStopped,
   }
 }
