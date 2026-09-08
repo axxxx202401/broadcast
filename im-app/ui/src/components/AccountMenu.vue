@@ -145,7 +145,7 @@ function onRemoveAccount() {
         退出登录
       </button>
 
-      <button
+      <!-- <button
         class="account-menu-item danger"
         type="button"
         role="menuitem"
@@ -154,7 +154,7 @@ function onRemoveAccount() {
         @click="onRemoveAccount"
       >
         移除此账号
-      </button>
+      </button> -->
     </div>
   </div>
 </template>
