@@ -646,7 +646,24 @@ impl MessageEffects for ConnectionMessageEffects {
             records.len()
         );
 
-        if let Err(error) = self.context.db.messages.insert_batch(&records).await {
+        // 写操作设置超时，防止 SQLite 单写者阻塞整条消息处理链路（进而反压 TCP 读取）。
+        let insert_result = tokio::time::timeout(
+            Duration::from_secs(5),
+            self.context.db.messages.insert_batch(&records),
+        )
+        .await;
+        let insert_err = match insert_result {
+            Ok(Err(e)) => Some(e),
+            Err(_timeout) => {
+                tracing::error!(
+                    message_count = records.len(),
+                    "persist_monitored_batch: insert timed out after 5s"
+                );
+                return false;
+            }
+            Ok(Ok(())) => None,
+        };
+        if let Some(error) = insert_err {
             tracing::error!(
                 message_count = records.len(),
                 "Failed to insert message batch: {error}"
@@ -2766,6 +2783,7 @@ mod tests {
                 content_md5: String::new(),
                 stored_at: None,
                 matched: 0,
+                read_at: 0,
             }],
         )
         .await
@@ -5210,6 +5228,7 @@ mod tests {
             matched: 0,
             group_name: "测试群".to_string(),
             content_text: record.content_text.clone(),
+            read_at: 0,
         });
 
         assert_eq!(realtime.content_b64, STANDARD.encode(&message.content));

@@ -19,7 +19,7 @@ mod tests;
 
 use prost::Message;
 use schema::SCHEMA_SQL;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::SqlitePool;
 use std::str::FromStr;
 use std::time::Duration;
@@ -66,7 +66,10 @@ impl SqliteStore {
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
             .busy_timeout(Duration::from_secs(5));
-        let pool = SqlitePool::connect_with(options).await?;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(6)
+            .connect_with(options)
+            .await?;
         sqlx::query(SCHEMA_SQL).execute(&pool).await?;
         migrate_groups_available(&pool).await?;
         sqlx::query(
@@ -81,12 +84,25 @@ impl SqliteStore {
         migrate_messages_read_at(&pool).await?;
         migrate_index_group_matched_read(&pool).await?;
         migrate_index_group_time_matched(&pool).await?;
+        // 每 5 分钟执行一次 WAL checkpoint(TRUNCATE)，防止 WAL 文件无限增长。
+        let checkpoint_pool = pool.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                    .execute(&checkpoint_pool)
+                    .await;
+            }
+        });
+        let pool_clone = pool.clone();
         Ok(Self {
-            pool: pool.clone(),
-            messages: MessageStore::new(pool.clone()).await,
-            groups: GroupStore::new(pool.clone()).await,
-            key_pairs: UserKeyPairStore::new(pool.clone()),
-            lottery_config: LotteryConfigStore::new(pool.clone()),
+            pool,
+            messages: MessageStore::new(pool_clone.clone()).await,
+            groups: GroupStore::new(pool_clone.clone()).await,
+            key_pairs: UserKeyPairStore::new(pool_clone.clone()),
+            lottery_config: LotteryConfigStore::new(pool_clone),
         })
     }
 }
