@@ -12,7 +12,7 @@
 |--------|--------|------|----------|------|
 | A | P0 | 后端状态同步 | `im-app/src/commands/chat.rs` | 无 |
 | B | P0 | 前端状态兜底 | `im-app/ui/src/composables/useMonitor.ts` | A |
-| C | P1 | 全局错误自动消失 | `im-app/ui/src/App.vue` | 无 |
+| C | P1 | 全局错误/警告自动消失 + 关闭按钮 | `im-app/ui/src/App.vue` | 无 |
 | D | P1 | 权限配置修复 | `im-app/src-tauri/capabilities/default.json` | 无 |
 
 ---
@@ -30,11 +30,15 @@
 
 **影响**：用户看到"已连接"状态，但实际无法收发消息，体验混乱。
 
-### 问题 2：global-error 不自动消失
+### 问题 2：global-error / global-warning 不自动消失且 × 按钮无效
 
-**现象**：[App.vue:271](../../im-app/ui/src/App.vue#L271) 的 `global-error` 组件在显示错误后不会自动消失，需要用户手动点击 × 关闭。
+**现象**：[App.vue:171](../../im-app/ui/src/App.vue#L171) 的 `global-warning` 和 [App.vue:271](../../im-app/ui/src/App.vue#L271) 的 `global-error` 组件：
+- 不会自动消失
+- × 按钮没有绑定任何 `@click` 处理器，点击无效
 
-**需求**：错误消息在显示 2 秒后自动隐藏。
+**需求**：
+- 错误消息在显示 2 秒后自动隐藏
+- × 按钮点击后立即隐藏
 
 ### 问题 3：session_kicked 事件权限不足
 
@@ -108,48 +112,81 @@ function handleSessionKicked() {
 
 ---
 
-### 子项目 C：global-error 自动消失（P1）
+### 子项目 C：global-error / global-warning 自动消失 + 关闭按钮（P1）
 
 **文件**：`im-app/ui/src/App.vue`
 
-**改动位置**：[App.vue](../../im-app/ui/src/App.vue) 的 `<script setup>` 部分
+**改动位置**：[App.vue](../../im-app/ui/src/App.vue) 的 `<script setup>` 和 `<template>` 部分
 
 **改动内容**：
 
-在 `onMounted` 中添加定时器，在 `onUnmounted` 中清除：
+1. 添加定时器逻辑和清除函数：
 
 ```typescript
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, watch } from 'vue'
 
-// 全局错误自动消失定时器
-let globalErrorTimer: ReturnType<typeof setTimeout> | null = null
+// 全局错误/警告自动消失定时器
+let globalMessageTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 清除全局消息（错误/警告）的自动消失定时器。 */
+function clearGlobalMessageTimer() {
+  if (globalMessageTimer) {
+    clearTimeout(globalMessageTimer)
+    globalMessageTimer = null
+  }
+}
+
+/** 在 2 秒后自动隐藏错误消息。 */
+function scheduleErrorAutoDismiss() {
+  clearGlobalMessageTimer()
+  globalMessageTimer = setTimeout(() => {
+    monitor.error.value = ''
+    globalMessageTimer = null
+  }, 2000)
+}
 
 onMounted(() => {
   // ... 现有逻辑
   
   // 监听 error 变化，2 秒后自动隐藏
   watch(() => monitor.error.value, (newError) => {
-    if (newError) {
-      if (globalErrorTimer) clearTimeout(globalErrorTimer)
-      globalErrorTimer = setTimeout(() => {
-        monitor.error.value = ''
-        globalErrorTimer = null
-      }, 2000)
-    }
+    if (newError) scheduleErrorAutoDismiss()
   })
 })
 
 onUnmounted(() => {
   // ... 现有逻辑
-  if (globalErrorTimer) clearTimeout(globalErrorTimer)
+  clearGlobalMessageTimer()
 })
 ```
 
-**注意**：需要使用 Vue 的 `watch` 来监听 `monitor.error.value` 的变化。
+2. 为 × 按钮添加点击处理器：
+
+```html
+<!-- 警告 -->
+<div v-if="monitor.warning.value" class="global-error global-warning" role="status">
+  <span>警告</span>
+  <p>{{ monitor.warning.value }}</p>
+  <button type="button" aria-label="关闭警告" @click="monitor.warning = ''">×</button>
+</div>
+
+<!-- 错误 -->
+<div v-if="monitor.error.value" class="global-error" role="alert">
+  <span>错误</span>
+  <p>{{ monitor.error.value }}</p>
+  <button type="button" aria-label="关闭错误" @click="monitor.error = ''; clearGlobalMessageTimer()">*</button>
+</div>
+```
+
+**注意**：
+- `monitor.warning` 和 `monitor.error` 是 `ref`，需要 `.value` 才能修改
+- 但实际上在 Vue 模板中可以直接赋值（Vue 会自动解包 ref）
+- 清除定时器是为了防止自动消失和手动关闭冲突
 
 **测试**：
 - 触发一个错误（如断开连接失败）
 - 验证：错误消息在 2 秒后自动消失
+- 验证：点击 × 按钮立即消失
 
 ---
 
@@ -209,7 +246,7 @@ D (权限修复)     独立
 ## 验收标准
 
 1. **问题 1**：当收到 `error_code=100` 时，前端连接状态立即变为"已断开"，同时弹出"被挤下线"对话框
-2. **问题 2**：`global-error` 消息在显示 2 秒后自动消失
+2. **问题 2**：`global-error` / `global-warning` 消息在显示 2 秒后自动消失，点击 × 按钮立即消失
 3. **问题 3**：`session_kicked` 事件监听不再报错，弹窗正常显示
 
 ---
