@@ -1,24 +1,10 @@
 {
-  "uuid": "generated",
-  "name": "IM Monitor",
-  "description": "IM group message monitoring client",
-  "remote": {
-    "urls": []
-  },
-  "local": {
-    "paths": {
-      "dataDir": "~/.im-monitor"
-    }
-  },
+  "identifier": "default",
+  "description": "Default capabilities for the main window",
   "windows": ["main"],
   "permissions": [
-    {
-      "identifier": "core:default",
-      "description": "Default core access"
-    },
-    {
-      "identifier": "core:event:allow-listen",
-      "description": "Allow listening to custom events (session_kicked, connection_status, etc.)"
-    }
+    "core:default",
+    "core:event:default",
+    "core:event:allow-listen"
   ]
 }
