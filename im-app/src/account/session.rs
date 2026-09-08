@@ -148,10 +148,7 @@ pub(crate) async fn restore_uid_with_user_detail<F, Fut>(
 where
     F: FnOnce(&str) -> Fut,
     Fut: Future<
-        Output = Result<
-            im_http::openchat_user::UserDetailResp,
-            im_http::openchat_user::OpenChatUserError,
-        >,
+        Output = Result<im_proto::DetailResp, im_common::error::AppError>,
     >,
 {
     restore_uid_with_services(state, generation, uid, user_detail, move |_token| {
@@ -178,10 +175,7 @@ async fn restore_uid_with_injected_group_fetch<F, Fut, G>(
 where
     F: FnOnce(&str) -> Fut,
     Fut: Future<
-        Output = Result<
-            im_http::openchat_user::UserDetailResp,
-            im_http::openchat_user::OpenChatUserError,
-        >,
+        Output = Result<im_proto::DetailResp, im_common::error::AppError>,
     >,
     G: FnOnce(&str) -> GroupFetchFuture,
 {
@@ -201,10 +195,7 @@ async fn restore_uid_with_services<F, Fut, G>(
 where
     F: FnOnce(&str) -> Fut,
     Fut: Future<
-        Output = Result<
-            im_http::openchat_user::UserDetailResp,
-            im_http::openchat_user::OpenChatUserError,
-        >,
+        Output = Result<im_proto::DetailResp, im_common::error::AppError>,
     >,
     G: FnOnce(&str) -> GroupFetchFuture,
 {
@@ -234,20 +225,22 @@ where
 
     match user_detail(token.as_str()).await {
         Ok(_) => {}
-        Err(im_http::openchat_user::OpenChatUserError::Business(_)) => {
+        Err(im_common::error::AppError::Business { .. }) => {
             delete_rejected_token(state, uid).await;
             return Ok(needs_login(&record));
         }
-        Err(im_http::openchat_user::OpenChatUserError::Transport(_))
-        | Err(im_http::openchat_user::OpenChatUserError::Decode(_)) => {
+        Err(im_common::error::AppError::Http(_))
+        | Err(im_common::error::AppError::TcpFrame(_))
+        | Err(im_common::error::AppError::Aes(_))
+        | Err(im_common::error::AppError::ProtoParse(_)) => {
             return Ok(RestoreSessionDto::Retryable {
                 uid: uid.to_string(),
                 message: NETWORK_RETRY_MESSAGE.to_string(),
             });
         }
-        Err(im_http::openchat_user::OpenChatUserError::Validation(_)) => {
+        Err(_) => {
             if let Err(error) = state.account_index.mark_logged_out(uid).await {
-                tracing::warn!(error = %error, uid, "failed to mark validation failure as logged out");
+                tracing::warn!(error = %error, uid, "failed to mark unexpected failure as logged out");
             }
             return Ok(needs_login(&record));
         }
@@ -454,29 +447,27 @@ pub(crate) enum UserDetailOutcome {
 
 #[cfg(test)]
 impl UserDetailOutcome {
-    /// 转换成 `user_detail` 的返回值；成功响应不携带密钥。
+    /// 转换成 `user_detail` 的返回值；成功响应携带 UID 42。
     pub(crate) fn into_result(
         self,
-    ) -> Result<im_http::openchat_user::UserDetailResp, im_http::openchat_user::OpenChatUserError>
+    ) -> Result<im_proto::DetailResp, im_common::error::AppError>
     {
         match self {
-            Self::Success => Ok(im_http::openchat_user::UserDetailResp {
-                user_base: im_http::openchat_user::UserBase { uid: Some(42) },
+            Self::Success => Ok(im_proto::DetailResp {
+                user_base: Some(im_proto::UserBase {
+                    uid: 42,
+                    ..Default::default()
+                }),
+                ..Default::default()
             }),
-            Self::BusinessRejected => Err(im_http::openchat_user::OpenChatUserError::Business(
-                im_http::openchat_user::ApiBusinessError {
-                    code: 401,
-                    msg: "unauthorized".into(),
-                    data: None,
-                    display: None,
-                    title: None,
-                    params: None,
-                },
+            Self::BusinessRejected => Err(im_common::error::AppError::Business {
+                code: 401,
+                message: "unauthorized".into(),
+            }),
+            Self::TransportFailure => Err(im_common::error::AppError::Http(
+                "simulated transport failure".into(),
             )),
-            Self::TransportFailure => Err(im_http::openchat_user::OpenChatUserError::Transport(
-                im_common::error::AppError::Http("simulated transport failure".into()),
-            )),
-            Self::ValidationFailure => Err(im_http::openchat_user::OpenChatUserError::Validation(
+            Self::ValidationFailure => Err(im_common::error::AppError::Http(
                 "simulated validation failure".into(),
             )),
         }

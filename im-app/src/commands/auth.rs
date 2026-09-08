@@ -1100,11 +1100,10 @@ pub async fn login(
         if err.code == 100 {
             tracing::warn!(code = err.code, %err.msg, "Login returned code 100: session kicked offline");
             let app_handle = state.app_handle().clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = app_handle.emit("session_kicked", ()) {
-                    tracing::warn!("Failed to emit session_kicked event: {e}");
-                }
-            });
+            match app_handle.emit("session_kicked", ()) {
+                Ok(()) => tracing::info!("session_kicked event emitted from HTTP login path"),
+                Err(e) => tracing::warn!("Failed to emit session_kicked from HTTP: {e}"),
+            }
         }
     }
     let remote_login = classify_remote_login(login_result)?;

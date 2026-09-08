@@ -621,3 +621,79 @@ message ErrrMessage {
     // 触发错误的消息协议标识。
     int32 message_protocol_id = 5;
 }
+
+// ========== 用户模块 ==========
+
+// 清除账号时间设置枚举。
+enum ClearTimeType {
+    // 6个月（默认）。
+    SIX_MONTH = 0;
+    // 1个月。
+    ONE_MONTH = 1;
+    // 3个月。
+    THIRD_MONTH = 2;
+    // 12个月。
+    TWELVE_MONTH = 3;
+}
+
+// 翻译语种信息。
+message TranslationInfo {
+    // 是否开启自动翻译：0 关闭、1 开启。
+    int32 auto_translate_status = 2;
+    // 接收消息翻译语种：-1 无、1 英文、2 简体中文、3 繁体中文、4 越南语、5 巴西葡萄牙语。
+    int32 receive_language = 3;
+    // 发送消息翻译语种：-1 无、1 英文、2 简体中文、3 繁体中文、4 越南语、5 巴西葡萄牙语。
+    int32 send_language = 4;
+    // 微软翻译配置 key。
+    string key = 5;
+    // 微软翻译配置地区。
+    string region = 6;
+}
+
+// 授权交易限额。
+message AuthTradeLimit {
+    // 初级 USDT 单日限额。
+    string primary_one_day_by_usdt = 1;
+    // 初级 68 币单日限额。
+    string primary_one_day_by_68 = 2;
+    // 高级 USDT 单日限额。
+    string advanced_one_day_by_usdt = 3;
+    // 高级 68 币单日限额。
+    string advanced_one_day_by_68 = 4;
+}
+
+// 用户资料详情请求 [bizUrl/user/detail]
+message DetailReq {
+    ClientInfo client_info = 1; // 客户端信息
+    int64 uid = 2; // 用户ID
+}
+
+// 用户详情响应
+message DetailResp {
+    CommonResult common_result = 1; // 结果信息
+    UserBase user_base = 2; // 用户基本信息
+    bool bf_password = 3; // 是否设置密码
+    int32 privacy = 4; // 设置值
+    string signature = 5; // 个性签名
+    int32 view_type = 6; // 可见设置值
+    string phone = 7; // 手机号
+    ClearTimeType clear_time = 8; // 清除账号时间设置值
+    string qr_code = 9; // 二维码标识
+    string email = 10; // 邮箱
+    bool is_bind_google = 11; // 是否绑定谷歌
+    bool bf_trade_password = 12; // 是否设置安全密码
+    bool bf_real_auth = 13; // 是否真人认证（视频认证）
+    bool is_open_sms_auth = 14; // 是否开启短信验证
+    bool is_open_email_auth = 15; // 是否开启邮箱验证
+    bool is_open_google_auth = 16; // 是否开启谷歌验证
+    bool is_bind_bank = 17; // 是否绑定银行卡
+    bool is_verify_real_name = 18; // 是否验证真实姓名（名称+身份证号）
+    bool is_verify_id = 19; // 是否验证身份证（上传了身份证图片）
+    int32 auth_level = 20; // 认证级别 0：未认证 1：初级认证 2：高级认证
+    AuthTradeLimit auth_trade_limit = 21; // 授权限额
+    TranslationInfo translation_info = 22; // 翻译语种
+    bool is_bind_google_quick_login = 23; // 是否绑定google快捷登录
+    bool is_bind_apple_quick_login = 24; // 是否绑定apple快捷登录
+    int64 auth_pass_time = 25; // 认证通过时间
+    int32 verify_status = 26; // 认证状态（0:未审核；1：审核中；2：已审核; 3:驳回）
+}

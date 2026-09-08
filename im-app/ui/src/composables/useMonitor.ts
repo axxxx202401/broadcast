@@ -509,7 +509,7 @@ export function useMonitor() {
      */
     console.debug('[useMonitor] registering global event listeners...')
     // session_kicked 单独注册，不参与 allSettled，避免并发权限检查问题。
-    sessionKickedUnlisten = listen('session_kicked', () => {
+    sessionKickedUnlisten = listen<string>('session_kicked', (event) => {
       console.debug('[useMonitor] received session_kicked event')
       handleSessionKicked()
     }).catch((reason) => {

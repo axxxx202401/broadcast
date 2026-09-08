@@ -1370,11 +1370,14 @@ async fn establish_connection(
             if code == 100 {
                 tracing::warn!("Session kicked offline by other device login");
                 // 同步断连状态，确保前端连接状态立即更新（TCP 已断开）
+                tracing::info!("Emitting connection_status=disconnected...");
                 let _ = app_handle.emit("connection_status", "disconnected");
-                match app_handle.emit("session_kicked", ()) {
+                tracing::info!("connection_status emitted, now emitting session_kicked...");
+                match app_handle.emit("session_kicked", "kicked") {
                     Ok(()) => tracing::info!("session_kicked event emitted successfully"),
-                    Err(e) => tracing::warn!("Failed to emit session_kicked event: {e}"),
+                    Err(e) => tracing::error!("Failed to emit session_kicked: {e}"),
                 }
+                tracing::info!("session_kicked emit completed");
             }
         }
     });

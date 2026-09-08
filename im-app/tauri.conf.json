@@ -15,7 +15,7 @@
         "title": "IM Monitor",
         "width": 1200,
         "height": 800,
-        "minWidth": 760,
+        "minWidth": 500,
         "minHeight": 600,
         "resizable": true,
         "fullscreen": false

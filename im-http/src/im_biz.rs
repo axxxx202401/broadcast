@@ -19,7 +19,7 @@ use super::{
 use im_common::aes::AesCipher;
 use im_common::error::AppError;
 use im_common::version_key::HeaderManager;
-use im_proto::GroupContactListResp;
+use im_proto::{DetailReq, DetailResp, GroupContactListResp};
 use prost::Message;
 
 #[cfg(debug_assertions)]
@@ -288,6 +288,82 @@ impl ImBizClient {
         );
 
         Ok(groups)
+    }
+
+    /// 调用 `/user/detail` 获取用户资料详情。
+    ///
+    /// 请求使用 im-biz `0xC1` 二进制帧，Protobuf 编码 `DetailReq`，
+    /// 经 AES 加密后发送。响应帧先校验业务码（`common_result.err_code == 200`），
+    /// 再解码为 [`DetailResp`]。网络、帧解析、Proto 解码或业务非 200 均返回 [`AppError`]。
+    pub async fn fetch_user_detail(
+        &self,
+        client_info: &im_proto::ClientInfo,
+    ) -> Result<DetailResp, Box<dyn std::error::Error + Send + Sync>> {
+        const PATH: &str = "/user/detail";
+        #[cfg(debug_assertions)]
+        let started_at = Instant::now();
+        let req = DetailReq {
+            client_info: Some(client_info.clone()),
+            uid: 0, // 默认取当前登录用户，服务端根据 token 识别
+        };
+        let body = build_im_biz_request_body(&self.body_cipher, &req.encode_to_vec())?;
+        let x_one = self
+            .header_manager
+            .build_x_one()
+            .map_err(|e| AppError::Http(e.to_string()))?;
+
+        #[cfg(debug_assertions)]
+        tracing::debug!(
+            method = "POST",
+            path = PATH,
+            app_ver = client_info.app_ver,
+            package_code = client_info.package_code,
+            plat = client_info.plat,
+            frame_byte_0 = format_args!("0x{:02X}", body[0]),
+            protobuf_len = req.encode_to_vec().len(),
+            wire_len = body.len(),
+            x_one_len = x_one.len(),
+            "im-biz user/detail request"
+        );
+
+        let resp = self
+            .http
+            .post(format!("{}{PATH}", self.base_url))
+            .header("X-One", x_one)
+            .header("Content-Type", "application/json; charset=utf-8")
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| AppError::Http(format!("POST {PATH} request failed: {error}")))?;
+
+        let status = resp.status();
+        let data = read_response_body_limited(resp, MAX_HTTP_RESPONSE_SIZE).await?;
+
+        if !status.is_success() {
+            return Err(AppError::Http(format!(
+                "POST {PATH} -> HTTP {}: {}",
+                status,
+                im_common::sanitize::sanitize_debug_json(&data)
+            ))
+            .into());
+        }
+
+        let decrypted = parse_im_biz_response(&self.body_cipher, &data).map_err(|error| {
+            AppError::Http(format!("POST {PATH} response decode failed: {error}"))
+        })?;
+        let response = DetailResp::decode(&decrypted[..]).map_err(|error| {
+            AppError::ProtoParse(format!("{PATH} protobuf decode failed: {error}"))
+        })?;
+        if let Some(ref result) = response.common_result {
+            if result.err_code != BUSINESS_SUCCESS_CODE {
+                return Err(AppError::Business {
+                    code: result.err_code,
+                    message: result.err_msg.clone(),
+                }
+                .into());
+            }
+        }
+        Ok(response)
     }
 
     /// 获取指定群组最新的 Curve25519 公钥和被包装消息密钥。
