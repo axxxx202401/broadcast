@@ -826,7 +826,9 @@ impl MessageEffects for ConnectionMessageEffects {
                                 && record.send_uid <= match_uid_end
                         } else {
                             text.contains("开奖")
-                                && issues_list.iter().any(|issue| text.contains(&issue.to_string()))
+                                && issues_list
+                                    .iter()
+                                    .any(|issue| text.contains(&issue.to_string()))
                         };
                         if is_matched {
                             tracing::info!(
@@ -971,7 +973,7 @@ impl MessageEffects for ConnectionMessageEffects {
         };
         sender
             .send_cancellable(
-                2102,
+                im_chat::heartbeat::ACK_GROUP_MESSAGE,
                 &receipt.encode_to_vec(),
                 &self.cancellation,
                 CHAT_SEND_TIMEOUT,
@@ -1355,6 +1357,19 @@ async fn establish_connection(
                 &byte_budget,
             )
             .await
+        }
+    });
+
+    // 服务端返回业务码 100 表示当前会话被其他设备挤下线，通知前端弹窗并跳转登录。
+    chat_client.on_server_error(move |code, msg| {
+        let app_handle = context.app_handle.clone();
+        async move {
+            if code == 100 {
+                tracing::warn!(code, %msg, "Session kicked offline by other device login");
+                if let Err(e) = app_handle.emit("session_kicked", ()) {
+                    tracing::warn!("Failed to emit session_kicked event: {e}");
+                }
+            }
         }
     });
 
@@ -2682,14 +2697,20 @@ pub async fn mark_group_read(
         .await
         .map_err(|error| error.to_string())?;
     let to_msg_id = super::parse_i64_id(&to_msg_id, "to_msg_id")?;
-    let group_id = group_id.as_ref().map(|s| super::parse_i64_id(s, "group_id")).transpose()?;
+    let group_id = group_id
+        .as_ref()
+        .map(|s| super::parse_i64_id(s, "group_id"))
+        .transpose()?;
     tracing::info!(
         uid = session.uid,
         group_id = group_id.map(|g| g.to_string()).as_deref().unwrap_or("all"),
         to_msg_id,
         "mark_group_read"
     );
-    db.messages.mark_read(group_id, to_msg_id).await.map_err(|e| e.to_string())
+    db.messages
+        .mark_read(group_id, to_msg_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

@@ -514,6 +514,14 @@ export function useMonitor() {
         }
         if (status === 'connecting') syncConnectionStatus()
       }),
+      listen<void>('session_kicked', () => {
+        void handleSessionKicked().then((confirmed) => {
+          if (confirmed) {
+            // 通知宿主组件跳转到登录页；使用自定义 DOM 事件传递信号。
+            window.dispatchEvent(new CustomEvent('session-kicked-confirmed'))
+          }
+        })
+      }),
       listen('message_keys_ready', () => {
         if (loggedIn.value) void loadMessages(selectedGroupId.value)
         // 首次加载完成后，把历史消息中所有未读匹配消息标记为已读，
@@ -544,6 +552,20 @@ export function useMonitor() {
       }
     })
   })
+
+  /**
+   * 服务端通知当前会话被挤下线（业务码 100）。
+   * 弹出确认后清理本地会话并返回 `true`；用户取消则返回 `false`。
+   */
+  async function handleSessionKicked(): Promise<boolean> {
+    const confirmed = window.confirm(
+      '您的账号已在其他设备登录，当前会话已被强制断开。是否重新登录？',
+    )
+    if (confirmed) {
+      detachLocalSession()
+    }
+    return confirmed
+  }
 
   onBeforeUnmount(() => {
     // 停止状态轮询，并释放此时已保存到 unlisteners 的监听；尚卡在 allSettled 中的项不在其中。
@@ -630,5 +652,6 @@ export function useMonitor() {
     detachLocalSession,
     markAllAsRead,
     handleScrollStopped,
+    handleSessionKicked,
   }
 }

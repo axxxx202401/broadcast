@@ -14,6 +14,8 @@ pub const PUSH_LOGIN_SUCCESS: u16 = 1201;
 pub const PUSH_GROUP_MESSAGE: u16 = 2202;
 /// 群消息撤回推送消息 ID。
 pub const PUSH_RECALL_GROUP_MESSAGE: u16 = 2205;
+/// 群消息回执消息 ID（客户端发送给服务端确认收到 2202 批次）。
+pub const ACK_GROUP_MESSAGE: u16 = 2102;
 
 /// 构造心跳的消息 ID 与空应用正文。
 pub fn heartbeat_message() -> (u16, &'static [u8]) {

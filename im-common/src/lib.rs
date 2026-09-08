@@ -10,6 +10,8 @@ pub mod aes;
 pub mod config;
 /// 跨 crate 使用的统一错误类型。
 pub mod error;
+/// JSON 日志脱敏工具。
+pub mod sanitize;
 /// TCP 帧头部的编码与解析。
 pub mod tcp_head;
 /// X-One、X-Ten 等版本请求头的生成逻辑。

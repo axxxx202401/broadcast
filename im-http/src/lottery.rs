@@ -1,8 +1,12 @@
 //! 第三方开奖历史 API 客户端。
 //!
 //! 调用方提供完整的 API URL；本模块负责发起请求并解析返回的 JSON 为 [`DrawItem`] 列表。
+//! 使用模块级静态 `reqwest::Client` 复用连接池，避免每次调用重新建立连接。
 
 use serde::Deserialize;
+use std::sync::LazyLock;
+
+static LOTTERY_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
 /// 开奖历史列表中的一条记录。
 #[derive(Debug, Clone, Deserialize)]
@@ -20,7 +24,7 @@ pub struct DrawItem {
 /// `url` 应为完整的 API 地址（如 `https://go124.com/api/hash/get28HistoryList/10091`）；
 /// 请求失败或响应 JSON 结构不匹配时返回错误。
 pub async fn fetch_draw_history(url: &str) -> Result<Vec<DrawItem>, String> {
-    let resp = reqwest::Client::new()
+    let resp = LOTTERY_CLIENT
         .get(url)
         .send()
         .await

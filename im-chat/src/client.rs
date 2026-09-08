@@ -20,6 +20,16 @@ use crate::frame::{
 const TCP_GZIP_THRESHOLD: usize = 128;
 const SERVER_ERROR_MESSAGE_ID: u16 = 9999;
 
+/// 向已锁定的 TCP 写端写入一帧并刷新。
+async fn write_frame_to_stream(
+    stream: &mut OwnedWriteHalf,
+    frame: &[u8],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tokio::io::AsyncWriteExt::write_all(stream, frame).await?;
+    tokio::io::AsyncWriteExt::flush(stream).await?;
+    Ok(())
+}
+
 /// 消息回调返回的异步结果。
 ///
 /// 回调返回错误时，后台读任务会停止处理后续帧，并按受控退出流程关闭写端、等待断开回调。
@@ -40,6 +50,11 @@ pub type DisconnectFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 /// 会先清理共享写端，再调用并等待该回调；[`ChatClient::disconnect`] 主动通知时
 /// 也会等待它。[`ChatClient::force_abort`] 是同步兜底，不会调用或等待该回调。
 pub type DisconnectHandler = Box<dyn Fn() -> DisconnectFuture + Send + Sync>;
+/// 服务端返回业务错误帧（message_id=9999）时的回调。
+///
+/// 参数为服务端业务码和错误消息；当业务码为 100 时通常表示当前会话被其他设备挤下线。
+/// 回调在后台读任务中调用；返回的 future 完成后才会继续处理后续帧。
+pub type ServerErrorHandler = Box<dyn Fn(i32, String) -> DisconnectFuture + Send + Sync>;
 
 /// 可独立持有的聊天连接发送端。
 ///
@@ -112,11 +127,9 @@ impl ChatSender {
         &self,
         frame: &[u8],
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut stream = self.stream.lock().await;
-        let writer = stream.as_mut().ok_or("Not connected")?;
-        tokio::io::AsyncWriteExt::write_all(writer, frame).await?;
-        tokio::io::AsyncWriteExt::flush(writer).await?;
-        Ok(())
+        let mut guard = self.stream.lock().await;
+        let writer = guard.as_mut().ok_or("Not connected")?;
+        write_frame_to_stream(writer, frame).await
     }
 }
 
@@ -216,6 +229,7 @@ pub struct ChatClient {
     reader_task: Option<tokio::task::JoinHandle<()>>,
     handler: Option<Arc<MessageHandler>>,
     disconnect_handler: Option<Arc<DisconnectHandler>>,
+    server_error_handler: Option<Arc<ServerErrorHandler>>,
 }
 
 impl std::fmt::Debug for ChatClient {
@@ -238,6 +252,7 @@ impl ChatClient {
             reader_task: None,
             handler: None,
             disconnect_handler: None,
+            server_error_handler: None,
         }
     }
 
@@ -267,6 +282,20 @@ impl ChatClient {
         Fut: Future<Output = ()> + Send + 'static,
     {
         self.disconnect_handler = Some(Arc::new(Box::new(move || Box::pin(handler()))));
+    }
+
+    /// 设置收到服务端错误帧（message_id=9999）时调用的处理器。
+    ///
+    /// 后续调用会替换已有处理器。处理器快照在 [`Self::connect`] 时交给读任务，
+    /// 因而连接建立后再次设置只影响下一次连接。
+    pub fn on_server_error<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(i32, String) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.server_error_handler = Some(Arc::new(Box::new(move |code, msg| {
+            Box::pin(handler(code, msg))
+        })));
     }
 
     /// 连接配置中的聊天服务器并启动后台读任务。
@@ -308,6 +337,7 @@ impl ChatClient {
             stream,
             handler: self.handler.clone(),
             disconnect_handler: self.disconnect_handler.clone(),
+            server_error_handler: self.server_error_handler.clone(),
             body_aes_key: self.config.server.body_aes_key.clone(),
             leftover: Vec::new(),
         };
@@ -421,11 +451,9 @@ impl ChatClient {
         frame: &[u8],
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let stream = self.stream.as_ref().ok_or("Not connected")?;
-        let mut stream = stream.lock().await;
-        let writer = stream.as_mut().ok_or("Not connected")?;
-        tokio::io::AsyncWriteExt::write_all(writer, frame).await?;
-        tokio::io::AsyncWriteExt::flush(writer).await?;
-        Ok(())
+        let mut guard = stream.lock().await;
+        let writer = guard.as_mut().ok_or("Not connected")?;
+        write_frame_to_stream(writer, frame).await
     }
 
     async fn notify_disconnected(&self) {
@@ -452,6 +480,7 @@ struct ReadTask {
     stream: Arc<tokio::sync::Mutex<Option<OwnedWriteHalf>>>,
     handler: Option<Arc<MessageHandler>>,
     disconnect_handler: Option<Arc<DisconnectHandler>>,
+    server_error_handler: Option<Arc<ServerErrorHandler>>,
     body_aes_key: String,
     /// 跨读取累积字节，并在每次处理后保留尚不完整的尾帧。
     leftover: Vec<u8>,
@@ -522,12 +551,22 @@ impl ReadTask {
                     self.leftover.drain(..frame.wire_len);
                     if frame.message_id == SERVER_ERROR_MESSAGE_ID {
                         match im_proto::ErrrMessage::decode(frame.content.as_slice()) {
-                            Ok(server_error) => error!(
-                                error_code = server_error.error_msg_code,
-                                error_message = %server_error.error_msg,
-                                message_protocol_id = server_error.message_protocol_id,
-                                "IM chat server rejected TCP request"
-                            ),
+                            Ok(server_error) => {
+                                error!(
+                                    error_code = server_error.error_msg_code,
+                                    error_message = %server_error.error_msg,
+                                    message_protocol_id = server_error.message_protocol_id,
+                                    "IM chat server rejected TCP request"
+                                );
+                                if let Some(ref handler) = self.server_error_handler {
+                                    let handler = handler.clone();
+                                    let code = server_error.error_msg_code;
+                                    let msg = server_error.error_msg.clone();
+                                    tokio::spawn(async move {
+                                        handler(code, msg).await;
+                                    });
+                                }
+                            }
                             Err(decode_error) => error!(
                                 content_len = frame.content.len(),
                                 error = %decode_error,

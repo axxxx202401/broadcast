@@ -25,6 +25,9 @@ use prost::Message;
 #[cfg(debug_assertions)]
 use std::time::Instant;
 
+/// 服务端业务成功码。
+pub const BUSINESS_SUCCESS_CODE: i32 = 200;
+
 /// 调用 im-biz 群列表端点的客户端。
 ///
 /// 客户端持有 HTTP 连接池、请求/响应帧使用的 AES 密钥，以及生成 `X-One` 的头管理器。
@@ -82,7 +85,7 @@ fn decode_group_list_response(data: &[u8]) -> Result<Vec<GroupInfo>, AppError> {
         .map_err(|error| AppError::ProtoParse(error.to_string()))?;
 
     if let Some(result) = response.common_result {
-        if result.err_code != 200 {
+        if result.err_code != BUSINESS_SUCCESS_CODE {
             return Err(AppError::Business {
                 code: result.err_code,
                 message: result.err_msg,
@@ -101,7 +104,7 @@ fn decode_group_key_pair_response(data: &[u8]) -> Result<im_proto::KeyPairBase, 
     let response = im_proto::GetKeyPairResp::decode(data)
         .map_err(|error| AppError::ProtoParse(error.to_string()))?;
     if let Some(result) = response.common_result {
-        if result.err_code != 200 {
+        if result.err_code != BUSINESS_SUCCESS_CODE {
             return Err(AppError::Business {
                 code: result.err_code,
                 message: result.err_msg,
@@ -131,7 +134,7 @@ fn decode_update_user_key_pair_response(data: &[u8]) -> Result<i32, AppError> {
     let result = response.common_result.ok_or_else(|| {
         AppError::ProtoParse("UpdateKeyPairResp missing common_result".to_string())
     })?;
-    if result.err_code != 200 {
+    if result.err_code != BUSINESS_SUCCESS_CODE {
         return Err(AppError::Business {
             code: result.err_code,
             message: result.err_msg,
@@ -246,7 +249,7 @@ impl ImBizClient {
             %content_type,
             response_len = data.len(),
             elapsed_ms = started_at.elapsed().as_millis(),
-            response = %super::openchat_user::sanitize_debug_json(&data),
+            response = %im_common::sanitize::sanitize_debug_json(&data),
             "im-biz raw response"
         );
 
@@ -254,7 +257,7 @@ impl ImBizClient {
             return Err(AppError::Http(format!(
                 "POST {PATH} -> HTTP {}: {}",
                 status,
-                super::openchat_user::sanitize_debug_json(&data)
+                im_common::sanitize::sanitize_debug_json(&data)
             ))
             .into());
         }
@@ -319,7 +322,7 @@ impl ImBizClient {
             return Err(AppError::Http(format!(
                 "POST {PATH} -> HTTP {}: {}",
                 status,
-                super::openchat_user::sanitize_debug_json(&data)
+                im_common::sanitize::sanitize_debug_json(&data)
             ))
             .into());
         }
@@ -356,7 +359,7 @@ impl ImBizClient {
             return Err(AppError::Http(format!(
                 "POST {PATH} -> HTTP {}: {}",
                 status,
-                super::openchat_user::sanitize_debug_json(&data)
+                im_common::sanitize::sanitize_debug_json(&data)
             ))
             .into());
         }

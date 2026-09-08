@@ -298,11 +298,7 @@ impl MessageStore {
     /// `group_id` 为 `None` 时跨群标记；`Some(id)` 时只标该群。
     /// 条件：`matched != 0 AND read_at = 0 AND msg_id <= to_msg_id`。
     /// 返回受影响的行数。
-    pub async fn mark_read(
-        &self,
-        group_id: Option<i64>,
-        to_msg_id: i64,
-    ) -> sqlx::Result<usize> {
+    pub async fn mark_read(&self, group_id: Option<i64>, to_msg_id: i64) -> sqlx::Result<usize> {
         let now = chrono::Utc::now().timestamp_millis();
         let result = if let Some(gid) = group_id {
             sqlx::query(

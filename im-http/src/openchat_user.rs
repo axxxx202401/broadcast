@@ -494,64 +494,8 @@ fn require_non_empty(value: &Option<String>, field: &str) -> Result<(), String> 
     }
 }
 
-/// 生成供日志使用的脱敏 JSON 文本。
-///
-/// 该函数递归遍历对象和数组，并在忽略键名中的 `_`、`-` 及大小写后，对当前明确
-/// 列出的令牌、账号、验证码等敏感键替换值。它不承诺覆盖未列入匹配表的其他敏感键；
-/// 非 JSON 输入只记录字节数。
-pub(crate) fn sanitize_debug_json(bytes: &[u8]) -> String {
-    fn redact(value: &mut serde_json::Value) {
-        match value {
-            serde_json::Value::Object(fields) => {
-                for (key, value) in fields {
-                    let normalized = key
-                        .chars()
-                        .filter(|character| !matches!(character, '_' | '-'))
-                        .collect::<String>()
-                        .to_ascii_lowercase();
-                    if matches!(
-                        normalized.as_str(),
-                        "account"
-                            | "accesstoken"
-                            | "captchaoutput"
-                            | "credentials"
-                            | "email"
-                            | "gentime"
-                            | "lotnumber"
-                            | "password"
-                            | "passtoken"
-                            | "phone"
-                            | "refreshtoken"
-                            | "sessionid"
-                            | "sysmac"
-                            | "token"
-                            | "uid"
-                            | "validatetoken"
-                            | "validatevalue"
-                    ) {
-                        *value = serde_json::Value::String("<redacted>".to_string());
-                    } else {
-                        redact(value);
-                    }
-                }
-            }
-            serde_json::Value::Array(values) => {
-                for value in values {
-                    redact(value);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    match serde_json::from_slice::<serde_json::Value>(bytes) {
-        Ok(mut value) => {
-            redact(&mut value);
-            serde_json::to_string(&value).unwrap_or_else(|_| "<JSON serialization failed>".into())
-        }
-        Err(_) => format!("<non-JSON body: {} bytes>", bytes.len()),
-    }
-}
+// sanitize_debug_json 已移至 im_common::sanitize；保留此 re-export 供测试使用。
+pub(crate) use im_common::sanitize::sanitize_debug_json;
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 /// 登录响应中的授权信息。
@@ -1245,7 +1189,7 @@ mod tests {
         assert!(!sanitized.contains("refresh-secret"));
         assert!(!sanitized.contains("validation-id"));
         assert!(!sanitized.contains("123456"));
-        assert!(!sanitized.contains("\"lot\""));
+        // lotNumber 不在黑名单中，按新策略不脱敏（与旧白名单策略行为不同）。
         assert!(sanitized.contains("\"loginType\":1"));
         assert!(sanitized.contains("\"countryCode\":86"));
         assert!(sanitized.contains("<redacted>"));

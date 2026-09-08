@@ -68,6 +68,15 @@ function onWorkspaceEscape(event: KeyboardEvent) {
 onMounted(() => {
   void accounts.restore().then(applyRestoreOutcome)
   window.addEventListener('keydown', onWorkspaceEscape)
+  // 被挤下线确认后跳转到登录页。
+  window.addEventListener('session-kicked-confirmed', () => {
+    accounts.phase.value = 'needsLogin'
+    if (accounts.selectedAccount.value) {
+      auth.selectSavedAccount(accounts.selectedAccount.value)
+    } else {
+      auth.resetAuthForm({ preserveSelectedAccount: false })
+    }
+  })
 })
 
 onUnmounted(() => {

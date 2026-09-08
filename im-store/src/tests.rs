@@ -971,34 +971,38 @@ async fn test_mark_read_updates_matching_unread_messages() {
     let store = SqliteStore::new(":memory:").await.unwrap();
     // 插入 5 条匹配消息（read_at 默认为 0 = 未读）。
     for msg_id in 1..=5 {
-        store.messages.insert(&MessageRecord {
-            msg_id,
+        store
+            .messages
+            .insert(&MessageRecord {
+                msg_id,
+                group_id: 100,
+                send_uid: 200,
+                msg_type: 0,
+                content: format!("msg-{msg_id}").into_bytes(),
+                send_time: 1_000_000_000_000 + msg_id * 1000,
+                content_md5: format!("md5-{msg_id}"),
+                raw_proto: None,
+                content_text: format!("msg-{msg_id}"),
+            })
+            .await
+            .unwrap();
+    }
+    // 插入 1 条不匹配消息，不应被 mark_read 影响。
+    store
+        .messages
+        .insert(&MessageRecord {
+            msg_id: 999,
             group_id: 100,
             send_uid: 200,
             msg_type: 0,
-            content: format!("msg-{msg_id}").into_bytes(),
-            send_time: 1_000_000_000_000 + msg_id * 1000,
-            content_md5: format!("md5-{msg_id}"),
+            content: b"unmatched".to_vec(),
+            send_time: 1_000_000_005_000,
+            content_md5: "md5-999".to_string(),
             raw_proto: None,
-            content_text: format!("msg-{msg_id}"),
+            content_text: "unmatched".to_string(),
         })
         .await
         .unwrap();
-    }
-    // 插入 1 条不匹配消息，不应被 mark_read 影响。
-    store.messages.insert(&MessageRecord {
-        msg_id: 999,
-        group_id: 100,
-        send_uid: 200,
-        msg_type: 0,
-        content: b"unmatched".to_vec(),
-        send_time: 1_000_000_005_000,
-        content_md5: "md5-999".to_string(),
-        raw_proto: None,
-        content_text: "unmatched".to_string(),
-    })
-    .await
-    .unwrap();
     // 将匹配消息设为 matched=1；不匹配消息保持 matched=0。
     sqlx::query("UPDATE messages SET matched = 1 WHERE msg_id IN (1,2,3,4,5)")
         .execute(&store.pool)
@@ -1033,19 +1037,21 @@ async fn test_mark_read_global_mode_ignores_group_boundary() {
     let store = SqliteStore::new(":memory:").await.unwrap();
     // msg_id 是唯一主键，两个群的 msg_id 不能重复；使用唯一值。
     for (gid, msg_id) in [(100, 1), (100, 2), (200, 3), (200, 4)] {
-        store.messages.insert(&MessageRecord {
-            msg_id,
-            group_id: gid,
-            send_uid: 200,
-            msg_type: 0,
-            content: b"x".to_vec(),
-            send_time: 1_000_000_000_000 + msg_id,
-            content_md5: "md5".to_string(),
-            raw_proto: None,
-            content_text: "x".to_string(),
-        })
-        .await
-        .unwrap();
+        store
+            .messages
+            .insert(&MessageRecord {
+                msg_id,
+                group_id: gid,
+                send_uid: 200,
+                msg_type: 0,
+                content: b"x".to_vec(),
+                send_time: 1_000_000_000_000 + msg_id,
+                content_md5: "md5".to_string(),
+                raw_proto: None,
+                content_text: "x".to_string(),
+            })
+            .await
+            .unwrap();
     }
     // 所有消息设为 matched=1。
     sqlx::query("UPDATE messages SET matched = 1")
@@ -1382,23 +1388,25 @@ async fn test_migrate_messages_read_at_column() {
     assert_eq!(count, 1);
 
     // 插入消息时 read_at 默认 0。
-    store.messages.insert(&MessageRecord {
-        msg_id: 1,
-        group_id: 1,
-        send_uid: 1,
-        msg_type: 0,
-        content: b"test".to_vec(),
-        send_time: 1,
-        content_md5: String::new(),
-        raw_proto: None,
-        content_text: String::new(),
-    }).await.unwrap();
-    let row: (i64,) = sqlx::query_as(
-        "SELECT read_at FROM messages WHERE msg_id = 1",
-    )
-    .bind(1)
-    .fetch_one(&store.pool)
-    .await
-    .unwrap();
+    store
+        .messages
+        .insert(&MessageRecord {
+            msg_id: 1,
+            group_id: 1,
+            send_uid: 1,
+            msg_type: 0,
+            content: b"test".to_vec(),
+            send_time: 1,
+            content_md5: String::new(),
+            raw_proto: None,
+            content_text: String::new(),
+        })
+        .await
+        .unwrap();
+    let row: (i64,) = sqlx::query_as("SELECT read_at FROM messages WHERE msg_id = 1")
+        .bind(1)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
     assert_eq!(row.0, 0);
 }

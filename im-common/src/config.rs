@@ -91,9 +91,9 @@ impl AppConfig {
     /// 未设置时使用默认值（`issue` 模式，匹配全部期号）。环境变量由构建脚本提供；
     /// 运行已经生成的安装包时再设置变量不会改变配置。
     pub fn from_build_env() -> AppResult<Self> {
-        eprintln!(
-            "from_build_env: 开始读取环境变量"
-        );
+        #[cfg(debug_assertions)]
+        eprintln!("from_build_env: 开始读取环境变量");
+        #[cfg(debug_assertions)]
         eprintln!(
             "IM_LOTTERY_DEFAULT_API_URL compile-time value = {:?}",
             option_env!("IM_LOTTERY_DEFAULT_API_URL")
@@ -118,11 +118,23 @@ impl AppConfig {
             ("IM_SYS_MAC", option_env!("IM_SYS_MAC")),
             ("IM_SYS_MODEL", option_env!("IM_SYS_MODEL")),
             // 开奖匹配参数为可选；缺失时使用默认值。
-            ("IM_LOTTERY_MATCH_MODE", option_env!("IM_LOTTERY_MATCH_MODE")),
-            ("IM_LOTTERY_MATCH_UID_START", option_env!("IM_LOTTERY_MATCH_UID_START")),
-            ("IM_LOTTERY_MATCH_UID_END", option_env!("IM_LOTTERY_MATCH_UID_END")),
+            (
+                "IM_LOTTERY_MATCH_MODE",
+                option_env!("IM_LOTTERY_MATCH_MODE"),
+            ),
+            (
+                "IM_LOTTERY_MATCH_UID_START",
+                option_env!("IM_LOTTERY_MATCH_UID_START"),
+            ),
+            (
+                "IM_LOTTERY_MATCH_UID_END",
+                option_env!("IM_LOTTERY_MATCH_UID_END"),
+            ),
             // 开奖历史 API 默认 URL（可选）；未设置时数据库为空则无法拉取历史。
-            ("IM_LOTTERY_DEFAULT_API_URL", option_env!("IM_LOTTERY_DEFAULT_API_URL")),
+            (
+                "IM_LOTTERY_DEFAULT_API_URL",
+                option_env!("IM_LOTTERY_DEFAULT_API_URL"),
+            ),
         ];
         let match_mode = values
             .iter()
@@ -147,9 +159,7 @@ impl AppConfig {
         for entry in values.iter_mut() {
             if matches!(
                 entry.0,
-                "IM_LOTTERY_MATCH_MODE"
-                    | "IM_LOTTERY_MATCH_UID_START"
-                    | "IM_LOTTERY_MATCH_UID_END"
+                "IM_LOTTERY_MATCH_MODE" | "IM_LOTTERY_MATCH_UID_START" | "IM_LOTTERY_MATCH_UID_END"
             ) {
                 entry.1 = None;
             }
@@ -161,6 +171,7 @@ impl AppConfig {
             .flatten()
             .unwrap_or("")
             .to_string();
+        #[cfg(debug_assertions)]
         eprintln!(
             "from_build_env: lottery_default_api_url = {}",
             lottery_default_api_url

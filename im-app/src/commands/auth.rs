@@ -1092,7 +1092,20 @@ pub async fn login(
     state.account_db.close().await;
 
     // 远程认证、群组同步和旧连接清理完成前，不发布新的认证会话。
-    let remote_login = classify_remote_login(state.http.openchat_user.login(&request).await)?;
+    let login_result = state.http.openchat_user.login(&request).await;
+    // 业务码 100 表示被其他设备挤下线，通知前端弹窗后跳转登录。
+    if let Err(OpenChatUserError::Business(ref err)) = login_result {
+        if err.code == 100 {
+            tracing::warn!(code = err.code, %err.msg, "Login returned code 100: session kicked offline");
+            let app_handle = state.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = app_handle.emit("session_kicked", ()) {
+                    tracing::warn!("Failed to emit session_kicked event: {e}");
+                }
+            });
+        }
+    }
+    let remote_login = classify_remote_login(login_result)?;
     handle_remote_login_result(&state, generation, &request, remote_login, None).await
 }
 
