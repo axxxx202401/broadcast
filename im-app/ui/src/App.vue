@@ -6,6 +6,7 @@ import GroupSidebar from './components/GroupSidebar.vue'
 import LotteryPanel from './components/LotteryPanel.vue'
 import LoginPanel from './components/LoginPanel.vue'
 import MessagePanel from './components/MessagePanel.vue'
+import SessionKickedDialog from './components/SessionKickedDialog.vue'
 import StatusBadge from './components/StatusBadge.vue'
 import { useAccounts } from './composables/useAccounts'
 import { useAuth } from './composables/useAuth'
@@ -264,7 +265,12 @@ function onShowAllMessages() {
           <span v-if="theme.isLight.value" aria-hidden="true">☀</span>
           <span v-else aria-hidden="true">☾</span>
         </button>
-        <StatusBadge :status="monitor.connectionStatus.value" />
+        <SessionKickedDialog
+      v-if="monitor.showSessionKicked.value"
+      @confirm="monitor.confirmSessionKicked()"
+    />
+
+    <StatusBadge :status="monitor.connectionStatus.value" />
         <AccountMenu
           v-if="accounts.selectedAccount.value"
           :current="accounts.selectedAccount.value"

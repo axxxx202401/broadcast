@@ -298,10 +298,8 @@ impl ImBizClient {
     pub async fn fetch_user_detail(
         &self,
         client_info: &im_proto::ClientInfo,
-    ) -> Result<DetailResp, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<DetailResp, AppError> {
         const PATH: &str = "/user/detail";
-        #[cfg(debug_assertions)]
-        let started_at = Instant::now();
         let req = DetailReq {
             client_info: Some(client_info.clone()),
             uid: 0, // 默认取当前登录用户，服务端根据 token 识别
@@ -344,8 +342,7 @@ impl ImBizClient {
                 "POST {PATH} -> HTTP {}: {}",
                 status,
                 im_common::sanitize::sanitize_debug_json(&data)
-            ))
-            .into());
+            )));
         }
 
         let decrypted = parse_im_biz_response(&self.body_cipher, &data).map_err(|error| {
@@ -359,8 +356,7 @@ impl ImBizClient {
                 return Err(AppError::Business {
                     code: result.err_code,
                     message: result.err_msg.clone(),
-                }
-                .into());
+                });
             }
         }
         Ok(response)

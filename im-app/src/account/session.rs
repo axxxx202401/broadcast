@@ -72,14 +72,30 @@ pub async fn restore_uid(
     #[cfg(test)]
     {
         let http = state.http.clone();
+        let config = state.config.clone();
         return restore_uid_with_user_detail(
             state,
             generation,
             uid,
             move |token| {
                 let http = http.clone();
+                let config = config.clone();
                 let token = token.to_string();
-                async move { http.openchat_user.user_detail(&token).await }
+                async move {
+                    let device = config.read().await.device.clone();
+                    let client_info = im_proto::ClientInfo {
+                        session_id: String::new(),
+                        app_ver: device.app_ver,
+                        package_code: device.package_code,
+                        plat: im_proto::Platform::Android as i32,
+                        language: device.language,
+                        sys_mac: device.sys_mac,
+                        sys_model: device.sys_model,
+                        token,
+                        version: format!("{}-{}", device.app_ver, device.package_code),
+                    };
+                    http.im_biz.fetch_user_detail(&client_info).await
+                }
             },
             Some(Vec::new()),
         )
@@ -90,14 +106,30 @@ pub async fn restore_uid(
     {
         let state_for_groups = state.clone();
         let http = state.http.clone();
+        let config = state.config.clone();
         restore_uid_with_services(
             state,
             generation,
             uid,
             move |token| {
                 let http = http.clone();
+                let config = config.clone();
                 let token = token.to_string();
-                async move { http.openchat_user.user_detail(&token).await }
+                async move {
+                    let device = config.read().await.device.clone();
+                    let client_info = im_proto::ClientInfo {
+                        session_id: String::new(),
+                        app_ver: device.app_ver,
+                        package_code: device.package_code,
+                        plat: im_proto::Platform::Android as i32,
+                        language: device.language,
+                        sys_mac: device.sys_mac,
+                        sys_model: device.sys_model,
+                        token,
+                        version: format!("{}-{}", device.app_ver, device.package_code),
+                    };
+                    http.im_biz.fetch_user_detail(&client_info).await
+                }
             },
             move |token| {
                 let token = token.to_string();
@@ -231,7 +263,8 @@ where
         }
         Err(im_common::error::AppError::Http(_))
         | Err(im_common::error::AppError::TcpFrame(_))
-        | Err(im_common::error::AppError::Aes(_))
+        | Err(im_common::error::AppError::AesEncrypt(_))
+        | Err(im_common::error::AppError::AesDecrypt(_))
         | Err(im_common::error::AppError::ProtoParse(_)) => {
             return Ok(RestoreSessionDto::Retryable {
                 uid: uid.to_string(),
@@ -467,7 +500,7 @@ impl UserDetailOutcome {
             Self::TransportFailure => Err(im_common::error::AppError::Http(
                 "simulated transport failure".into(),
             )),
-            Self::ValidationFailure => Err(im_common::error::AppError::Http(
+            Self::ValidationFailure => Err(im_common::error::AppError::Login(
                 "simulated validation failure".into(),
             )),
         }

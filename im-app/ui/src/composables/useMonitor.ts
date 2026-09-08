@@ -59,6 +59,8 @@ export function useMonitor() {
   const pending = ref<string | null>(null)
   const error = ref('')
   const warning = ref('')
+  /** 会话被其他设备顶下线时触发弹窗确认（由 App.vue 渲染 SessionKickedDialog）。 */
+  const showSessionKicked = ref(false)
   const unlisteners: UnlistenFn[] = []
   let messageRequestId = 0
   let connectionStatusVersion = 0
@@ -569,15 +571,10 @@ export function useMonitor() {
     // 立即同步断连状态，作为后端 connection_status 事件的兜底
     connectionStatus.value = 'disconnected'
     console.debug('[useMonitor] handleSessionKicked called, loggedIn=', loggedIn.value, 'mounted=', true)
-    const confirmed = window.confirm(
-      '您的账号已在其他设备登录，当前会话已被强制断开。是否重新登录？',
-    )
-    console.debug('[useMonitor] dialog result:', confirmed)
-    if (!confirmed) return
-    console.debug('[useMonitor] session_kicked confirmed, navigating to login')
-    detachLocalSession()
-    // 触发宿主组件跳转到登录页
-    window.dispatchEvent(new CustomEvent('session-kicked-confirmed'))
+    // 触发宿主组件显示确认弹窗。
+    // 用户点"取消"时 showSessionKicked 归 false，等待 confirmSessionKicked() 被调用后才继续。
+    showSessionKicked.value = true
+    console.debug('[useMonitor] handleSessionKicked: dialog shown')
   }
 
   onBeforeUnmount(() => {
@@ -673,5 +670,16 @@ export function useMonitor() {
     markAllAsRead,
     handleScrollStopped,
     handleSessionKicked,
+    showSessionKicked,
+    /** 用户在弹窗中点击"重新登录"时由宿主组件调用。 */
+    confirmSessionKicked,
+  }
+
+  /** 用户确认被挤下线后执行：清理本地会话并派发导航事件。 */
+  function confirmSessionKicked() {
+    showSessionKicked.value = false
+    console.debug('[useMonitor] confirmSessionKicked called, navigating to login')
+    detachLocalSession()
+    window.dispatchEvent(new CustomEvent('session-kicked-confirmed'))
   }
 }

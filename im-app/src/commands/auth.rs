@@ -92,6 +92,24 @@ impl From<&str> for AuthCommandError {
     }
 }
 
+impl From<im_common::error::AppError> for AuthCommandError {
+    fn from(error: im_common::error::AppError) -> Self {
+        match error {
+            im_common::error::AppError::Business { code, message } => Self::Business {
+                code,
+                msg: message,
+                data: None,
+                display: None,
+                title: None,
+                params: None,
+            },
+            _ => Self::Other {
+                message: error.to_string(),
+            },
+        }
+    }
+}
+
 impl From<crate::account::AccountError> for AuthCommandError {
     fn from(error: crate::account::AccountError) -> Self {
         Self::Other {
@@ -303,14 +321,29 @@ async fn handle_remote_login_result(
             let token = zeroize::Zeroizing::new(token);
             let uid = match uid {
                 Some(uid) => uid,
-                None => state
-                    .http
-                    .openchat_user
-                    .user_detail(&token)
-                    .await?
-                    .user_base
-                    .uid
-                    .ok_or("User detail response missing userBase.uid")?,
+                None => {
+                    let device = state.config.read().await.device.clone();
+                    let client_info = im_proto::ClientInfo {
+                        session_id: String::new(),
+                        app_ver: device.app_ver,
+                        package_code: device.package_code,
+                        plat: im_proto::Platform::Android as i32,
+                        language: device.language,
+                        sys_mac: device.sys_mac,
+                        sys_model: device.sys_model,
+                        token: token.to_string(),
+                        version: format!("{}-{}", device.app_ver, device.package_code),
+                    };
+                    state
+                        .http
+                        .im_biz
+                        .fetch_user_detail(&client_info)
+                        .await
+                        .map_err(|e| AuthCommandError::Other { message: e.to_string() })?
+                        .user_base
+                        .map(|b| b.uid)
+                        .ok_or("User detail response missing userBase.uid")?
+                }
             };
             let remote_groups = match remote_groups {
                 Some(groups) => groups,
