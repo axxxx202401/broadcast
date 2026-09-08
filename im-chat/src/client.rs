@@ -560,7 +560,7 @@ impl ReadTask {
                                 );
                                 if let Some(ref handler) = self.server_error_handler {
                                     let handler = handler.clone();
-                                    let code = server_error.error_msg_code;
+                                    let code = server_error.error_msg_code as i32;
                                     let msg = server_error.error_msg.clone();
                                     tokio::spawn(async move {
                                         handler(code, msg).await;
