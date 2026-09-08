@@ -86,13 +86,13 @@ function clearGlobalMessageTimer() {
   }
 }
 
-/** 在 2 秒后自动隐藏错误消息。 */
+/** 在 3 秒后自动隐藏错误消息。 */
 function scheduleErrorAutoDismiss() {
   clearGlobalMessageTimer()
   globalMessageTimer = setTimeout(() => {
     monitor.error.value = ''
     globalMessageTimer = null
-  }, 2000)
+  }, 3000)
 }
 
 onMounted(() => {
@@ -100,7 +100,7 @@ onMounted(() => {
   window.addEventListener('keydown', onWorkspaceEscape)
   // 被挤下线确认后跳转到登录页。
   window.addEventListener('session-kicked-confirmed', handleSessionKickedConfirmed)
-  // 监听错误变化，2 秒后自动隐藏
+  // 监听错误变化，3 秒后自动隐藏
   watch(() => monitor.error.value, (newError) => {
     if (newError) scheduleErrorAutoDismiss()
   })
@@ -296,7 +296,7 @@ function onShowAllMessages() {
     <div v-if="monitor.error.value" class="global-error" role="alert">
       <span>错误</span>
       <p>{{ monitor.error.value }}</p>
-      <button type="button" aria-label="关闭错误" @click="monitor.error.value = ''; clearGlobalMessageTimer()">*</button>
+      <button type="button" aria-label="关闭错误" @click="monitor.error.value = ''; clearGlobalMessageTimer()">×</button>
     </div>
 
     <!-- 工作区由群组筛选与监控操作、当前群消息流两部分组成；窄屏侧栏改为遮罩抽屉。 -->
