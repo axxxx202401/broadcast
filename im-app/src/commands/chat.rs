@@ -1366,10 +1366,14 @@ async fn establish_connection(
     chat_client.on_server_error(move |code, msg| {
         let app_handle = session_kick_app_handle.clone();
         async move {
+            tracing::info!(code, %msg, "on_server_error callback invoked");
             if code == 100 {
-                tracing::warn!(code, %msg, "Session kicked offline by other device login");
-                if let Err(e) = app_handle.emit("session_kicked", ()) {
-                    tracing::warn!("Failed to emit session_kicked event: {e}");
+                tracing::warn!("Session kicked offline by other device login");
+                // 同步断连状态，确保前端连接状态立即更新（TCP 已断开）
+                let _ = app_handle.emit("connection_status", "disconnected");
+                match app_handle.emit("session_kicked", ()) {
+                    Ok(()) => tracing::info!("session_kicked event emitted successfully"),
+                    Err(e) => tracing::warn!("Failed to emit session_kicked event: {e}"),
                 }
             }
         }

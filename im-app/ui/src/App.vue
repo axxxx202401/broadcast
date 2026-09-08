@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, watch } from 'vue'
 
 import AccountMenu from './components/AccountMenu.vue'
 import GroupSidebar from './components/GroupSidebar.vue'
@@ -65,22 +65,51 @@ function onWorkspaceEscape(event: KeyboardEvent) {
   }
 }
 
+/** 被挤下线确认后跳转到登录页。 */
+const handleSessionKickedConfirmed = () => {
+  accounts.phase.value = 'needsLogin'
+  if (accounts.selectedAccount.value) {
+    auth.selectSavedAccount(accounts.selectedAccount.value)
+  } else {
+    auth.resetAuthForm({ preserveSelectedAccount: false })
+  }
+}
+
+// 全局错误/警告自动消失定时器
+let globalMessageTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 清除全局消息（错误/警告）的自动消失定时器。 */
+function clearGlobalMessageTimer() {
+  if (globalMessageTimer) {
+    clearTimeout(globalMessageTimer)
+    globalMessageTimer = null
+  }
+}
+
+/** 在 2 秒后自动隐藏错误消息。 */
+function scheduleErrorAutoDismiss() {
+  clearGlobalMessageTimer()
+  globalMessageTimer = setTimeout(() => {
+    monitor.error.value = ''
+    globalMessageTimer = null
+  }, 2000)
+}
+
 onMounted(() => {
   void accounts.restore().then(applyRestoreOutcome)
   window.addEventListener('keydown', onWorkspaceEscape)
   // 被挤下线确认后跳转到登录页。
-  window.addEventListener('session-kicked-confirmed', () => {
-    accounts.phase.value = 'needsLogin'
-    if (accounts.selectedAccount.value) {
-      auth.selectSavedAccount(accounts.selectedAccount.value)
-    } else {
-      auth.resetAuthForm({ preserveSelectedAccount: false })
-    }
+  window.addEventListener('session-kicked-confirmed', handleSessionKickedConfirmed)
+  // 监听错误变化，2 秒后自动隐藏
+  watch(() => monitor.error.value, (newError) => {
+    if (newError) scheduleErrorAutoDismiss()
   })
 })
 
 onUnmounted(() => {
+  clearGlobalMessageTimer()
   window.removeEventListener('keydown', onWorkspaceEscape)
+  window.removeEventListener('session-kicked-confirmed', handleSessionKickedConfirmed as EventListener)
 })
 
 const retryRestore = () => {
@@ -167,7 +196,7 @@ function onShowAllMessages() {
   <div v-if="monitor.warning.value" class="global-error global-warning" role="status">
     <span>警告</span>
     <p>{{ monitor.warning.value }}</p>
-    <button type="button" aria-label="关闭警告">×</button>
+    <button type="button" aria-label="关闭警告" @click="monitor.warning.value = ''">×</button>
   </div>
 
   <!-- 恢复完成前（含可重试）只显示启动状态；账号切换中 busy=switch 时保留主界面。 -->
@@ -267,7 +296,7 @@ function onShowAllMessages() {
     <div v-if="monitor.error.value" class="global-error" role="alert">
       <span>错误</span>
       <p>{{ monitor.error.value }}</p>
-      <button type="button" aria-label="关闭错误">×</button>
+      <button type="button" aria-label="关闭错误" @click="monitor.error.value = ''; clearGlobalMessageTimer()">*</button>
     </div>
 
     <!-- 工作区由群组筛选与监控操作、当前群消息流两部分组成；窄屏侧栏改为遮罩抽屉。 -->

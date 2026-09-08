@@ -14,6 +14,10 @@
     {
       "identifier": "core:default",
       "description": "Default core access"
+    },
+    {
+      "identifier": "core:event:allow-listen",
+      "description": "Allow listening to custom events (session_kicked, connection_status, etc.)"
     }
   ]
 }

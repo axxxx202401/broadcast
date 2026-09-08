@@ -464,6 +464,8 @@ export function useMonitor() {
     })
 
   let mounted = true
+  // session_kicked 独立注册的 unlisten；allSettled 外的监听不在此数组中。
+  let sessionKickedUnlisten: Promise<UnlistenFn | void> | null = null
 
   onMounted(() => {
     messageChannel = new Channel<MessageDto[]>()
@@ -505,6 +507,14 @@ export function useMonitor() {
      * listen 注册都 settle 后才进入 then 并保存成功项的 unlisten；若一个成功而另一个长期
      * pending，卸载时可能尚未取得成功项的 unlisten，存在延迟释放或订阅泄漏窗口。
      */
+    console.debug('[useMonitor] registering global event listeners...')
+    // session_kicked 单独注册，不参与 allSettled，避免并发权限检查问题。
+    sessionKickedUnlisten = listen('session_kicked', () => {
+      console.debug('[useMonitor] received session_kicked event')
+      handleSessionKicked()
+    }).catch((reason) => {
+      console.error('[useMonitor] session_kicked listen failed:', reason)
+    })
     void Promise.allSettled([
       listen<string>('connection_status', ({ payload }) => {
         connectionStatusVersion += 1
@@ -515,14 +525,6 @@ export function useMonitor() {
           void loadMessages(selectedGroupId.value)
         }
         if (status === 'connecting') syncConnectionStatus()
-      }),
-      listen<void>('session_kicked', () => {
-        void handleSessionKicked().then((confirmed) => {
-          if (confirmed) {
-            // 通知宿主组件跳转到登录页；使用自定义 DOM 事件传递信号。
-            window.dispatchEvent(new CustomEvent('session-kicked-confirmed'))
-          }
-        })
       }),
       listen('message_keys_ready', () => {
         if (loggedIn.value) void loadMessages(selectedGroupId.value)
@@ -543,12 +545,15 @@ export function useMonitor() {
         }
       }),
     ]).then((results) => {
-      // 两项均 settle 后若组件已经卸载，此处才调用成功注册项返回的 unlisten。
+      // 各项均 settle 后若组件已经卸载，此处才调用成功注册项返回的 unlisten。
+      console.debug(`[useMonitor] event listener registration settled: ${results.length} items`)
       for (const result of results) {
         if (result.status === 'rejected') {
+          console.error(`[useMonitor] event listener registration failed:`, result.reason)
           error.value = `事件监听失败：${errorMessage(result.reason)}`
         } else if (mounted) {
           unlisteners.push(result.value)
+          console.debug(`[useMonitor] event listener registered successfully`)
         } else {
           result.value()
         }
@@ -558,21 +563,32 @@ export function useMonitor() {
 
   /**
    * 服务端通知当前会话被挤下线（业务码 100）。
-   * 弹出确认后清理本地会话并返回 `true`；用户取消则返回 `false`。
+   * 弹出确认后清理本地会话；通知宿主组件跳转到登录页。
    */
-  async function handleSessionKicked(): Promise<boolean> {
+  function handleSessionKicked() {
+    // 立即同步断连状态，作为后端 connection_status 事件的兜底
+    connectionStatus.value = 'disconnected'
+    console.debug('[useMonitor] handleSessionKicked called, loggedIn=', loggedIn.value, 'mounted=', true)
     const confirmed = window.confirm(
       '您的账号已在其他设备登录，当前会话已被强制断开。是否重新登录？',
     )
-    if (confirmed) {
-      detachLocalSession()
-    }
-    return confirmed
+    console.debug('[useMonitor] dialog result:', confirmed)
+    if (!confirmed) return
+    console.debug('[useMonitor] session_kicked confirmed, navigating to login')
+    detachLocalSession()
+    // 触发宿主组件跳转到登录页
+    window.dispatchEvent(new CustomEvent('session-kicked-confirmed'))
   }
 
   onBeforeUnmount(() => {
     // 停止状态轮询，并释放此时已保存到 unlisteners 的监听；尚卡在 allSettled 中的项不在其中。
     mounted = false
+    if (sessionKickedUnlisten) {
+      sessionKickedUnlisten.then((unlisten) => {
+        if (typeof unlisten === 'function') unlisten()
+      }).catch(() => {})
+      sessionKickedUnlisten = null
+    }
     activeOlderRequest = null
     olderRequestToken.value = null
     clearBufferedRealtimeMessages()
