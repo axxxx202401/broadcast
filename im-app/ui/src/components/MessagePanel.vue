@@ -3,6 +3,7 @@ import { useVirtualizer } from '@tanstack/vue-virtual'
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import type { VNodeRef } from 'vue'
 
+import { compareDecimalI64 } from '../utils/message'
 import type { GroupDto, MessageDto } from '../types/im'
 import LotteryPanel from './LotteryPanel.vue'
 import MessageCard from './MessageCard.vue'
@@ -95,14 +96,19 @@ function measureMessageRow(element: HTMLLIElement, entry: ResizeObserverEntry | 
  * `newest-bottom`：直接沿用 DB 顺序，最新消息在尾部显示在底部。
  * TanStack Virtual v3.17 不支持 reverse 选项，通过手动反转数组实现等效效果。
  */
+/**
+ * 按排序方向缓存当前消息视图：newest-top 为反转数组，newest-bottom 为原始数组。
+ * 仅在 messageOrder 变化时重新计算，避免每次 messages 更新时分配新数组。
+ */
+const reversedMessages = ref<MessageDto[]>([])
 const virtualMessages = computed<MessageDto[]>(() => {
-  const result = props.messageOrder === 'newest-top'
-    ? [...props.messages].reverse()
-    : props.messages
-  console.debug(
-    `[MessagePanel] virtualMessages: order=${props.messageOrder}, count=${result.length}, first3=${result.slice(0, 3).map(m => `${m.msg_id.substring(0,8)}@${m.send_time}`).join(', ')}, last3=${result.slice(-3).map(m => `${m.msg_id.substring(0,8)}@${m.send_time}`).join(', ')}`,
-  )
-  return result
+  const needsReorder = props.messageOrder === 'newest-top'
+  const current = reversedMessages.value
+  // 排序方向与缓存方向不一致，或消息数组被替换时重建。
+  if (!needsReorder || current !== props.messages) {
+    reversedMessages.value = needsReorder ? [...props.messages].reverse() : props.messages
+  }
+  return reversedMessages.value
 })
 
 // 加载态和空态把 count 归零，确保这两种状态不会生成虚拟行；消息键沿用协议 msg_id。
@@ -194,12 +200,6 @@ let olderSettleCycle = 0
  * 顶部阈值内只发出一次请求，直至父组件完成该轮加载。
  * 已请求但用户仍停在顶部时，只刷新行内偏移，避免程序化滚底留下的 `scrollOffset = 0` 污染锚点。
  */
-function handleScrollAndBuffer(event: Event) {
-  handleScroll(event)
-  handleScrollBuffer(event)
-  updateAwayFromNewEnd()
-}
-
 /**
  * 根据当前滚动位置更新 isAwayFromNewEnd 标记。
  * 在每次滚动事件里主动调用，确保浮窗在用户滚离顶部后立刻可见。
@@ -235,16 +235,18 @@ function handleScrollBuffer(event: Event) {
     const maxMsgId = scrollBuffer.value
       .map((id) => props.messages.find((m) => m.msg_id === id))
       .filter(Boolean)
-      .map((m) => parseInt(m!.msg_id))
-      .reduce((a, b) => Math.max(a, b), 0)
-    if (maxMsgId > 0) {
-      emit('scroll-stopped', maxMsgId.toString())
+      .map((m) => m!.msg_id)
+      .reduce((a, b) => (compareDecimalI64(a, b) > 0 ? a : b), scrollBuffer.value[0] ?? '0')
+    if (maxMsgId && maxMsgId !== '0') {
+      emit('scroll-stopped', maxMsgId)
     }
     scrollBuffer.value = []
   }, SCROLL_DEBOUNCE_MS)
 }
 
 function handleScroll(event: Event) {
+  handleScrollBuffer(event)
+  updateAwayFromNewEnd()
   const element = viewport.value
   if (
     !element
@@ -409,7 +411,10 @@ function clearHighlightTimers() {
   highlightedIds.value = new Set()
 }
 
-onUnmounted(clearHighlightTimers)
+onUnmounted(() => {
+  clearHighlightTimers()
+  if (scrollDebounceTimer !== null) clearTimeout(scrollDebounceTimer)
+})
 
 /**
  * 比较最新消息端 `msg_id` 的变化：仅非初次、非历史前插的新消息进入高亮集合。
@@ -444,12 +449,6 @@ watch(
     console.debug(
       `[MessagePanel] float-btn: unreadCount=${unreadCount}, msgs=${msgCount}, isAwayFromNewEnd=${awayFromNewEnd}, should-show=${unreadCount > 0 && awayFromNewEnd}`,
     )
-    if (unreadCount > 0 && msgCount > 0) {
-      const unread = props.messages.filter(m => m.read_at === 0)
-      console.debug(
-        `[MessagePanel] float-btn: unread msgs=${unread.length}, first_unread=${unread[0]?.msg_id?.substring(0,8)}@${unread[0]?.read_at}, last_unread=${unread.at(-1)?.msg_id?.substring(0,8)}@${unread.at(-1)?.read_at}`,
-      )
-    }
   },
   { immediate: true },
 )
@@ -499,7 +498,7 @@ watch(
     </header>
 
     <!-- 内容区按优先级呈现加载中、未选择群组、已选但为空、消息列表四种状态。 -->
-    <div ref="viewport" class="message-viewport" aria-live="polite" @scroll="handleScrollAndBuffer">
+    <div ref="viewport" class="message-viewport" aria-live="polite" @scroll="handleScroll">
       <div v-if="loading" class="panel-empty">
         <span class="loader-grid" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
         <p>正在读取本地历史记录</p>

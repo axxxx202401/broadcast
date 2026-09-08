@@ -158,7 +158,7 @@ export class MessageIndex {
  * 后端保证消息 ID 是可解析的 i64 十进制表示；这里按符号、有效数字长度和字典序比较，
  * 因而能精确处理超过 `2^53` 的值。负数的绝对值越大，实际数值越小。
  */
-function compareDecimalI64(left: string, right: string): number {
+export function compareDecimalI64(left: string, right: string): number {
   if (left === right) return 0
   const leftNegative = left.startsWith('-')
   const rightNegative = right.startsWith('-')

@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { api } from '../services/tauri'
 import type { ConnectionStatus, GroupDto, MessageCursor, MessageDto } from '../types/im'
 import {
+  compareDecimalI64,
   isCurrentMessageRequest,
   MessageIndex,
   type MessageMergeResult,
@@ -82,8 +83,11 @@ export function useMonitor() {
     const result = messageIndex.mergeWithResult(incoming, trimStrategy)
     if (!result.changed) return result
     messages.value = messageIndex.snapshot()
+    // 增量更新未读匹配计数：新增消息中未读的 + 被裁剪的已读匹配消息（不计入减少）
+    // 简化：全量重新计数，但仅在索引变化时执行，而非每次 filteredMessages computed 求值时。
+    unreadCount.value = messages.value.filter((m) => m.matched !== 0 && m.read_at === 0).length
     console.debug(
-      `[useMonitor] mergeAndPublish: ${messages.value.length} total, matched=${messages.value.filter(m => m.matched !== 0).length}`,
+      `[useMonitor] mergeAndPublish: ${messages.value.length} total, matched=${messages.value.filter(m => m.matched !== 0).length}, unreadMatched=${unreadCount.value}`,
     )
     return result
   }
@@ -187,10 +191,8 @@ export function useMonitor() {
       ? messages.value.filter((m) => m.matched !== 0)
       : messages.value,
   )
-  /** 当前未读匹配消息数。 */
-  const unreadCount = computed(() =>
-    filteredMessages.value.filter((m) => m.read_at === 0).length,
-  )
+  /** 当前未读匹配消息数；在 mergeAndPublishMessages / markRead 时增量更新。 */
+  const unreadCount = ref(0)
   const connectDisabled = computed(
     () => pending.value !== null || connectionStatus.value === 'connecting',
   )
@@ -529,13 +531,14 @@ export function useMonitor() {
         // 取 msg_id 最大的一条，确保所有历史消息都在 mark_read 的更新范围内。
         if (loggedIn.value && messages.value.length > 0) {
           const maxMsg = messages.value.reduce((a, b) =>
-            parseInt(a.msg_id) >= parseInt(b.msg_id) ? a : b,
+            compareDecimalI64(a.msg_id, b.msg_id) >= 0 ? a : b,
           )
           if (maxMsg) {
             void api.markGroupRead(selectedGroupId.value, maxMsg.msg_id)
             const now = Date.now()
             messageIndex.markRead((m) => m.matched !== 0 && m.read_at === 0, now)
             messages.value = messageIndex.snapshot()
+            unreadCount.value = messages.value.filter((m) => m.matched !== 0 && m.read_at === 0).length
           }
         }
       }),
@@ -594,6 +597,7 @@ export function useMonitor() {
       const now = Date.now()
       messageIndex.markRead((m) => m.matched !== 0 && m.read_at === 0, now)
       messages.value = messageIndex.snapshot()
+      unreadCount.value = messages.value.filter((m) => m.matched !== 0 && m.read_at === 0).length
     } catch (e) {
       console.error('[useMonitor] markAllAsRead error:', e)
     }
