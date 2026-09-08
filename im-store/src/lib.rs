@@ -79,6 +79,8 @@ impl SqliteStore {
         migrate_messages_content_text(&pool).await?;
         migrate_lottery_config_issues(&pool).await?;
         migrate_messages_read_at(&pool).await?;
+        migrate_index_group_matched_read(&pool).await?;
+        migrate_index_group_time_matched(&pool).await?;
         Ok(Self {
             pool: pool.clone(),
             messages: MessageStore::new(pool.clone()).await,
@@ -225,5 +227,32 @@ async fn migrate_messages_read_at(pool: &SqlitePool) -> Result<(), sqlx::Error> 
             .execute(pool)
             .await?;
     }
+    Ok(())
+}
+
+/// 创建 `mark_read` 查询所需的覆盖索引（group_id, matched, read_at, msg_id）。
+///
+/// 使用 `CREATE INDEX IF NOT EXISTS`，全新库和已有库均可安全执行。
+async fn migrate_index_group_matched_read(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_messages_group_matched_read \
+         ON messages(group_id, matched, read_at, msg_id)",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 创建 `get_by_group(matched_only=true)` 查询所需的覆盖索引
+/// （group_id, matched, send_time DESC, msg_id DESC）。
+///
+/// 使用 `CREATE INDEX IF NOT EXISTS`，全新库和已有库均可安全执行。
+async fn migrate_index_group_time_matched(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_messages_group_time_matched \
+         ON messages(group_id, matched, send_time DESC, msg_id DESC)",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
