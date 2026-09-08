@@ -7,10 +7,12 @@
 
 use std::{collections::HashSet, future::Future, sync::Arc};
 
-use tauri::State;
+use tauri::{Emitter, State};
 
 use crate::commands::chat::{cancel_auth_and_disconnect, publish_disconnected_status_if_current};
 use crate::state::{AppState, AuthSession};
+
+use im_http::openchat_user::OpenChatUserError;
 
 /// 完成登录发布所需的本地状态引用。
 struct LoginStateRefs<'a> {

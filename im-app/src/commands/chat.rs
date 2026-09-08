@@ -1361,8 +1361,10 @@ async fn establish_connection(
     });
 
     // 服务端返回业务码 100 表示当前会话被其他设备挤下线，通知前端弹窗并跳转登录。
+    // 提前 clone app_handle 避免 context 被闭包部分移动后无法再用于 disconnect_context。
+    let session_kick_app_handle = context.app_handle.clone();
     chat_client.on_server_error(move |code, msg| {
-        let app_handle = context.app_handle.clone();
+        let app_handle = session_kick_app_handle.clone();
         async move {
             if code == 100 {
                 tracing::warn!(code, %msg, "Session kicked offline by other device login");
