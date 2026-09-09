@@ -61,6 +61,8 @@ export function useMonitor() {
   const warning = ref('')
   /** 会话被其他设备顶下线时触发弹窗确认（由 App.vue 渲染 SessionKickedDialog）。 */
   const showSessionKicked = ref(false)
+  /** 上次 session_kicked 事件是否已由用户确认。在 acceptLogin 时重置，避免重登录后旧连接的回退事件再次弹出弹窗。 */
+  const kickedConfirmed = ref(false)
   const unlisteners: UnlistenFn[] = []
   let messageRequestId = 0
   let connectionStatusVersion = 0
@@ -257,6 +259,8 @@ export function useMonitor() {
     groups.value = nextGroups
     uid.value = nextUid
     loggedIn.value = true
+    // 登录成功意味着之前的 session_kicked 已处理，旧连接的残余事件不再触发弹窗
+    kickedConfirmed.value = false
     selectedGroupId.value = null
     clearMessages()
     messagesLoading.value = false
@@ -571,6 +575,13 @@ export function useMonitor() {
     // 立即同步断连状态，作为后端 connection_status 事件的兜底
     connectionStatus.value = 'disconnected'
     console.debug('[useMonitor] handleSessionKicked called, loggedIn=', loggedIn.value, 'mounted=', true)
+    // 忽略旧连接的残余事件：登录成功后 kickedConfirmed 会重置为 false，
+    // 若用户已经在处理一次踢下线（kickedConfirmed=true），跳过重复弹窗。
+    if (kickedConfirmed.value) {
+      console.debug('[useMonitor] handleSessionKicked: stale event ignored, kickedConfirmed=', kickedConfirmed.value)
+      return
+    }
+    kickedConfirmed.value = true
     // 触发宿主组件显示确认弹窗。
     // 用户点"取消"时 showSessionKicked 归 false，等待 confirmSessionKicked() 被调用后才继续。
     showSessionKicked.value = true
@@ -671,6 +682,7 @@ export function useMonitor() {
     handleScrollStopped,
     handleSessionKicked,
     showSessionKicked,
+    kickedConfirmed,
     /** 用户在弹窗中点击"重新登录"时由宿主组件调用。 */
     confirmSessionKicked,
   }
@@ -678,6 +690,7 @@ export function useMonitor() {
   /** 用户确认被挤下线后执行：清理本地会话并派发导航事件。 */
   function confirmSessionKicked() {
     showSessionKicked.value = false
+    // kickedConfirmed 保持 true：用户选择了重新登录，若再收到同代事件也无需重复弹窗
     console.debug('[useMonitor] confirmSessionKicked called, navigating to login')
     detachLocalSession()
     window.dispatchEvent(new CustomEvent('session-kicked-confirmed'))
