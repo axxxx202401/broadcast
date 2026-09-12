@@ -93,6 +93,10 @@ export function useLottery(loggedIn?: { value: boolean }) {
       drawHistory.value = issues.map(issue => ({
         preDrawIssue: issue,
         preDrawTime: '', // DB 没有保存时间，留空
+        preDrawCode: '',
+        sumNum: 0,
+        sumBigSmall: -1,
+        sumSingleDouble: -1,
       }))
       schedulePoll()
       return

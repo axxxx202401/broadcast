@@ -29,6 +29,14 @@ export interface DrawItem {
   preDrawIssue: number
   /** 开奖时间字符串，格式为 `"YYYY-MM-DD HH:MM:SS"`。 */
   preDrawTime: string
+  /** 开奖号码，逗号分隔原始值（如 `"8,8,2"`），前端渲染时补零转 "+" 连接。 */
+  preDrawCode: string
+  /** 和值。 */
+  sumNum: number
+  /** 大/小/中：1=大，0=小，-1=中。 */
+  sumBigSmall: number
+  /** 单/双/中：1=单，0=双，-1=中。 */
+  sumSingleDouble: number
 }
 
 /** 当前账号的开奖配置。 */
@@ -37,6 +45,30 @@ export interface LotteryConfig {
   api_url: string
   /** 当前关注的期号列表（从 API 历史获取的所有期号）；空列表表示尚未设置。 */
   current_issues: number[]
+}
+
+/** 广播模板。 */
+export interface LotteryTemplate {
+  /** 模板内容；含占位符如 `${preDrawIssue}`。 */
+  template: string
+  /** 广播功能是否启用。 */
+  enabled: boolean
+}
+
+/** 广播发送状态记录。 */
+export interface BroadcastSendLog {
+  /** 消息 ID（十进制字符串）。 */
+  msgId: string
+  /** 群 ID（十进制字符串）。 */
+  groupId: string
+  /** 期号。 */
+  issue: number
+  /** 广播状态：0=发送中, 1=成功, 2=失败。 */
+  broadcastStatus: number
+  /** 发送时间（Unix ms）。 */
+  sendTime: number
+  /** 消息文本。 */
+  contentText: string
 }
 
 /** 前端使用的 Tauri IPC 服务集合；各方法保持后端命令名、参数包装和返回类型契约。 */
@@ -183,4 +215,12 @@ export const api = {
    */
   markGroupRead: (groupId: string | null, toMsgId: string) =>
     invoke<number>('mark_group_read', { groupId, toMsgId }),
+  /** 获取广播模板。 */
+  getLotteryTemplate: () => invoke<LotteryTemplate>('get_lottery_template'),
+  /** 保存广播模板。 */
+  setLotteryTemplate: (template: string, enabled: boolean) =>
+    invoke<void>('set_lottery_template', { template, enabled }),
+  /** 获取广播发送日志。 */
+  getBroadcastSendLog: (limit?: number) =>
+    invoke<BroadcastSendLog[]>('get_broadcast_send_log', { limit }),
 }
