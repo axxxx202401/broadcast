@@ -62,4 +62,11 @@ CREATE INDEX IF NOT EXISTS idx_messages_group_matched_read ON messages(group_id,
 -- get_by_group 查询覆盖索引：WHERE group_id=? AND (matched=1 OR ...) AND ORDER BY send_time DESC, msg_id DESC
 CREATE INDEX IF NOT EXISTS idx_messages_group_time_matched ON messages(group_id, matched, send_time DESC, msg_id DESC);
 CREATE INDEX IF NOT EXISTS idx_groups_monitored ON groups(monitored) WHERE monitored = 1;
+
+CREATE TABLE IF NOT EXISTS lottery_message_templates (
+    id          INTEGER PRIMARY KEY CHECK(id = 1),
+    template    TEXT    NOT NULL DEFAULT '加拿大 PC 第${preDrawIssue}期开奖结果：\n${preDrawCode}=${sumNum}  ${sumBigSmall}${sumSingleDouble}${patternDesc}\n近10期：${lastTenDraws}\n顶赔对赌\n大小单双：2.17\n小双大单：4.32\n大双小单：4.76\n\n大将军CU交易1群 @bkkn7mqkn0\n大将军CU交易2群 @93158hello\n大将军CU交易3群 @az8t88eeqg\n大将军上押担保频道 @flyin3037s\n大将军担保官方网站 https://djidb.com\n\n——团队担保信至上服务至上——',
+    enabled     INTEGER NOT NULL DEFAULT 0,
+    updated_at  INTEGER NOT NULL
+);
 "#;

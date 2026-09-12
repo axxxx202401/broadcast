@@ -9,6 +9,8 @@ pub mod group;
 pub mod key_pair;
 /// 开奖配置数据访问类型。
 pub mod lottery_config;
+/// 广播模板数据访问类型。
+pub mod lottery_template;
 /// 消息数据访问类型。
 pub mod message;
 /// SQLite 表结构定义。
@@ -27,6 +29,7 @@ use std::time::Duration;
 use crate::group::GroupStore;
 use crate::key_pair::UserKeyPairStore;
 use crate::lottery_config::LotteryConfigStore;
+use crate::lottery_template::LotteryTemplateStore;
 use crate::message::MessageStore;
 
 /// SQLite 存储的总入口。
@@ -43,6 +46,8 @@ pub struct SqliteStore {
     pub key_pairs: UserKeyPairStore,
     /// 使用同一连接池的开奖配置数据访问入口。
     pub lottery_config: LotteryConfigStore,
+    /// 使用同一连接池的广播模板数据访问入口。
+    pub lottery_template: LotteryTemplateStore,
 }
 
 impl SqliteStore {
@@ -84,6 +89,7 @@ impl SqliteStore {
         migrate_messages_read_at(&pool).await?;
         migrate_index_group_matched_read(&pool).await?;
         migrate_index_group_time_matched(&pool).await?;
+        migrate_messages_broadcast_status(&pool).await?;
         // 每 5 分钟执行一次 WAL checkpoint(TRUNCATE)，防止 WAL 文件无限增长。
         let checkpoint_pool = pool.clone();
         tokio::spawn(async move {
@@ -102,7 +108,8 @@ impl SqliteStore {
             messages: MessageStore::new(pool_clone.clone()).await,
             groups: GroupStore::new(pool_clone.clone()).await,
             key_pairs: UserKeyPairStore::new(pool_clone.clone()),
-            lottery_config: LotteryConfigStore::new(pool_clone),
+            lottery_config: LotteryConfigStore::new(pool_clone.clone()),
+            lottery_template: LotteryTemplateStore::new(pool_clone),
         })
     }
 }
@@ -256,6 +263,23 @@ async fn migrate_index_group_matched_read(pool: &SqlitePool) -> Result<(), sqlx:
     )
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+/// 检查 `messages` 表，并在缺失时补充 `broadcast_status` 列。
+async fn migrate_messages_broadcast_status(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let column_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'broadcast_status'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if column_count == 0 {
+        sqlx::query(
+            "ALTER TABLE messages ADD COLUMN broadcast_status INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(pool)
+        .await?;
+    }
     Ok(())
 }
 
