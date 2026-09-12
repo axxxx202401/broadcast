@@ -20,6 +20,7 @@ pub use pb::{
     CommonResultReq, DetailReq, DetailResp, ErrrMessage, FileObj, GetKeyPairReq, GetKeyPairResp,
     GroupBase, GroupContactListReq, GroupContactListResp, GroupMemberBase, GroupMessage, ImageObj,
     KeyPairBase, KeyPairType, LoginReq, LoginResp, LoginSessionMessage, MessageType, Platform,
-    PushGroupMessage, PushLoginSuccessMessage, ReceiveGroupMessage, TextObj, TranslationInfo,
-    UpdateKeyPairReq, UpdateKeyPairResp, UrlInfo, UserBase, VideoObj,
+    PushGroupMessage, PushGroupMessageSendSuccess, PushLoginSuccessMessage, ReceiveGroupMessage,
+    TextObj, TranslationInfo, UpdateKeyPairReq, UpdateKeyPairResp, UrlInfo, UserBase, VideoObj,
+    SendGroupMessage,
 };

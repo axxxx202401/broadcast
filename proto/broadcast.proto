@@ -697,3 +697,19 @@ message DetailResp {
     int64 auth_pass_time = 25; // 认证通过时间
     int32 verify_status = 26; // 认证状态（0:未审核；1：审核中；2：已审核; 3:驳回）
 }
+
+// 客户端发送群聊消息 2101
+message SendGroupMessage {
+    GroupMessage group_msg = 1;
+    int64 flag = 2;
+}
+
+// 服务端推送群聊消息发送成功 2201
+message PushGroupMessageSendSuccess {
+    int64 flag = 1;
+    int64 msg_id = 2;
+    int64 group_id = 3;
+    int32 member_count = 4;
+    int32 snapchat_time = 5;
+    int64 sent_over_time = 6;
+}
