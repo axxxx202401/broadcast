@@ -62,3 +62,92 @@ impl LotteryTemplateStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePool;
+
+    async fn test_pool() -> SqlitePool {
+        SqlitePool::connect(":memory:").await.unwrap()
+    }
+
+    async fn setup_pool() -> SqlitePool {
+        let pool = test_pool().await;
+        sqlx::query(
+            "CREATE TABLE lottery_message_templates (
+                id          INTEGER PRIMARY KEY CHECK(id = 1),
+                template    TEXT    NOT NULL DEFAULT '',
+                enabled     INTEGER NOT NULL DEFAULT 0,
+                updated_at  INTEGER NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn insert_and_fetch_template() {
+        let pool = setup_pool().await;
+        let store = LotteryTemplateStore::new(pool);
+        let row = LotteryTemplateRow {
+            template: "测试模板".to_string(),
+            enabled: true,
+            updated_at: 1234567890,
+        };
+        store.upsert(&row, 1).await.unwrap();
+
+        let fetched = store.get(1).await.unwrap();
+        assert_eq!(fetched.template, "测试模板");
+        assert!(fetched.enabled);
+        assert_eq!(fetched.updated_at, 1234567890);
+    }
+
+    #[tokio::test]
+    async fn fetch_default_when_not_inserted() {
+        let pool = setup_pool().await;
+        let store = LotteryTemplateStore::new(pool);
+
+        let fetched = store.get(42).await.unwrap();
+        assert!(fetched.template.is_empty());
+        assert!(!fetched.enabled);
+        assert_eq!(fetched.updated_at, 0);
+    }
+
+    #[tokio::test]
+    async fn upsert_overwrites_existing_template() {
+        let pool = setup_pool().await;
+        let store = LotteryTemplateStore::new(pool);
+
+        store
+            .upsert(
+                &LotteryTemplateRow {
+                    template: "first".to_string(),
+                    enabled: false,
+                    updated_at: 100,
+                },
+                1,
+            )
+            .await
+            .unwrap();
+
+        store
+            .upsert(
+                &LotteryTemplateRow {
+                    template: "second".to_string(),
+                    enabled: true,
+                    updated_at: 200,
+                },
+                1,
+            )
+            .await
+            .unwrap();
+
+        let fetched = store.get(1).await.unwrap();
+        assert_eq!(fetched.template, "second");
+        assert!(fetched.enabled);
+        assert_eq!(fetched.updated_at, 200);
+    }
+}
