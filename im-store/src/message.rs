@@ -44,6 +44,8 @@ pub struct MessageRecord {
     pub content_text: String,
     /// 广播发送状态；0=待发送，1=发送成功，2=发送失败。对应 `messages.broadcast_status`。
     pub broadcast_status: i32,
+    /// 是否匹配（0=未匹配，1=已匹配）。broadcast 消息默认为 1。
+    pub matched: i32,
 }
 
 /// 从 `messages` 表读取的一行消息。
@@ -130,7 +132,7 @@ impl MessageStore {
             sqlx::query(
                 r#"INSERT INTO messages
                    (msg_id, group_id, send_uid, msg_type, content, send_time, content_md5, stored_at, raw_proto, matched, content_text, broadcast_status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(msg_id) DO UPDATE SET
                      group_id = excluded.group_id,
                      send_uid = excluded.send_uid,
@@ -141,6 +143,7 @@ impl MessageStore {
                      stored_at = excluded.stored_at,
                      raw_proto = excluded.raw_proto,
                      content_text = excluded.content_text,
+                     matched = excluded.matched,
                      broadcast_status = excluded.broadcast_status"#,
             )
             .bind(record.msg_id)
@@ -152,6 +155,7 @@ impl MessageStore {
             .bind(&record.content_md5)
             .bind(stored_at)
             .bind(&record.raw_proto)
+            .bind(record.matched)
             .bind(&record.content_text)
             .bind(record.broadcast_status)
             .execute(&mut *transaction)

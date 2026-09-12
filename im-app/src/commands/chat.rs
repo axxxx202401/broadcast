@@ -192,6 +192,7 @@ fn stored_message_parts(
         raw_proto: Some(message.encode_to_vec()),
         content_text,
         broadcast_status: 0,
+        matched: 0,
     };
     (record, dto)
 }
@@ -2083,6 +2084,7 @@ async fn run_one_broadcast_cycle(
             content_md5: format!("{:x}", Md5::digest(text.as_bytes())),
             raw_proto: Some(bytes.clone()),
             content_text: text.clone(),
+            matched: 1,
             broadcast_status: 0,
         };
         if let Err(e) = context.db.messages.insert(&record).await {
