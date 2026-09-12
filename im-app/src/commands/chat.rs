@@ -4497,8 +4497,10 @@ mod tests {
         run_message_worker_with_effects(receiver, effects.clone(), cancellation, login_sender)
             .await;
 
+        // 持久化失败：监控群 7 仍回执（monitored 不受 persist 状态影响），未监控群 8 不回执。
         assert!(effects.persisted.lock().await.is_empty());
-        assert_eq!(*effects.acknowledged.lock().await, [(8, vec![80])]);
+        let acked = effects.acknowledged.lock().await.clone();
+        assert_eq!(acked, [(7, vec![70])]);
         assert!(effects.published.lock().await.is_empty());
     }
 
