@@ -17,6 +17,18 @@ pub struct DrawItem {
     /// 开奖时间，格式为 `"YYYY-MM-DD HH:MM:SS"`。
     #[serde(rename = "preDrawTime")]
     pub pre_draw_time: String,
+    /// 开奖号码，逗号分隔，例如 `"8,8,2"`。
+    #[serde(rename = "preDrawCode", default)]
+    pub pre_draw_code: String,
+    /// 和值（三位号码之和）。
+    #[serde(rename = "sumNum", default)]
+    pub sum_num: i64,
+    /// 和大/小标识：1=大，0=小，其他=中。
+    #[serde(rename = "sumBigSmall", default)]
+    pub sum_big_small: i64,
+    /// 和单/双标识：1=单，0=双，其他=中。
+    #[serde(rename = "sumSingleDouble", default)]
+    pub sum_single_double: i64,
 }
 
 /// 调用开奖历史 API 并返回按期号降序排列的最新若干条记录。
@@ -84,6 +96,54 @@ pub async fn fetch_draw_history(url: &str) -> Result<Vec<DrawItem>, String> {
     Ok(draws)
 }
 
+/// 将 API 返回的逗号分隔号码字符串转换为 "＋" 连接的补零格式。
+/// 例如 `"8,8,2"` → `"08+08+02"`。
+pub fn pre_draw_code_to_display(code: &str) -> String {
+    code.split(',')
+        .map(|n| format!("{:02}", n.trim().parse::<u32>().unwrap_or(0)))
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+/// 大/小/中枚举转换：1→"大"，0→"小"，其他→"中"。
+pub fn big_small_to_str(v: i64) -> &'static str {
+    match v { 1 => "大", 0 => "小", _ => "中" }
+}
+
+/// 单/双/中枚举转换：1→"单"，0→"双"，其他→"中"。
+pub fn single_double_to_str(v: i64) -> &'static str {
+    match v { 1 => "单", 0 => "双", _ => "中" }
+}
+
+/// 根据三位开奖号码判断组合特征：
+/// - 三数相同 → "豹子"
+/// - 三数连续且非 8,9,0/9,0,1 → "顺子"
+/// - 恰好两数相同 → "对子"
+/// - 以上均不满足 → ""
+pub fn compute_pattern_desc(codes: &[i32]) -> String {
+    if codes.len() != 3 {
+        return String::new();
+    }
+    let mut sorted = codes.to_vec();
+    sorted.sort_unstable();
+    // 豹子：三数相同
+    if sorted[0] == sorted[1] && sorted[1] == sorted[2] {
+        return "豹子".to_string();
+    }
+    // 顺子：排序后相邻差值均为1，排除 8,9,0 和 9,0,1
+    if sorted[1] - sorted[0] == 1 && sorted[2] - sorted[1] == 1 {
+        // 8,9,0 排序后为 [0,8,9]，差值为 8,1，不满足全1条件，已排除
+        // 9,0,1 排序后为 [0,1,9]，差值为 1,8，不满足全1条件，已排除
+        // 只有连续三数才满足此条件
+        return "顺子".to_string();
+    }
+    // 对子：恰好两数相同
+    if sorted[0] == sorted[1] || sorted[1] == sorted[2] {
+        return "对子".to_string();
+    }
+    String::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +158,60 @@ mod tests {
         if items.len() > 1 {
             assert!(items[0].pre_draw_issue > items[1].pre_draw_issue);
         }
+    }
+
+    #[test]
+    fn pre_draw_code_to_display_formats_correctly() {
+        assert_eq!(pre_draw_code_to_display("8,8,2"), "08+08+02");
+        assert_eq!(pre_draw_code_to_display("7,2,6"), "07+02+06");
+        assert_eq!(pre_draw_code_to_display("10,5,3"), "10+05+03");
+    }
+
+    #[test]
+    fn big_small_to_str_returns_correct_chinese() {
+        assert_eq!(big_small_to_str(1), "大");
+        assert_eq!(big_small_to_str(0), "小");
+        assert_eq!(big_small_to_str(-1), "中");
+    }
+
+    #[test]
+    fn single_double_to_str_returns_correct_chinese() {
+        assert_eq!(single_double_to_str(1), "单");
+        assert_eq!(single_double_to_str(0), "双");
+        assert_eq!(single_double_to_str(-1), "中");
+    }
+
+    #[test]
+    fn compute_pattern_desc_identifies_triple() {
+        assert_eq!(compute_pattern_desc(&[8, 8, 8]), "豹子");
+    }
+
+    #[test]
+    fn compute_pattern_desc_identifies_pair() {
+        assert_eq!(compute_pattern_desc(&[8, 8, 2]), "对子");
+        assert_eq!(compute_pattern_desc(&[2, 8, 8]), "对子");
+    }
+
+    #[test]
+    fn compute_pattern_desc_identifies_shunzi() {
+        assert_eq!(compute_pattern_desc(&[3, 4, 5]), "顺子");
+        assert_eq!(compute_pattern_desc(&[5, 3, 4]), "顺子");
+        assert_eq!(compute_pattern_desc(&[1, 2, 3]), "顺子");
+        assert_eq!(compute_pattern_desc(&[6, 7, 8]), "顺子");
+        assert_eq!(compute_pattern_desc(&[7, 8, 9]), "顺子");
+    }
+
+    #[test]
+    fn compute_pattern_desc_excludes_special_sequences() {
+        // 8,9,0 排序后 [0,8,9]，差值 8,1 → 不满足全1 → 无描述
+        assert_eq!(compute_pattern_desc(&[8, 9, 0]), "");
+        // 9,0,1 排序后 [0,1,9]，差值 1,8 → 不满足全1 → 无描述
+        assert_eq!(compute_pattern_desc(&[9, 0, 1]), "");
+    }
+
+    #[test]
+    fn compute_pattern_desc_no_match_for_random() {
+        assert_eq!(compute_pattern_desc(&[1, 5, 9]), "");
+        assert_eq!(compute_pattern_desc(&[2, 5, 8]), "");
     }
 }
