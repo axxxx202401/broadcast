@@ -650,7 +650,8 @@ impl MessageEffects for ConnectionMessageEffects {
                 message_count = messages.len(),
                 "persist_monitored_batch: skipped (persist_received_messages=false)"
             );
-            return true;
+            // 返回 false：不入库，也不推 Channel；但调用方仍会为所有 monitored 消息发送 2102 回执。
+            return false;
         }
 
         let mut records: Vec<_> = messages
@@ -1644,9 +1645,10 @@ async fn flush_group_message_batch(
         }
     };
 
+    // 监控消息始终发送 2102 回执；未监控消息仅在入库成功后回执（避免泄漏未处理帧）。
     let mut receipts = std::collections::BTreeMap::<i64, Vec<i64>>::new();
     for item in &batch {
-        if !item.monitored || monitored_persisted {
+        if item.monitored || monitored_persisted {
             receipts
                 .entry(item.message.group_id)
                 .or_default()
@@ -2046,12 +2048,13 @@ async fn run_one_broadcast_cycle(
         return Ok(());
     }
 
-    // 8. 逐群发送
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let flag = uid * 1_000_000_000 + now_ms as i64;
-    let msg_id = now_ms;
+    // 8. 逐群发送（每个群用独立 msg_id，避免 2201 ack 误匹配其他群记录）
+    let mut group_iter = groups.iter().peekable();
+    while let Some(group_id) = group_iter.next() {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let flag = uid * 1_000_000_000 + now_ms as i64;
+        let msg_id = now_ms;
 
-    for group_id in groups.iter() {
         let group_msg = im_proto::GroupMessage {
             send_uid: uid,
             group_id: *group_id,
