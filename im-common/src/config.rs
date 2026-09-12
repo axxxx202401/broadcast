@@ -28,6 +28,14 @@ pub struct AppConfig {
     /// 开奖历史 API 默认 URL；用户未在数据库中配置时作为回退值使用。
     #[serde(default)]
     pub lottery_default_api_url: String,
+    /// 是否将收到的消息写入 SQLite messages 表。
+    /// false 时收到服务端消息直接发送 2102 回执，不写库，也不执行匹配逻辑。
+    #[serde(default)]
+    pub persist_received_messages: bool,
+    /// 是否对收到的群消息执行开奖匹配并设置 matched=1。
+    /// false 时仍入库（若 persist_received_messages 为 true），但不设置 matched。
+    #[serde(default)]
+    pub match_lottery_messages: bool,
 }
 
 fn default_match_mode() -> String {
@@ -80,6 +88,8 @@ impl Default for AppConfig {
             match_uid_start: 0,
             match_uid_end: i64::MAX,
             lottery_default_api_url: String::new(),
+            persist_received_messages: true,
+            match_lottery_messages: true,
         }
     }
 }
@@ -135,6 +145,9 @@ impl AppConfig {
                 "IM_LOTTERY_DEFAULT_API_URL",
                 option_env!("IM_LOTTERY_DEFAULT_API_URL"),
             ),
+            // 消息持久化与开奖匹配开关（可选，默认 true）。
+            ("IM_PERSIST_RECEIVED_MESSAGES", option_env!("IM_PERSIST_RECEIVED_MESSAGES")),
+            ("IM_MATCH_LOTTERY_MESSAGES", option_env!("IM_MATCH_LOTTERY_MESSAGES")),
         ];
         let match_mode = values
             .iter()
@@ -164,6 +177,18 @@ impl AppConfig {
                 entry.1 = None;
             }
         }
+        let persist_received_messages = values
+            .iter()
+            .find_map(|(name, value)| (*name == "IM_PERSIST_RECEIVED_MESSAGES").then_some(*value))
+            .flatten()
+            .map(|v| v == "true")
+            .unwrap_or(true);
+        let match_lottery_messages = values
+            .iter()
+            .find_map(|(name, value)| (*name == "IM_MATCH_LOTTERY_MESSAGES").then_some(*value))
+            .flatten()
+            .map(|v| v == "true")
+            .unwrap_or(true);
         let base = Self::from_values(&values)?;
         let lottery_default_api_url = values
             .iter()
@@ -181,6 +206,8 @@ impl AppConfig {
             match_uid_start,
             match_uid_end,
             lottery_default_api_url,
+            persist_received_messages,
+            match_lottery_messages,
             ..base
         })
     }
@@ -236,6 +263,8 @@ impl AppConfig {
             match_uid_start: 0,
             match_uid_end: i64::MAX,
             lottery_default_api_url: String::new(),
+            persist_received_messages: true,
+            match_lottery_messages: true,
         })
     }
 }
