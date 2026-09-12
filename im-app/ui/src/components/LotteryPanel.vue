@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import { useLottery } from '../composables/useLottery'
-import type { DrawItem } from '../services/tauri'
+import type { BroadcastSendLog, DrawItem, LotteryTemplate } from '../services/tauri'
+import { api } from '../services/tauri'
+import { errorMessage } from '../utils/protocol'
 
 const props = withDefaults(defineProps<{
   lottery?: {
@@ -51,6 +53,75 @@ async function confirmSave() {
 function cancelEdit() {
   editing.value = false
 }
+
+// ── 广播模板 ──────────────────────────────────────────────────────────────────
+
+const template = ref<LotteryTemplate>({ template: '', enabled: false })
+const templateEditing = ref(false)
+const templateEditValue = ref('')
+
+async function loadTemplate() {
+  try {
+    template.value = await api.getLotteryTemplate()
+    templateEditValue.value = template.value.template
+  } catch (e) {
+    console.error('Failed to load template:', errorMessage(e))
+  }
+}
+
+async function saveTemplate() {
+  try {
+    await api.setLotteryTemplate(templateEditValue.value, template.value.enabled)
+    await loadTemplate()
+    templateEditing.value = false
+  } catch (e) {
+    console.error('Failed to save template:', errorMessage(e))
+  }
+}
+
+function cancelTemplateEdit() {
+  templateEditValue.value = template.value.template
+  templateEditing.value = false
+}
+
+async function toggleBroadcastEnabled(enabled: boolean) {
+  template.value.enabled = enabled
+  try {
+    await api.setLotteryTemplate(template.value.template, enabled)
+  } catch (e) {
+    console.error('Failed to save template:', errorMessage(e))
+    template.value.enabled = !enabled
+  }
+}
+
+// ── 广播发送日志 ──────────────────────────────────────────────────────────────
+
+const sendLogs = ref<BroadcastSendLog[]>([])
+const sendLogsLoading = ref(false)
+
+async function loadSendLogs() {
+  sendLogsLoading.value = true
+  try {
+    sendLogs.value = await api.getBroadcastSendLog(20)
+  } catch (e) {
+    console.error('Failed to load send logs:', errorMessage(e))
+  } finally {
+    sendLogsLoading.value = false
+  }
+}
+
+function formatTime(ms: number): string {
+  if (!ms) return '—'
+  const d = new Date(ms)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+// 挂载时加载
+onMounted(() => {
+  void loadTemplate()
+  void loadSendLogs()
+})
 </script>
 
 <template>
@@ -94,6 +165,61 @@ function cancelEdit() {
     <div class="edit-actions">
       <button class="btn-ghost" type="button" @click="cancelEdit">取消</button>
       <button class="btn-primary" type="button" @click="confirmSave">保存</button>
+    </div>
+  </div>
+
+  <!-- 广播控制面板 -->
+  <div class="broadcast-section">
+    <div class="broadcast-header">
+      <span class="section-title">广播设置</span>
+      <label class="toggle-label">
+        <input type="checkbox" :checked="template.enabled" @change="toggleBroadcastEnabled(($event.target as HTMLInputElement)?.checked ?? false)" />
+        <span class="toggle-slider"></span>
+        自动广播
+      </label>
+    </div>
+
+    <!-- 模板编辑器 -->
+    <div v-if="templateEditing" class="template-edit">
+      <textarea v-model="templateEditValue" class="template-textarea" rows="12"></textarea>
+      <div class="edit-actions">
+        <button class="btn-ghost" type="button" @click="cancelTemplateEdit">取消</button>
+        <button class="btn-primary" type="button" @click="saveTemplate">保存</button>
+      </div>
+    </div>
+    <button v-else class="btn-ghost btn-sm" type="button" @click="() => { templateEditValue = template.template; templateEditing = true }">
+      编辑模板
+    </button>
+
+    <!-- 发送状态日志 -->
+    <div class="send-logs" v-if="sendLogs.length > 0">
+      <div class="log-header">
+        <span>发送日志</span>
+        <button class="btn-icon" type="button" @click="loadSendLogs" :disabled="sendLogsLoading">↻</button>
+      </div>
+      <div v-for="log in sendLogs" :key="log.msgId" class="log-row" :class="`status-${log.broadcastStatus}`">
+        <span class="log-group">{{ log.groupId }}</span>
+        <span class="log-status">
+          <span v-if="log.broadcastStatus === 0" class="badge badge-sending">发送中</span>
+          <span v-else-if="log.broadcastStatus === 1" class="badge badge-success">成功</span>
+          <span v-else class="badge badge-failed">失败</span>
+        </span>
+        <span class="log-time">{{ formatTime(log.sendTime) }}</span>
+      </div>
+    </div>
+
+    <!-- 环境配置（编译期常量，仅展示） -->
+    <div class="env-config">
+      <div class="config-row">
+        <span class="config-label">消息入库</span>
+        <span class="config-value">是</span>
+        <span class="config-note">（编译期配置）</span>
+      </div>
+      <div class="config-row">
+        <span class="config-label">消息匹配</span>
+        <span class="config-value">是</span>
+        <span class="config-note">（编译期配置）</span>
+      </div>
     </div>
   </div>
 </template>
@@ -259,5 +385,183 @@ function cancelEdit() {
 
 .btn-primary:hover {
   background: var(--accent-soft);
+}
+
+/* 广播面板 */
+.broadcast-section {
+  border-top: 1px solid var(--border-subtle);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.broadcast-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.template-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.template-textarea {
+  width: 100%;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.template-textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(240, 180, 70, 0.12);
+}
+
+.btn-icon {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.btn-icon:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.btn-icon:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.send-logs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.log-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 3px 6px;
+  background: var(--bg-surface);
+  border-radius: 3px;
+}
+
+.log-group {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-status {
+  flex: 1;
+}
+
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.badge-sending {
+  background: rgba(240, 180, 70, 0.15);
+  color: var(--accent);
+}
+
+.badge-success {
+  background: rgba(76, 175, 80, 0.15);
+  color: var(--success);
+}
+
+.badge-failed {
+  background: rgba(244, 67, 54, 0.15);
+  color: var(--danger);
+}
+
+.log-time {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.env-config {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.config-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.config-label {
+  color: var(--text-tertiary);
+  width: 60px;
+  flex-shrink: 0;
+}
+
+.config-value {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.config-note {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-style: italic;
 }
 </style>
