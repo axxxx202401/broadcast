@@ -28,6 +28,7 @@ use std::{
     },
     time::Duration,
 };
+use md5::{Digest, Md5};
 
 use crate::state::AppState;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -619,6 +620,8 @@ trait MessageEffects: Send + Sync {
         group_id: i64,
         msg_ids: Vec<i64>,
     ) -> Result<(), im_common::error::AppError>;
+    /// 收到 2201 确认后更新广播消息状态为成功。
+    async fn broadcast_ack_success(&self, msg_id: i64) -> Result<(), String>;
 }
 
 /// 使用真实应用状态执行监控查询、持久化、Channel 推送和回执副作用。
@@ -636,6 +639,20 @@ impl MessageEffects for ConnectionMessageEffects {
 
     async fn persist_monitored_batch(&self, messages: &[im_proto::GroupMessage]) -> bool {
         let session = self.context.auth_session.read().await.clone();
+
+        // 检查消息入库开关。
+        let persist_enabled = {
+            let config = self.context.config.read().await;
+            config.persist_received_messages
+        };
+        if !persist_enabled {
+            tracing::debug!(
+                message_count = messages.len(),
+                "persist_monitored_batch: skipped (persist_received_messages=false)"
+            );
+            return true;
+        }
+
         let mut records: Vec<_> = messages
             .iter()
             .map(|message| stored_message_parts(message).0)
@@ -696,7 +713,17 @@ impl MessageEffects for ConnectionMessageEffects {
                 api_url = config.as_ref().map(|c| c.api_url.as_str()).unwrap_or(""),
                 "persist_monitored_batch: lottery config check"
             );
-            if has_config || records.iter().any(|r| r.content_text.is_empty()) {
+            // 检查消息匹配开关。
+            let match_enabled = {
+                let config = self.context.config.read().await;
+                config.match_lottery_messages
+            };
+            if !match_enabled {
+                tracing::debug!(
+                    message_count = records.len(),
+                    "persist_monitored_batch: skipped lottery match (match_lottery_messages=false)"
+                );
+            } else if has_config || records.iter().any(|r| r.content_text.is_empty()) {
                 // 需要解密密钥；尝试获取群相对密钥来解密。
                 let config_guard = self.context.config.read().await;
                 let client_info = message_client_info(&config_guard, session.token.clone());
@@ -882,6 +909,15 @@ impl MessageEffects for ConnectionMessageEffects {
             }
         }
         true
+    }
+
+    async fn broadcast_ack_success(&self, msg_id: i64) -> Result<(), String> {
+        self.context
+            .db
+            .messages
+            .update_broadcast_status_by_msg_id(msg_id, 1)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     async fn publish_monitored_batch(&self, messages: Vec<im_proto::GroupMessage>) {
@@ -1156,6 +1192,15 @@ async fn connect_chat_inner(state: &AppState) -> Result<(), String> {
                     auth_session.clone(),
                     server_user_key_pair,
                     generation_cancellation.clone(),
+                );
+                start_lottery_broadcast(
+                    context.clone(),
+                    auth_session.clone(),
+                    generation,
+                    attempt_id,
+                    generation_cancellation.clone(),
+                    connection_cancellation.clone(),
+                    sender.clone(),
                 );
                 start_heartbeat(
                     context,
@@ -1803,6 +1848,19 @@ async fn run_message_worker_with_effects(
             im_chat::heartbeat::PUSH_RECALL_GROUP_MESSAGE => {
                 tracing::info!("Received group-message recall push (2205); handling reserved");
             }
+            im_chat::heartbeat::PUSH_GROUP_MESSAGE_SEND_SUCCESS => {
+                let ack = match im_proto::PushGroupMessageSendSuccess::decode(frame.content.as_slice()) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::warn!("Failed to decode PushGroupMessageSendSuccess: {e}");
+                        continue;
+                    }
+                };
+                let msg_id = ack.msg_id;
+                if let Err(e) = effects.broadcast_ack_success(msg_id).await {
+                    tracing::warn!("Failed to mark broadcast success: {e}");
+                }
+            }
             message_id => tracing::debug!("Ignoring unsupported chat message {message_id}"),
         }
     }
@@ -1855,6 +1913,243 @@ fn start_heartbeat(
             .await;
         }
     });
+}
+
+/// 启动彩票广播后台任务。
+///
+/// 随聊天连接生命周期运行；连接断开或账号切换时自动停止。
+fn start_lottery_broadcast(
+    context: ConnectionContext,
+    _auth_session: crate::state::AuthSession,
+    _generation: u64,
+    _attempt_id: u64,
+    generation_cancellation: CancellationToken,
+    connection_cancellation: CancellationToken,
+    sender: im_chat::ChatSender,
+) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(20));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                biased;
+                _ = generation_cancellation.cancelled() => break,
+                _ = connection_cancellation.cancelled() => break,
+                _ = ticker.tick() => {}
+            }
+            if let Err(e) = run_one_broadcast_cycle(&context, &sender, &connection_cancellation).await {
+                tracing::warn!(error = %e, "Lottery broadcast cycle failed");
+            }
+        }
+    });
+}
+
+/// 执行一轮广播检测与发送。
+async fn run_one_broadcast_cycle(
+    context: &ConnectionContext,
+    sender: &im_chat::ChatSender,
+    cancellation: &CancellationToken,
+) -> Result<(), String> {
+    let session = context
+        .auth_session
+        .read()
+        .await
+        .clone()
+        .ok_or("Not logged in")?;
+    let uid = session.uid;
+
+    // 1. 读取模板
+    let template_row = context
+        .db
+        .lottery_template
+        .get(uid)
+        .await
+        .map_err(|e| format!("Failed to load template: {e}"))?;
+    if !template_row.enabled || template_row.template.is_empty() {
+        return Ok(());
+    }
+
+    // 2. 读取开奖配置
+    let config = context
+        .db
+        .lottery_config
+        .get(uid)
+        .await
+        .map_err(|e| format!("Failed to load lottery config: {e}"))?;
+    if config.api_url.is_empty() {
+        return Ok(());
+    }
+
+    // 3. 获取历史列表
+    let draws = im_http::lottery::fetch_draw_history(&config.api_url)
+        .await
+        .map_err(|e| format!("Failed to fetch lottery history: {e}"))?;
+    if draws.is_empty() {
+        return Ok(());
+    }
+
+    // 4. 找出新期号
+    let new_draw = draws
+        .iter()
+        .find(|d| !config.current_issues.contains(&d.pre_draw_issue));
+    let Some(draw) = new_draw else {
+        return Ok(());
+    };
+
+    // 5. 准备近10期和值
+    let last_ten: Vec<String> = draws
+        .iter()
+        .take(10)
+        .map(|d| d.sum_num.to_string())
+        .collect();
+    let last_ten_draws = last_ten.join(" ");
+
+    // 6. 渲染模板
+    let text = template_row
+        .template
+        .replace("${preDrawIssue}", &draw.pre_draw_issue.to_string())
+        .replace(
+            "${preDrawCode}",
+            &im_http::lottery::pre_draw_code_to_display(&draw.pre_draw_code),
+        )
+        .replace("${sumNum}", &draw.sum_num.to_string())
+        .replace("${sumBigSmall}", im_http::lottery::big_small_to_str(draw.sum_big_small))
+        .replace(
+            "${sumSingleDouble}",
+            im_http::lottery::single_double_to_str(draw.sum_single_double),
+        )
+        .replace(
+            "${patternDesc}",
+            &im_http::lottery::compute_pattern_desc(&[
+                draw.pre_draw_code
+                    .split(',')
+                    .next()
+                    .and_then(|s| s.trim().parse::<i32>().ok())
+                    .unwrap_or(0),
+                draw.pre_draw_code
+                    .split(',')
+                    .nth(1)
+                    .and_then(|s| s.trim().parse::<i32>().ok())
+                    .unwrap_or(0),
+                draw.pre_draw_code
+                    .split(',')
+                    .nth(2)
+                    .and_then(|s| s.trim().parse::<i32>().ok())
+                    .unwrap_or(0),
+            ]),
+        )
+        .replace("${lastTenDraws}", &last_ten_draws);
+
+    // 7. 获取监控群组列表
+    let groups = context.monitoring_groups.read().await;
+    if groups.is_empty() {
+        return Ok(());
+    }
+
+    // 8. 逐群发送
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let flag = uid * 1_000_000_000 + now_ms as i64;
+    let msg_id = now_ms;
+
+    for group_id in groups.iter() {
+        let group_msg = im_proto::GroupMessage {
+            send_uid: uid,
+            group_id: *group_id,
+            msg_type: im_proto::MessageType::Text as i32,
+            content: text.as_bytes().to_vec(),
+            send_time: now_ms,
+            msg_id,
+            ..Default::default()
+        };
+
+        let send_msg = im_proto::SendGroupMessage {
+            group_msg: Some(group_msg.clone()),
+            flag,
+        };
+
+        let bytes = send_msg.encode_to_vec();
+
+        // 先入库（broadcast_status=0）
+        let record = im_store::message::MessageRecord {
+            msg_id,
+            group_id: *group_id,
+            send_uid: uid,
+            msg_type: im_proto::MessageType::Text as i32,
+            content: text.as_bytes().to_vec(),
+            send_time: now_ms,
+            content_md5: format!("{:x}", Md5::digest(text.as_bytes())),
+            raw_proto: Some(bytes.clone()),
+            content_text: text.clone(),
+            broadcast_status: 0,
+        };
+        if let Err(e) = context.db.messages.insert(&record).await {
+            tracing::warn!(group_id, error = %e, "Failed to insert broadcast message");
+            continue;
+        }
+
+        // 发送
+        let send_result = sender
+            .send_cancellable(
+                im_chat::heartbeat::SEND_GROUP_MESSAGE,
+                &bytes,
+                cancellation,
+                std::time::Duration::from_secs(15),
+            )
+            .await;
+
+        match send_result {
+            Ok(()) => {
+                // 发送成功，启动 30 秒超时协程
+                let db = context.db.clone();
+                let msg_id = msg_id;
+                let cancel = cancellation.clone();
+                let gid = *group_id;
+                tokio::spawn(async move {
+                    let result = tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        cancel.cancelled(),
+                    )
+                    .await;
+                    if result.is_ok() {
+                        return;
+                    }
+                    let current = db.messages.get_broadcast_status(msg_id).await.unwrap_or(0);
+                    if current == 0 {
+                        let _ = db.messages.update_broadcast_status_by_msg_id(msg_id, 2).await;
+                        tracing::warn!(msg_id, group_id = gid, "Broadcast message timed out");
+                    }
+                });
+            }
+            Err(e) => {
+                let _ = context
+                    .db
+                    .messages
+                    .update_broadcast_status_by_msg_id(msg_id, 2)
+                    .await;
+                tracing::warn!(group_id = *group_id, error = %e, "Failed to send broadcast message");
+            }
+        }
+    }
+
+    // 9. 更新 current_issues
+    let mut updated_issues = config.current_issues.clone();
+    updated_issues.push(draw.pre_draw_issue);
+    let updated_at = chrono::Utc::now().timestamp_millis();
+    if let Err(e) = context
+        .db
+        .lottery_config
+        .upsert(&im_store::lottery_config::LotteryConfigRow {
+            uid,
+            api_url: config.api_url,
+            current_issues: updated_issues,
+            updated_at,
+        })
+        .await
+    {
+        tracing::warn!(error = %e, "Failed to update lottery config");
+    }
+
+    Ok(())
 }
 
 /// 将当前连接切换为 reconnecting、释放其客户端并在释放后启动重连。
@@ -2009,6 +2304,15 @@ async fn run_reconnect_loop(
                     auth_session.clone(),
                     server_user_key_pair,
                     generation_cancellation.clone(),
+                );
+                start_lottery_broadcast(
+                    context.clone(),
+                    auth_session.clone(),
+                    generation,
+                    attempt_id,
+                    generation_cancellation.clone(),
+                    connection_cancellation.clone(),
+                    sender.clone(),
                 );
                 start_heartbeat(
                     context,
@@ -3516,6 +3820,10 @@ mod tests {
             self.acknowledged.lock().await.push((group_id, msg_ids));
             Ok(())
         }
+
+        async fn broadcast_ack_success(&self, _msg_id: i64) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     struct SharedMonitoringEffects {
@@ -3546,6 +3854,10 @@ mod tests {
             msg_ids: Vec<i64>,
         ) -> Result<(), im_common::error::AppError> {
             self.acknowledged.lock().await.push((group_id, msg_ids));
+            Ok(())
+        }
+
+        async fn broadcast_ack_success(&self, _msg_id: i64) -> Result<(), String> {
             Ok(())
         }
     }
@@ -3609,6 +3921,10 @@ mod tests {
         ) -> Result<(), im_common::error::AppError> {
             Ok(())
         }
+
+        async fn broadcast_ack_success(&self, _msg_id: i64) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     #[async_trait::async_trait]
@@ -3639,6 +3955,10 @@ mod tests {
             }
             Ok(())
         }
+
+        async fn broadcast_ack_success(&self, _msg_id: i64) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     #[async_trait::async_trait]
@@ -3667,6 +3987,10 @@ mod tests {
             self.receipt_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
+
+        async fn broadcast_ack_success(&self, _msg_id: i64) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     #[async_trait::async_trait]
@@ -3690,6 +4014,10 @@ mod tests {
             _msg_ids: Vec<i64>,
         ) -> Result<(), im_common::error::AppError> {
             self.acknowledged.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn broadcast_ack_success(&self, _msg_id: i64) -> Result<(), String> {
             Ok(())
         }
     }
