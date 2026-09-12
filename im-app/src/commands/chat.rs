@@ -190,6 +190,7 @@ fn stored_message_parts(
         content_md5: message.content_md5.clone(),
         raw_proto: Some(message.encode_to_vec()),
         content_text,
+        broadcast_status: 0,
     };
     (record, dto)
 }
