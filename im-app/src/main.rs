@@ -196,10 +196,9 @@ async fn main() {
             commands::lottery::get_lottery_config,
             commands::lottery::set_lottery_config,
             commands::lottery::fetch_lottery_history,
-            // 广播模板与发送日志。
+            // 广播模板。
             commands::lottery::get_lottery_template,
             commands::lottery::set_lottery_template,
-            commands::lottery::get_broadcast_send_log,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

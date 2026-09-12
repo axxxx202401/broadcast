@@ -55,22 +55,6 @@ export interface LotteryTemplate {
   enabled: boolean
 }
 
-/** 广播发送状态记录。 */
-export interface BroadcastSendLog {
-  /** 消息 ID（十进制字符串）。 */
-  msgId: string
-  /** 群 ID（十进制字符串）。 */
-  groupId: string
-  /** 期号。 */
-  issue: number
-  /** 广播状态：0=发送中, 1=成功, 2=失败。 */
-  broadcastStatus: number
-  /** 发送时间（Unix ms）。 */
-  sendTime: number
-  /** 消息文本。 */
-  contentText: string
-}
-
 /** 前端使用的 Tauri IPC 服务集合；各方法保持后端命令名、参数包装和返回类型契约。 */
 export const api = {
   /**
@@ -220,7 +204,4 @@ export const api = {
   /** 保存广播模板。 */
   setLotteryTemplate: (template: string, enabled: boolean) =>
     invoke<void>('set_lottery_template', { template, enabled }),
-  /** 获取广播发送日志。 */
-  getBroadcastSendLog: (limit?: number) =>
-    invoke<BroadcastSendLog[]>('get_broadcast_send_log', { limit }),
 }

@@ -1,5 +1,19 @@
 use sqlx::{Row, SqlitePool};
 
+/// 广播模板的默认内容；DB 无记录时用作降级值。
+pub const DEFAULT_TEMPLATE: &str =
+    "加拿大 PC 第${preDrawIssue}期开奖结果：\n\
+     ${preDrawCode}=${sumNum}  ${sumBigSmall}${sumSingleDouble}${patternDesc}\n\
+     近10期：${lastTenDraws}\n\
+     顶赔对赌\n\
+     大小单双：2.17  小双大单：4.32  大双小单：4.76\n\n\
+     大将军CU交易1群 @bkkn7mqkn0\n\
+     大将军CU交易2群 @93158hello\n\
+     大将军CU交易3群 @az8t88eeqg\n\
+     大将军上押担保频道 @flyin3037s\n\
+     大将军担保官方网站 https://djidb.com\n\n\
+     ——团队担保信至上服务至上——";
+
 /// 单条广播模板记录。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LotteryTemplateRow {
@@ -22,7 +36,9 @@ impl LotteryTemplateStore {
         Self { pool }
     }
 
-    /// 读取当前账号的模板；未配置时返回默认行（enabled=false）。
+    /// 读取当前账号的模板；未配置时插入默认行并返回。
+    ///
+    /// 首次登录时自动写库，确保后续读取稳定，也避免重复 INSERT（ON CONFLICT 静默忽略）。
     pub async fn get(&self, _uid: i64) -> sqlx::Result<LotteryTemplateRow> {
         let row = sqlx::query(
             "SELECT template, enabled, updated_at FROM lottery_message_templates WHERE id = 1",
@@ -30,18 +46,30 @@ impl LotteryTemplateStore {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(match row {
-            Some(row) => LotteryTemplateRow {
+        match row {
+            Some(row) => Ok(LotteryTemplateRow {
                 template: row.get("template"),
                 enabled: row.get::<i32, _>("enabled") != 0,
                 updated_at: row.get("updated_at"),
-            },
-            None => LotteryTemplateRow {
-                template: String::new(),
-                enabled: false,
-                updated_at: 0,
-            },
-        })
+            }),
+            // DB 无记录时立即写入默认行，保证后续读取不经过此分支。
+            None => {
+                let now = chrono::Utc::now().timestamp_millis();
+                sqlx::query(
+                    "INSERT INTO lottery_message_templates (id, template, enabled, updated_at)
+                     VALUES (1, ?, 0, ?)",
+                )
+                .bind(DEFAULT_TEMPLATE)
+                .bind(now)
+                .execute(&self.pool)
+                .await?;
+                Ok(LotteryTemplateRow {
+                    template: DEFAULT_TEMPLATE.to_string(),
+                    enabled: false,
+                    updated_at: now,
+                })
+            }
+        }
     }
 
     /// 插入或更新当前账号的模板。
@@ -111,9 +139,23 @@ mod tests {
         let store = LotteryTemplateStore::new(pool);
 
         let fetched = store.get(42).await.unwrap();
-        assert!(fetched.template.is_empty());
+        // 无记录时立即 INSERT 默认行，返回默认模板且 enabled=false，updated_at>0
+        assert_eq!(fetched.template, DEFAULT_TEMPLATE);
         assert!(!fetched.enabled);
-        assert_eq!(fetched.updated_at, 0);
+        assert!(fetched.updated_at > 0);
+    }
+
+    #[tokio::test]
+    async fn second_get_returns_already_inserted_default() {
+        let pool = setup_pool().await;
+        let store = LotteryTemplateStore::new(pool);
+
+        let first = store.get(1).await.unwrap();
+        let second = store.get(1).await.unwrap();
+        // 第二次调用不应再次 INSERT，内容与第一次一致
+        assert_eq!(first.template, second.template);
+        assert_eq!(first.enabled, second.enabled);
+        assert_eq!(first.updated_at, second.updated_at);
     }
 
     #[tokio::test]

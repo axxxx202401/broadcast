@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 
 import { useLottery } from '../composables/useLottery'
-import type { BroadcastSendLog, DrawItem, LotteryTemplate } from '../services/tauri'
+import type { DrawItem, LotteryTemplate } from '../services/tauri'
 import { api } from '../services/tauri'
 import { errorMessage } from '../utils/protocol'
 
@@ -94,33 +94,9 @@ async function toggleBroadcastEnabled(enabled: boolean) {
   }
 }
 
-// ── 广播发送日志 ──────────────────────────────────────────────────────────────
-
-const sendLogs = ref<BroadcastSendLog[]>([])
-const sendLogsLoading = ref(false)
-
-async function loadSendLogs() {
-  sendLogsLoading.value = true
-  try {
-    sendLogs.value = await api.getBroadcastSendLog(20)
-  } catch (e) {
-    console.error('Failed to load send logs:', errorMessage(e))
-  } finally {
-    sendLogsLoading.value = false
-  }
-}
-
-function formatTime(ms: number): string {
-  if (!ms) return '—'
-  const d = new Date(ms)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
 // 挂载时加载
 onMounted(() => {
   void loadTemplate()
-  void loadSendLogs()
 })
 </script>
 
@@ -190,23 +166,6 @@ onMounted(() => {
     <button v-else class="btn-ghost btn-sm" type="button" @click="() => { templateEditValue = template.template; templateEditing = true }">
       编辑模板
     </button>
-
-    <!-- 发送状态日志 -->
-    <div class="send-logs" v-if="sendLogs.length > 0">
-      <div class="log-header">
-        <span>发送日志</span>
-        <button class="btn-icon" type="button" @click="loadSendLogs" :disabled="sendLogsLoading">↻</button>
-      </div>
-      <div v-for="log in sendLogs" :key="log.msgId" class="log-row" :class="`status-${log.broadcastStatus}`">
-        <span class="log-group">{{ log.groupId }}</span>
-        <span class="log-status">
-          <span v-if="log.broadcastStatus === 0" class="badge badge-sending">发送中</span>
-          <span v-else-if="log.broadcastStatus === 1" class="badge badge-success">成功</span>
-          <span v-else class="badge badge-failed">失败</span>
-        </span>
-        <span class="log-time">{{ formatTime(log.sendTime) }}</span>
-      </div>
-    </div>
 
     <!-- 环境配置（编译期常量，仅展示） -->
     <div class="env-config">
@@ -464,73 +423,6 @@ onMounted(() => {
 .btn-icon:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-.send-logs {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.log-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 10px;
-  color: var(--text-tertiary);
-}
-
-.log-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  padding: 3px 6px;
-  background: var(--bg-surface);
-  border-radius: 3px;
-}
-
-.log-group {
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 10px;
-  color: var(--text-tertiary);
-  max-width: 80px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.log-status {
-  flex: 1;
-}
-
-.badge {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 10px;
-  font-weight: 500;
-}
-
-.badge-sending {
-  background: rgba(240, 180, 70, 0.15);
-  color: var(--accent);
-}
-
-.badge-success {
-  background: rgba(76, 175, 80, 0.15);
-  color: var(--success);
-}
-
-.badge-failed {
-  background: rgba(244, 67, 54, 0.15);
-  color: var(--danger);
-}
-
-.log-time {
-  font-size: 10px;
-  color: var(--text-tertiary);
-  font-family: "IBM Plex Mono", monospace;
 }
 
 .env-config {
