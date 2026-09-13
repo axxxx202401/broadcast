@@ -1960,6 +1960,7 @@ async fn run_one_broadcast_cycle(
         .clone()
         .ok_or("Not logged in")?;
     let uid = session.uid;
+    tracing::debug!(uid, "Lottery broadcast cycle start");
 
     // 1. 读取模板
     let template_row = context
@@ -1968,9 +1969,15 @@ async fn run_one_broadcast_cycle(
         .get(uid)
         .await
         .map_err(|e| format!("Failed to load template: {e}"))?;
-    if !template_row.enabled || template_row.template.is_empty() {
+    if !template_row.enabled {
+        tracing::info!(uid, "Lottery broadcast skipped: template disabled");
         return Ok(());
     }
+    if template_row.template.is_empty() {
+        tracing::info!(uid, "Lottery broadcast skipped: template empty");
+        return Ok(());
+    }
+    tracing::debug!(uid, template_len = template_row.template.len(), "Template loaded");
 
     // 2. 读取开奖配置
     let config = context
@@ -1980,24 +1987,47 @@ async fn run_one_broadcast_cycle(
         .await
         .map_err(|e| format!("Failed to load lottery config: {e}"))?;
     if config.api_url.is_empty() {
+        tracing::info!(uid, "Lottery broadcast skipped: api_url empty");
         return Ok(());
     }
+    tracing::debug!(
+        uid,
+        issue_count = config.current_issues.len(),
+        "Config loaded"
+    );
 
     // 3. 获取历史列表
-    let draws = im_http::lottery::fetch_draw_history(&config.api_url)
-        .await
-        .map_err(|e| format!("Failed to fetch lottery history: {e}"))?;
+    let draws = match im_http::lottery::fetch_draw_history(&config.api_url).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(uid, error = %e, "Failed to fetch lottery history");
+            return Err(format!("Failed to fetch lottery history: {e}"));
+        }
+    };
     if draws.is_empty() {
+        tracing::info!(uid, "Lottery broadcast skipped: no draws returned from API");
         return Ok(());
     }
+    tracing::debug!(uid, draw_count = draws.len(), "Fetched lottery history");
 
     // 4. 找出新期号
     let new_draw = draws
         .iter()
         .find(|d| !config.current_issues.contains(&d.pre_draw_issue));
     let Some(draw) = new_draw else {
+        tracing::debug!(
+            uid,
+            known_issues = ?config.current_issues,
+            latest_api_issue = draws.first().map(|d| d.pre_draw_issue),
+            "Lottery broadcast skipped: no new draw found"
+        );
         return Ok(());
     };
+    tracing::info!(
+        uid,
+        new_issue = draw.pre_draw_issue,
+        "New draw detected, preparing broadcast"
+    );
 
     // 5. 准备近10期和值
     let last_ten: Vec<String> = draws
@@ -2046,8 +2076,10 @@ async fn run_one_broadcast_cycle(
     // 7. 获取监控群组列表
     let groups = context.monitoring_groups.read().await;
     if groups.is_empty() {
+        tracing::info!(uid, "Lottery broadcast skipped: no monitored groups");
         return Ok(());
     }
+    tracing::debug!(uid, group_count = groups.len(), "Found monitored groups");
 
     // 8. 逐群发送（每个群用独立 msg_id，避免 2201 ack 误匹配其他群记录）
     let mut group_iter = groups.iter().peekable();

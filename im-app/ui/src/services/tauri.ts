@@ -204,4 +204,9 @@ export const api = {
   /** 保存广播模板。 */
   setLotteryTemplate: (template: string, enabled: boolean) =>
     invoke<void>('set_lottery_template', { template, enabled }),
+  /** 读取编译期构建配置（持久化与匹配开关）。 */
+  getAppRuntimeConfig: () =>
+    invoke<{ persist_received_messages: boolean; match_lottery_messages: boolean }>(
+      'get_app_runtime_config',
+    ),
 }

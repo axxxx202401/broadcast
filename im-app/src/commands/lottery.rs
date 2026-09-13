@@ -237,3 +237,27 @@ pub async fn set_lottery_template(
     Ok(())
 }
 
+/// 暴露编译期构建配置（消息入库 / 消息匹配开关）。
+///
+/// 这两个值来自 `IM_PERSIST_RECEIVED_MESSAGES` 与 `IM_MATCH_LOTTERY_MESSAGES`，
+/// 在构建时固定，应用运行期不可修改。前端据此展示真实状态。
+#[derive(serde::Serialize, Clone)]
+pub struct AppRuntimeConfigDto {
+    pub persist_received_messages: bool,
+    pub match_lottery_messages: bool,
+}
+
+/// 读取编译期构建配置；供前端展示当前构建的持久化与匹配开关状态。
+#[tauri::command]
+pub async fn get_app_runtime_config(state: State<'_, AppState>) -> Result<AppRuntimeConfigDto, String> {
+    let config = state
+        .config
+        .read()
+        .await
+        .clone();
+    Ok(AppRuntimeConfigDto {
+        persist_received_messages: config.persist_received_messages,
+        match_lottery_messages: config.match_lottery_messages,
+    })
+}
+

@@ -60,6 +60,20 @@ const template = ref<LotteryTemplate>({ template: '', enabled: false })
 const templateEditing = ref(false)
 const templateEditValue = ref('')
 
+// 编译期运行时配置（持久化 / 匹配开关）
+const runtimeConfig = ref<{ persist_received_messages: boolean; match_lottery_messages: boolean }>({
+  persist_received_messages: true,
+  match_lottery_messages: true,
+})
+
+async function loadRuntimeConfig() {
+  try {
+    runtimeConfig.value = await api.getAppRuntimeConfig()
+  } catch (e) {
+    console.error('Failed to load runtime config:', errorMessage(e))
+  }
+}
+
 async function loadTemplate() {
   try {
     template.value = await api.getLotteryTemplate()
@@ -97,6 +111,7 @@ async function toggleBroadcastEnabled(enabled: boolean) {
 // 挂载时加载
 onMounted(() => {
   void loadTemplate()
+  void loadRuntimeConfig()
 })
 </script>
 
@@ -171,12 +186,12 @@ onMounted(() => {
     <div class="env-config">
       <div class="config-row">
         <span class="config-label">消息入库</span>
-        <span class="config-value">是</span>
+        <span class="config-value">{{ runtimeConfig.persist_received_messages ? '是' : '否' }}</span>
         <span class="config-note">（编译期配置）</span>
       </div>
       <div class="config-row">
         <span class="config-label">消息匹配</span>
-        <span class="config-value">是</span>
+        <span class="config-value">{{ runtimeConfig.match_lottery_messages ? '是' : '否' }}</span>
         <span class="config-note">（编译期配置）</span>
       </div>
     </div>
