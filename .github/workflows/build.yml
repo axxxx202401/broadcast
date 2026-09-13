@@ -21,6 +21,11 @@ on:
           - windows
           - macos
           - linux
+      version:
+        description: App version (e.g. 0.2.0)
+        required: false
+        default: '0.1.0'
+        type: string
 
 permissions:
   contents: read
@@ -69,6 +74,10 @@ jobs:
         with:
           version: "29.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set app version
+        shell: bash
+        run: sed -i.bak 's/^version = "0\.1\.0"/version = "${{ inputs.version }}"/' Cargo.toml && rm -f Cargo.toml.bak
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -157,6 +166,9 @@ jobs:
         with:
           version: "29.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set app version
+        run: sed -i.bak 's/^version = "0\.1\.0"/version = "${{ inputs.version }}"/' Cargo.toml && rm -f Cargo.toml.bak
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -255,6 +267,9 @@ jobs:
             patchelf \
             libfuse2 \
             xdg-utils
+
+      - name: Set app version
+        run: sed -i.bak 's/^version = "0\.1\.0"/version = "${{ inputs.version }}"/' Cargo.toml && rm -f Cargo.toml.bak
 
       - name: Install Node.js
         uses: actions/setup-node@v4
