@@ -2114,7 +2114,7 @@ async fn run_one_broadcast_cycle(
             content: text.as_bytes().to_vec(),
             send_time: now_ms,
             content_md5: format!("{:x}", Md5::digest(text.as_bytes())),
-            raw_proto: Some(bytes.clone()),
+            raw_proto: Some(group_msg.encode_to_vec()),
             content_text: text.clone(),
             matched: 1,
             broadcast_status: 0,
@@ -2163,7 +2163,7 @@ async fn run_one_broadcast_cycle(
                     .messages
                     .update_broadcast_status_by_msg_id(msg_id, 2)
                     .await;
-                tracing::warn!(group_id = *group_id, error = %e, "Failed to send broadcast message");
+                tracing::warn!(group_id = *group_id, error = %e, "Failed to send broadcast message (status set to failed)");
             }
         }
     }
