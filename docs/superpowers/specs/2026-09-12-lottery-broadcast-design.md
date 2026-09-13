@@ -41,7 +41,7 @@ ALTER TABLE messages ADD COLUMN broadcast_status INTEGER NOT NULL DEFAULT 0;
 -- 仅在广播消息上非零，普通接收消息保持默认值 0，UI 据此区分广播消息。
 ```
 
-迁移逻辑参考现有 `migrate_messages_matched` 模式：先 `pragma_table_info` 检查列是否存在，不存在则执行 `ALTER TABLE`。
+迁移逻辑参考现有 `migrate_messages_matched` 模式：先 `pragma_table_info` 检查列是否存在，不存在则执行 `ALTER TABLE`。依赖可迁移字段的索引不得放入初始 `SCHEMA_SQL`；必须先完成旧表补列，再以 `CREATE INDEX IF NOT EXISTS` 创建，避免旧版数据库在迁移前因 `no such column` 无法打开。
 
 - **`broadcast_status = 0`（发送中）**：消息已入库但尚未收到 2201 确认，也未超时。UI 展示为「发送中」。
 - **`broadcast_status = 1`（成功）**：收到 2201 确认。UI 展示为「成功」。

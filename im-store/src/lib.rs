@@ -91,6 +91,7 @@ impl SqliteStore {
         migrate_index_group_time_matched(&pool).await?;
         migrate_messages_broadcast_status(&pool).await?;
         migrate_messages_broadcast_flag(&pool).await?;
+        migrate_index_messages_broadcast_flag(&pool).await?;
         migrate_lottery_template_broadcast_issue(&pool).await?;
         // 每 5 分钟执行一次 WAL checkpoint(TRUNCATE)，防止 WAL 文件无限增长。
         let checkpoint_pool = pool.clone();
@@ -298,6 +299,21 @@ async fn migrate_messages_broadcast_flag(pool: &SqlitePool) -> Result<(), sqlx::
             .execute(pool)
             .await?;
     }
+    Ok(())
+}
+
+/// 在广播状态与 flag 字段均已存在后创建 2201 回执查询索引。
+///
+/// 本索引不能放在初始建表 SQL 中：`CREATE TABLE IF NOT EXISTS` 不会为旧表补列，
+/// 提前建索引会使旧版数据库在迁移开始前因 `no such column` 而打开失败。
+async fn migrate_index_messages_broadcast_flag(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_messages_broadcast_flag
+         ON messages(group_id, broadcast_flag, broadcast_status)
+         WHERE broadcast_status = 0",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

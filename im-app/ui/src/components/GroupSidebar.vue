@@ -69,7 +69,7 @@ const sections = ref({
     </div>
 
     <!-- 匹配消息开关 -->
-    <div class="matched-toggle">
+    <!-- <div class="matched-toggle">
       <label class="toggle-label">
         <span>只显示匹配消息</span>
         <input
@@ -79,7 +79,7 @@ const sections = ref({
         />
         <span class="toggle-slider"></span>
       </label>
-    </div>
+    </div> -->
 
     <!-- 全部消息按钮 -->
     <button

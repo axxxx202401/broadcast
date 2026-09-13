@@ -59,13 +59,7 @@ CREATE TABLE IF NOT EXISTS lottery_config (
 
 CREATE INDEX IF NOT EXISTS idx_messages_group_time ON messages(group_id, send_time);
 CREATE INDEX IF NOT EXISTS idx_messages_time ON messages(send_time DESC, msg_id DESC);
--- mark_read 查询覆盖索引：WHERE group_id=? AND matched!=0 AND read_at=0 AND msg_id<=?
-CREATE INDEX IF NOT EXISTS idx_messages_group_matched_read ON messages(group_id, matched, read_at, msg_id);
--- get_by_group 查询覆盖索引：WHERE group_id=? AND (matched=1 OR ...) AND ORDER BY send_time DESC, msg_id DESC
-CREATE INDEX IF NOT EXISTS idx_messages_group_time_matched ON messages(group_id, matched, send_time DESC, msg_id DESC);
 CREATE INDEX IF NOT EXISTS idx_groups_monitored ON groups(monitored) WHERE monitored = 1;
--- broadcast_ack_success 查询覆盖索引：WHERE group_id=? AND broadcast_flag=? AND broadcast_status=0
-CREATE INDEX IF NOT EXISTS idx_messages_broadcast_flag ON messages(group_id, broadcast_flag, broadcast_status) WHERE broadcast_status = 0;
 
 CREATE TABLE IF NOT EXISTS lottery_message_templates (
     id          INTEGER PRIMARY KEY CHECK(id = 1),

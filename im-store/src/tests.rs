@@ -771,6 +771,69 @@ async fn legacy_groups_table_is_migrated_with_existing_rows_available() {
 }
 
 #[tokio::test]
+async fn legacy_messages_table_is_migrated_before_broadcast_index_creation() {
+    use std::str::FromStr;
+
+    let path = std::env::temp_dir().join(format!(
+        "im-monitor-store-message-broadcast-migration-{}-{}.db",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap()
+    ));
+    let dsn = format!("sqlite://{}", path.display());
+    let options = sqlx::sqlite::SqliteConnectOptions::from_str(&dsn)
+        .unwrap()
+        .create_if_missing(true);
+    let legacy_pool = sqlx::SqlitePool::connect_with(options).await.unwrap();
+    // 模拟引入广播状态前的 messages 表：已有匹配、明文和已读列，但没有广播状态与 flag。
+    sqlx::query(
+        "CREATE TABLE messages (
+            msg_id INTEGER PRIMARY KEY,
+            group_id INTEGER NOT NULL,
+            send_uid INTEGER NOT NULL,
+            msg_type INTEGER NOT NULL,
+            content BLOB NOT NULL,
+            send_time INTEGER NOT NULL,
+            content_md5 TEXT DEFAULT '',
+            stored_at INTEGER NOT NULL,
+            raw_proto BLOB,
+            matched INTEGER NOT NULL DEFAULT 0,
+            content_text TEXT DEFAULT '',
+            read_at INTEGER NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(&legacy_pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO messages
+         (msg_id, group_id, send_uid, msg_type, content, send_time, stored_at, content_text)
+         VALUES (7, 8, 9, 0, x'01', 10, 11, '旧消息')",
+    )
+    .execute(&legacy_pool)
+    .await
+    .unwrap();
+    legacy_pool.close().await;
+
+    let store = SqliteStore::new(&dsn)
+        .await
+        .expect("旧版消息表应先补广播列，再创建依赖这些列的索引");
+
+    let row = store.messages.get_by_id(7).await.unwrap().unwrap();
+    assert_eq!(row.content_text, "旧消息");
+    assert_eq!(row.broadcast_status, 0);
+    let flag_column_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'broadcast_flag'",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(flag_column_count, 1);
+
+    store.pool.close().await;
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
 async fn message_store_rejects_invalid_pagination_limit() {
     let store = SqliteStore::new(":memory:").await.unwrap();
 
