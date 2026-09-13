@@ -54,6 +54,10 @@ jobs:
       IM_LOTTERY_MATCH_UID_END: ${{ secrets.IM_LOTTERY_MATCH_UID_END }}
       # 开奖历史 API 默认 URL（可选）；用户在数据库中配置后以数据库为准。
       IM_LOTTERY_DEFAULT_API_URL: ${{ secrets.IM_LOTTERY_DEFAULT_API_URL }}
+      # 持久化收到的消息（可选）；未配置时默认 false。
+      IM_PERSIST_RECEIVED_MESSAGES: ${{ secrets.IM_PERSIST_RECEIVED_MESSAGES }}
+      # 是否匹配开奖消息（可选）；未配置时默认 false。
+      IM_MATCH_LOTTERY_MESSAGES: ${{ secrets.IM_MATCH_LOTTERY_MESSAGES }}
 
     steps:
       - name: Check out source
@@ -139,6 +143,10 @@ jobs:
       IM_LOTTERY_MATCH_UID_END: ${{ secrets.IM_LOTTERY_MATCH_UID_END }}
       # 开奖历史 API 默认 URL（可选）；用户在数据库中配置后以数据库为准。
       IM_LOTTERY_DEFAULT_API_URL: ${{ secrets.IM_LOTTERY_DEFAULT_API_URL }}
+      # 持久化收到的消息（可选）；未配置时默认 false。
+      IM_PERSIST_RECEIVED_MESSAGES: ${{ secrets.IM_PERSIST_RECEIVED_MESSAGES }}
+      # 是否匹配开奖消息（可选）；未配置时默认 false。
+      IM_MATCH_LOTTERY_MESSAGES: ${{ secrets.IM_MATCH_LOTTERY_MESSAGES }}
 
     steps:
       - name: Check out source
@@ -215,6 +223,10 @@ jobs:
       IM_LOTTERY_MATCH_UID_END: ${{ secrets.IM_LOTTERY_MATCH_UID_END }}
       # 开奖历史 API 默认 URL（可选）；用户在数据库中配置后以数据库为准。
       IM_LOTTERY_DEFAULT_API_URL: ${{ secrets.IM_LOTTERY_DEFAULT_API_URL }}
+      # 持久化收到的消息（可选）；未配置时默认 false。
+      IM_PERSIST_RECEIVED_MESSAGES: ${{ secrets.IM_PERSIST_RECEIVED_MESSAGES }}
+      # 是否匹配开奖消息（可选）；未配置时默认 false。
+      IM_MATCH_LOTTERY_MESSAGES: ${{ secrets.IM_MATCH_LOTTERY_MESSAGES }}
 
     steps:
       - name: Check out source
