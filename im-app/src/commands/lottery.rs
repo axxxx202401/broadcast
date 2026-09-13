@@ -29,6 +29,26 @@ pub struct DrawItemDto {
     pub pre_draw_issue: i64,
     /// 开奖时间字符串。
     pub pre_draw_time: String,
+    /// 开奖号码，保留 API 的逗号分隔原始值。
+    pub pre_draw_code: String,
+    /// 三个开奖号码的和值。
+    pub sum_num: i64,
+    /// 和大/小/中标识：1=大，-1=小，其他=中。
+    pub sum_big_small: i64,
+    /// 和单/双/中标识：1=单，-1=双，其他=中。
+    pub sum_single_double: i64,
+}
+
+/// 完整保留开奖 API 字段，供界面显示与保存消息匹配期号。
+fn draw_item_dto(item: lottery::DrawItem) -> DrawItemDto {
+    DrawItemDto {
+        pre_draw_issue: item.pre_draw_issue,
+        pre_draw_time: item.pre_draw_time,
+        pre_draw_code: item.pre_draw_code,
+        sum_num: item.sum_num,
+        sum_big_small: item.sum_big_small,
+        sum_single_double: item.sum_single_double,
+    }
 }
 
 /// 暴露给前端的广播模板。
@@ -158,18 +178,14 @@ pub async fn fetch_lottery_history(state: State<'_, AppState>) -> Result<Vec<Dra
         count = items.len(),
         "Fetched lottery history"
     );
-    Ok(items
-        .into_iter()
-        .map(|item| DrawItemDto {
-            pre_draw_issue: item.pre_draw_issue,
-            pre_draw_time: item.pre_draw_time,
-        })
-        .collect())
+    Ok(items.into_iter().map(draw_item_dto).collect())
 }
 
 /// 读取当前账号的广播模板。
 #[tauri::command]
-pub async fn get_lottery_template(state: State<'_, AppState>) -> Result<LotteryTemplateDto, String> {
+pub async fn get_lottery_template(
+    state: State<'_, AppState>,
+) -> Result<LotteryTemplateDto, String> {
     let session = state
         .auth_session
         .read()
@@ -223,11 +239,18 @@ pub async fn set_lottery_template(
         enabled,
         "Saving lottery template"
     );
+    // 模板编辑与广播游标彼此独立；保存正文或开关时不得清空已处理期号。
+    let current = db
+        .lottery_template
+        .get(session.uid)
+        .await
+        .map_err(|e| e.to_string())?;
     db.lottery_template
         .upsert(
             &LotteryTemplateRow {
                 template,
                 enabled,
+                last_broadcast_issue: current.last_broadcast_issue,
                 updated_at,
             },
             session.uid,
@@ -249,15 +272,35 @@ pub struct AppRuntimeConfigDto {
 
 /// 读取编译期构建配置；供前端展示当前构建的持久化与匹配开关状态。
 #[tauri::command]
-pub async fn get_app_runtime_config(state: State<'_, AppState>) -> Result<AppRuntimeConfigDto, String> {
-    let config = state
-        .config
-        .read()
-        .await
-        .clone();
+pub async fn get_app_runtime_config(
+    state: State<'_, AppState>,
+) -> Result<AppRuntimeConfigDto, String> {
+    let config = state.config.read().await.clone();
     Ok(AppRuntimeConfigDto {
         persist_received_messages: config.persist_received_messages,
         match_lottery_messages: config.match_lottery_messages,
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::draw_item_dto;
+
+    #[test]
+    fn draw_item_dto_keeps_all_lottery_fields() {
+        let dto = draw_item_dto(im_http::lottery::DrawItem {
+            pre_draw_issue: 20260914001,
+            pre_draw_time: "2026-09-14 04:00:00".to_string(),
+            pre_draw_code: "8,8,2".to_string(),
+            sum_num: 18,
+            sum_big_small: 1,
+            sum_single_double: -1,
+        });
+
+        let json = serde_json::to_value(dto).unwrap();
+        assert_eq!(json["preDrawCode"], "8,8,2");
+        assert_eq!(json["sumNum"], 18);
+        assert_eq!(json["sumBigSmall"], 1);
+        assert_eq!(json["sumSingleDouble"], -1);
+    }
+}

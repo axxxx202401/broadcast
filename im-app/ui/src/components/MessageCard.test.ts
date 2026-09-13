@@ -26,6 +26,7 @@ function textMessage(): MessageDto {
     stored_at: null,
     matched: 0,
     read_at: 0,
+    broadcast_status: 0,
   }
 }
 
@@ -37,5 +38,12 @@ describe('MessageCard', () => {
     expect(wrapper.get('.message-sender').text()).toBe('用户 100267')
     expect(wrapper.get('.message-content').text()).toContain('重要告警')
     expect(wrapper.text()).not.toContain('文本')
+  })
+
+  it('广播消息显示发送状态', () => {
+    const message = { ...textMessage(), broadcast_status: 1 }
+    const wrapper = mount(MessageCard, { props: { message, showGroup: false } })
+
+    expect(wrapper.get('.broadcast-status').text()).toBe('发送成功')
   })
 })

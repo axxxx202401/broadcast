@@ -23,10 +23,10 @@ pub struct DrawItem {
     /// 和值（三位号码之和）。
     #[serde(rename = "sumNum", default)]
     pub sum_num: i64,
-    /// 和大/小标识：1=大，0=小，其他=中。
+    /// 和大/小标识：1=大，-1=小，其他=中。
     #[serde(rename = "sumBigSmall", default)]
     pub sum_big_small: i64,
-    /// 和单/双标识：1=单，0=双，其他=中。
+    /// 和单/双标识：1=单，-1=双，其他=中。
     #[serde(rename = "sumSingleDouble", default)]
     pub sum_single_double: i64,
 }
@@ -105,14 +105,31 @@ pub fn pre_draw_code_to_display(code: &str) -> String {
         .join("+")
 }
 
-/// 大/小/中枚举转换：1→"大"，0→"小"，其他→"中"。
-pub fn big_small_to_str(v: i64) -> &'static str {
-    match v { 1 => "大", 0 => "小", _ => "中" }
+/// 将和值格式化为至少两位；0 至 9 补前导零，双位及以上保持原值。
+pub fn lottery_sum_to_display(sum: i64) -> String {
+    if (0..=9).contains(&sum) {
+        format!("{sum:02}")
+    } else {
+        sum.to_string()
+    }
 }
 
-/// 单/双/中枚举转换：1→"单"，0→"双"，其他→"中"。
+/// 大/小/中枚举转换：1→"大"，-1→"小"，其他→"中"。
+pub fn big_small_to_str(v: i64) -> &'static str {
+    match v {
+        1 => "大",
+        -1 => "小",
+        _ => "中",
+    }
+}
+
+/// 单/双/中枚举转换：1→"单"，-1→"双"，其他→"中"。
 pub fn single_double_to_str(v: i64) -> &'static str {
-    match v { 1 => "单", 0 => "双", _ => "中" }
+    match v {
+        1 => "单",
+        -1 => "双",
+        _ => "中",
+    }
 }
 
 /// 根据三位开奖号码判断组合特征：
@@ -128,18 +145,18 @@ pub fn compute_pattern_desc(codes: &[i32]) -> String {
     sorted.sort_unstable();
     // 豹子：三数相同
     if sorted[0] == sorted[1] && sorted[1] == sorted[2] {
-        return "豹子".to_string();
+        return " 豹子".to_string();
     }
     // 顺子：排序后相邻差值均为1，排除 8,9,0 和 9,0,1
     if sorted[1] - sorted[0] == 1 && sorted[2] - sorted[1] == 1 {
         // 8,9,0 排序后为 [0,8,9]，差值为 8,1，不满足全1条件，已排除
         // 9,0,1 排序后为 [0,1,9]，差值为 1,8，不满足全1条件，已排除
         // 只有连续三数才满足此条件
-        return "顺子".to_string();
+        return " 顺子".to_string();
     }
     // 对子：恰好两数相同
     if sorted[0] == sorted[1] || sorted[1] == sorted[2] {
-        return "对子".to_string();
+        return " 对子".to_string();
     }
     String::new()
 }
@@ -168,17 +185,25 @@ mod tests {
     }
 
     #[test]
+    fn lottery_sum_display_pads_single_digit_values() {
+        assert_eq!(lottery_sum_to_display(0), "00");
+        assert_eq!(lottery_sum_to_display(5), "05");
+        assert_eq!(lottery_sum_to_display(9), "09");
+        assert_eq!(lottery_sum_to_display(18), "18");
+    }
+
+    #[test]
     fn big_small_to_str_returns_correct_chinese() {
         assert_eq!(big_small_to_str(1), "大");
-        assert_eq!(big_small_to_str(0), "小");
-        assert_eq!(big_small_to_str(-1), "中");
+        assert_eq!(big_small_to_str(-1), "小");
+        assert_eq!(big_small_to_str(0), "中");
     }
 
     #[test]
     fn single_double_to_str_returns_correct_chinese() {
         assert_eq!(single_double_to_str(1), "单");
-        assert_eq!(single_double_to_str(0), "双");
-        assert_eq!(single_double_to_str(-1), "中");
+        assert_eq!(single_double_to_str(-1), "双");
+        assert_eq!(single_double_to_str(0), "中");
     }
 
     #[test]

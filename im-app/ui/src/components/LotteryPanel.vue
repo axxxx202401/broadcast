@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { useLottery } from '../composables/useLottery'
 import type { DrawItem, LotteryTemplate } from '../services/tauri'
@@ -59,6 +59,7 @@ function cancelEdit() {
 const template = ref<LotteryTemplate>({ template: '', enabled: false })
 const templateEditing = ref(false)
 const templateEditValue = ref('')
+const templateTextarea = ref<HTMLTextAreaElement | null>(null)
 
 // 编译期运行时配置（持久化 / 匹配开关）
 const runtimeConfig = ref<{ persist_received_messages: boolean; match_lottery_messages: boolean }>({
@@ -122,9 +123,24 @@ async function saveTemplate() {
   }
 }
 
+/** 打开独立模板编辑对话框，并把焦点移入正文输入区。 */
+async function openTemplateEdit() {
+  templateEditValue.value = template.value.template
+  templateEditing.value = true
+  await nextTick()
+  templateTextarea.value?.focus()
+}
+
 function cancelTemplateEdit() {
   templateEditValue.value = template.value.template
   templateEditing.value = false
+}
+
+/** Escape 仅关闭模板对话框，不影响页面上的其他编辑状态。 */
+function handleTemplateDialogKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && templateEditing.value) {
+    cancelTemplateEdit()
+  }
 }
 
 async function toggleBroadcastEnabled(enabled: boolean) {
@@ -141,6 +157,11 @@ async function toggleBroadcastEnabled(enabled: boolean) {
 onMounted(() => {
   void loadTemplate()
   void loadRuntimeConfig()
+  window.addEventListener('keydown', handleTemplateDialogKeydown)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleTemplateDialogKeydown)
 })
 </script>
 
@@ -191,23 +212,28 @@ onMounted(() => {
   <!-- 广播控制面板 -->
   <div class="broadcast-section">
     <div class="broadcast-header">
-      <span class="section-title">广播设置</span>
+      <!-- <span class="section-title">广播设置</span> -->
       <label class="toggle-label">
-        <input type="checkbox" :checked="template.enabled" @change="toggleBroadcastEnabled(($event.target as HTMLInputElement)?.checked ?? false)" />
-        <span class="toggle-slider"></span>
-        自动广播
+        <input
+          class="toggle-input"
+          data-test="lottery-broadcast-toggle"
+          type="checkbox"
+          role="switch"
+          aria-label="自动广播"
+          :checked="template.enabled"
+          @change="toggleBroadcastEnabled(($event.target as HTMLInputElement)?.checked ?? false)"
+        />
+        <span class="toggle-slider" aria-hidden="true"></span>
+        <span>自动广播</span>
       </label>
     </div>
 
-    <!-- 模板编辑器 -->
-    <div v-if="templateEditing" class="template-edit">
-      <textarea v-model="templateEditValue" class="template-textarea" rows="12"></textarea>
-      <div class="edit-actions">
-        <button class="btn-ghost" type="button" @click="cancelTemplateEdit">取消</button>
-        <button class="btn-primary" type="button" @click="saveTemplate">保存</button>
-      </div>
-    </div>
-    <button v-else class="btn-ghost btn-sm" type="button" @click="() => { templateEditValue = template.template; templateEditing = true }">
+    <button
+      class="btn-ghost btn-sm"
+      data-test="edit-lottery-template"
+      type="button"
+      @click="openTemplateEdit"
+    >
       编辑模板
     </button>
 
@@ -256,6 +282,44 @@ onMounted(() => {
       </div>
     </div> -->
   </div>
+
+  <!-- 长模板使用独立对话框编辑，避免受消息标题栏宽度挤压。 -->
+  <Teleport to="body">
+    <div
+      v-if="templateEditing"
+      class="template-dialog-backdrop"
+      data-test="lottery-template-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="lottery-template-dialog-title"
+      @click.self="cancelTemplateEdit"
+    >
+      <section class="template-dialog-card">
+        <header class="template-dialog-header">
+          <div>
+            <h2 id="lottery-template-dialog-title">编辑广播模板</h2>
+            <p>保留占位符，开奖后会自动替换为实际内容。</p>
+          </div>
+          <button class="template-dialog-close" type="button" aria-label="关闭模板编辑器" @click="cancelTemplateEdit">×</button>
+        </header>
+        <textarea
+          ref="templateTextarea"
+          v-model="templateEditValue"
+          class="template-textarea"
+          data-test="lottery-template-textarea"
+          aria-label="广播模板内容"
+          spellcheck="false"
+        ></textarea>
+        <p class="template-placeholder-help">
+          可用：${preDrawIssue}、${preDrawCode}、${sumNum}、${sumBigSmall}、${sumSingleDouble}、${patternDesc}、${lastTenDraws}
+        </p>
+        <footer class="template-dialog-actions">
+          <button class="btn-ghost" type="button" @click="cancelTemplateEdit">取消</button>
+          <button class="btn-primary" type="button" @click="saveTemplate">保存模板</button>
+        </footer>
+      </section>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -445,28 +509,78 @@ onMounted(() => {
 }
 
 .toggle-label {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 12px;
   color: var(--text-secondary);
   cursor: pointer;
   user-select: none;
 }
 
-.template-edit {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.toggle-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.toggle-slider {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  flex: 0 0 auto;
+  border: 1px solid var(--border-medium);
+  border-radius: 999px;
+  background: var(--bg-elevated-2);
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.toggle-slider::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 160ms ease, background 160ms ease;
+}
+
+.toggle-input:checked + .toggle-slider {
+  border-color: var(--success);
+  background: color-mix(in srgb, var(--success) 24%, var(--bg-elevated));
+}
+
+.toggle-input:checked + .toggle-slider::after {
+  background: var(--success);
+  transform: translateX(16px);
+}
+
+.toggle-input:focus-visible + .toggle-slider {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.toggle-label:hover .toggle-slider {
+  border-color: var(--text-tertiary);
 }
 
 .template-textarea {
   width: 100%;
   font-family: "IBM Plex Mono", monospace;
-  font-size: 11px;
-  padding: 6px 8px;
+  min-height: 420px;
+  font-size: 13px;
+  line-height: 1.65;
+  padding: 14px 16px;
   border: 1px solid var(--border-medium);
-  border-radius: var(--radius);
+  border-radius: 8px;
   background: var(--bg-surface);
   color: var(--text-primary);
   resize: vertical;
@@ -477,6 +591,90 @@ onMounted(() => {
 .template-textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(240, 180, 70, 0.12);
+}
+
+.template-dialog-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(8, 10, 14, 0.72);
+  backdrop-filter: blur(4px);
+}
+
+.template-dialog-card {
+  width: min(720px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px;
+  overflow: auto;
+  border: 1px solid var(--border-medium);
+  border-radius: 14px;
+  background: var(--bg-elevated);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+}
+
+.template-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.template-dialog-header h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 17px;
+}
+
+.template-dialog-header p,
+.template-placeholder-help {
+  margin: 4px 0 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.template-placeholder-help {
+  overflow-wrap: anywhere;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.template-dialog-close {
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.template-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .template-dialog-backdrop {
+    align-items: stretch;
+    padding: 8px;
+  }
+
+  .template-dialog-card {
+    width: 100%;
+    max-height: none;
+    padding: 16px;
+    border-radius: 10px;
+  }
+
+  .template-textarea {
+    min-height: 0;
+    flex: 1;
+  }
 }
 
 .btn-icon {

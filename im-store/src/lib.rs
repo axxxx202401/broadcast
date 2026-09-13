@@ -91,6 +91,7 @@ impl SqliteStore {
         migrate_index_group_time_matched(&pool).await?;
         migrate_messages_broadcast_status(&pool).await?;
         migrate_messages_broadcast_flag(&pool).await?;
+        migrate_lottery_template_broadcast_issue(&pool).await?;
         // 每 5 分钟执行一次 WAL checkpoint(TRUNCATE)，防止 WAL 文件无限增长。
         let checkpoint_pool = pool.clone();
         tokio::spawn(async move {
@@ -275,11 +276,9 @@ async fn migrate_messages_broadcast_status(pool: &SqlitePool) -> Result<(), sqlx
     .fetch_one(pool)
     .await?;
     if column_count == 0 {
-        sqlx::query(
-            "ALTER TABLE messages ADD COLUMN broadcast_status INTEGER NOT NULL DEFAULT 0",
-        )
-        .execute(pool)
-        .await?;
+        sqlx::query("ALTER TABLE messages ADD COLUMN broadcast_status INTEGER NOT NULL DEFAULT 0")
+            .execute(pool)
+            .await?;
     }
     Ok(())
 }
@@ -298,6 +297,24 @@ async fn migrate_messages_broadcast_flag(pool: &SqlitePool) -> Result<(), sqlx::
         sqlx::query("ALTER TABLE messages ADD COLUMN broadcast_flag INTEGER")
             .execute(pool)
             .await?;
+    }
+    Ok(())
+}
+
+/// 检查广播模板表，并在旧数据库缺失时补充独立的最后广播期号游标。
+async fn migrate_lottery_template_broadcast_issue(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let column_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('lottery_message_templates')
+         WHERE name = 'last_broadcast_issue'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if column_count == 0 {
+        sqlx::query(
+            "ALTER TABLE lottery_message_templates ADD COLUMN last_broadcast_issue INTEGER",
+        )
+        .execute(pool)
+        .await?;
     }
     Ok(())
 }

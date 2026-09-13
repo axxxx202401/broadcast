@@ -72,6 +72,8 @@ export interface MessageDto {
   matched: number
   /** 已读时间戳（Unix ms）；0 表示未读。 */
   read_at: number
+  /** 广播发送状态；0=普通消息或发送中，1=发送成功，2=发送失败。 */
+  broadcast_status: number
 }
 
 /** 指向一页中最老消息的复合 keyset 游标。 */

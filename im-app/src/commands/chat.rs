@@ -18,6 +18,7 @@
 //! 会丢弃尚未投影的已提交批次，数据库历史仍保留。1201 解码失败会触发故障关闭并取消
 //! 连接，2202 解码失败仅丢弃当前帧。
 
+use md5::{Digest, Md5};
 use std::{
     collections::HashMap,
     fmt::Display,
@@ -29,7 +30,6 @@ use std::{
     },
     time::Duration,
 };
-use md5::{Digest, Md5};
 
 use crate::state::AppState;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -157,6 +157,8 @@ pub struct MessageDto {
     pub matched: i32,
     /// 已读时间戳（Unix ms）；0 表示未读。
     pub read_at: i64,
+    /// 广播发送状态；0=非广播或发送中，1=发送成功，2=发送失败。
+    pub broadcast_status: i32,
 }
 
 /// 前端可安全回传的消息分页游标。
@@ -228,6 +230,7 @@ fn stored_message_parts(
         stored_at: None,
         matched: 0,
         read_at: 0,
+        broadcast_status: 0,
     };
     // 提取明文文本：version == 0 时内容未加密，直接转为 UTF-8；否则暂时留空，
     // 由调用方在持有解密密钥后补充（persist_monitored_batch 会在入库后立即更新）。
@@ -268,7 +271,46 @@ fn message_dto_from_row(row: im_store::message::MessageRow) -> MessageDto {
         stored_at: Some(row.stored_at),
         matched: row.matched,
         read_at: row.read_at,
+        broadcast_status: row.broadcast_status,
     }
+}
+
+/// 从 SQLite 读取一条广播消息的最新状态，并通过当前页面 Channel 原位更新。
+async fn publish_broadcast_by_flag(
+    context: &ConnectionContext,
+    group_id: i64,
+    flag: i64,
+) -> Result<bool, String> {
+    let row = context
+        .db
+        .messages
+        .get_by_broadcast_flag(group_id, flag)
+        .await
+        .map_err(|error| error.to_string())?;
+    let Some(row) = row else {
+        // 2201 也用于手动测试消息；没有本地广播记录时无需推送状态卡片。
+        return Ok(false);
+    };
+    let message = row
+        .raw_proto
+        .as_deref()
+        .and_then(|bytes| im_proto::GroupMessage::decode(bytes).ok());
+    let mut dto = message_dto_from_row(row);
+    if let Some(message) = message {
+        enrich_message_dto(
+            &context.config,
+            &context.auth_session,
+            &context.http,
+            &context.message_crypto,
+            &message,
+            &mut dto,
+        )
+        .await;
+    } else {
+        dto.decode_error = Some("广播消息缺少可解码的原始协议数据".to_string());
+    }
+    publish_realtime_message(&context.message_channel, &[dto]).await?;
+    Ok(true)
 }
 
 fn message_client_info(
@@ -992,7 +1034,16 @@ impl MessageEffects for ConnectionMessageEffects {
             .messages
             .update_broadcast_status_by_flag(group_id, flag, 1)
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        if let Err(error) = publish_broadcast_by_flag(&self.context, group_id, flag).await {
+            tracing::warn!(
+                group_id,
+                flag,
+                error = %error,
+                "Failed to publish acknowledged broadcast status"
+            );
+        }
+        Ok(())
     }
 
     async fn publish_monitored_batch(&self, messages: Vec<im_proto::GroupMessage>) {
@@ -1925,13 +1976,14 @@ async fn run_message_worker_with_effects(
                 tracing::info!("Received group-message recall push (2205); handling reserved");
             }
             im_chat::heartbeat::PUSH_GROUP_MESSAGE_SEND_SUCCESS => {
-                let ack = match im_proto::PushGroupMessageSendSuccess::decode(frame.content.as_slice()) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        tracing::warn!("Failed to decode PushGroupMessageSendSuccess: {e}");
-                        continue;
-                    }
-                };
+                let ack =
+                    match im_proto::PushGroupMessageSendSuccess::decode(frame.content.as_slice()) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            tracing::warn!("Failed to decode PushGroupMessageSendSuccess: {e}");
+                            continue;
+                        }
+                    };
                 tracing::info!(
                     flag = ack.flag,
                     group_id = ack.group_id,
@@ -2014,7 +2066,8 @@ fn start_lottery_broadcast(
     sender: im_chat::ChatSender,
 ) {
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(20));
+        // 单个任务串行执行每轮请求；Delay 策略保证慢请求结束后再等待 5 秒，不会并发重叠。
+        let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(5));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
@@ -2023,11 +2076,37 @@ fn start_lottery_broadcast(
                 _ = connection_cancellation.cancelled() => break,
                 _ = ticker.tick() => {}
             }
-            if let Err(e) = run_one_broadcast_cycle(&context, &sender, &connection_cancellation).await {
+            if let Err(e) =
+                run_one_broadcast_cycle(&context, &sender, &connection_cancellation).await
+            {
                 tracing::warn!(error = %e, "Lottery broadcast cycle failed");
             }
         }
     });
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BroadcastIssueDecision {
+    /// 首次启用只记录 API 当前最新期号，不补发已有开奖。
+    EstablishBaseline(i64),
+    /// 当前期号已经处理，或 API 暂时返回了更旧的数据。
+    Skip,
+    /// 发现严格晚于持久化游标的新期号。
+    Broadcast(i64),
+}
+
+/// 根据独立广播游标判断当前 API 最新期号应如何处理。
+fn decide_broadcast_issue(
+    last_broadcast_issue: Option<i64>,
+    latest_issue: i64,
+) -> BroadcastIssueDecision {
+    match last_broadcast_issue {
+        None => BroadcastIssueDecision::EstablishBaseline(latest_issue),
+        Some(last_issue) if latest_issue > last_issue => {
+            BroadcastIssueDecision::Broadcast(latest_issue)
+        }
+        Some(_) => BroadcastIssueDecision::Skip,
+    }
 }
 
 /// 执行一轮广播检测与发送。
@@ -2060,7 +2139,11 @@ async fn run_one_broadcast_cycle(
         tracing::info!(uid, "Lottery broadcast skipped: template empty");
         return Ok(());
     }
-    tracing::debug!(uid, template_len = template_row.template.len(), "Template loaded");
+    tracing::debug!(
+        uid,
+        template_len = template_row.template.len(),
+        "Template loaded"
+    );
 
     // 2. 读取开奖配置
     let config = context
@@ -2073,11 +2156,7 @@ async fn run_one_broadcast_cycle(
         tracing::info!(uid, "Lottery broadcast skipped: api_url empty");
         return Ok(());
     }
-    tracing::debug!(
-        uid,
-        issue_count = config.current_issues.len(),
-        "Config loaded"
-    );
+    tracing::debug!(uid, "Config loaded");
 
     // 3. 获取历史列表
     let draws = match im_http::lottery::fetch_draw_history(&config.api_url).await {
@@ -2093,16 +2172,39 @@ async fn run_one_broadcast_cycle(
     }
     tracing::debug!(uid, draw_count = draws.len(), "Fetched lottery history");
 
-    // 4. 找出新期号
-    let new_draw = draws
+    // 4. 只以持久化广播游标判断新期号；current_issues 继续专用于消息匹配。
+    let latest_issue = draws[0].pre_draw_issue;
+    let issue_to_broadcast =
+        match decide_broadcast_issue(template_row.last_broadcast_issue, latest_issue) {
+            BroadcastIssueDecision::EstablishBaseline(issue) => {
+                context
+                    .db
+                    .lottery_template
+                    .set_last_broadcast_issue(issue, uid)
+                    .await
+                    .map_err(|e| format!("Failed to establish broadcast baseline: {e}"))?;
+                tracing::info!(uid, issue, "Lottery broadcast baseline established");
+                return Ok(());
+            }
+            BroadcastIssueDecision::Skip => {
+                tracing::debug!(
+                    uid,
+                    last_broadcast_issue = ?template_row.last_broadcast_issue,
+                    latest_api_issue = latest_issue,
+                    "Lottery broadcast skipped: latest issue already processed"
+                );
+                return Ok(());
+            }
+            BroadcastIssueDecision::Broadcast(issue) => issue,
+        };
+    let Some(draw) = draws
         .iter()
-        .find(|d| !config.current_issues.contains(&d.pre_draw_issue));
-    let Some(draw) = new_draw else {
+        .find(|draw| draw.pre_draw_issue == issue_to_broadcast)
+    else {
         tracing::debug!(
             uid,
-            known_issues = ?config.current_issues,
-            latest_api_issue = draws.first().map(|d| d.pre_draw_issue),
-            "Lottery broadcast skipped: no new draw found"
+            issue_to_broadcast,
+            "Lottery broadcast skipped: selected issue missing from API response"
         );
         return Ok(());
     };
@@ -2116,7 +2218,7 @@ async fn run_one_broadcast_cycle(
     let last_ten: Vec<String> = draws
         .iter()
         .take(10)
-        .map(|d| d.sum_num.to_string())
+        .map(|d| im_http::lottery::lottery_sum_to_display(d.sum_num))
         .collect();
     let last_ten_draws = last_ten.join(" ");
 
@@ -2128,8 +2230,14 @@ async fn run_one_broadcast_cycle(
             "${preDrawCode}",
             &im_http::lottery::pre_draw_code_to_display(&draw.pre_draw_code),
         )
-        .replace("${sumNum}", &draw.sum_num.to_string())
-        .replace("${sumBigSmall}", im_http::lottery::big_small_to_str(draw.sum_big_small))
+        .replace(
+            "${sumNum}",
+            &im_http::lottery::lottery_sum_to_display(draw.sum_num),
+        )
+        .replace(
+            "${sumBigSmall}",
+            im_http::lottery::big_small_to_str(draw.sum_big_small),
+        )
         .replace(
             "${sumSingleDouble}",
             im_http::lottery::single_double_to_str(draw.sum_single_double),
@@ -2211,6 +2319,14 @@ async fn run_one_broadcast_cycle(
             tracing::warn!(group_id, error = %e, "Failed to insert broadcast message");
             continue;
         }
+        if let Err(error) = publish_broadcast_by_flag(context, *group_id, flag).await {
+            tracing::warn!(
+                group_id,
+                flag,
+                error = %error,
+                "Failed to publish pending broadcast message"
+            );
+        }
 
         // 发送
         let send_result = sender
@@ -2225,7 +2341,7 @@ async fn run_one_broadcast_cycle(
         match send_result {
             Ok(()) => {
                 // 发送成功，启动 30 秒超时协程；通过 broadcast_flag 匹配（服务端分配了新的 msg_id）。
-                let db = context.db.clone();
+                let timeout_context = context.clone();
                 let flag = flag;
                 let cancel = cancellation.clone();
                 let gid = *group_id;
@@ -2238,16 +2354,28 @@ async fn run_one_broadcast_cycle(
                     if result.is_ok() {
                         return;
                     }
-                    let current = db
+                    let current = timeout_context
+                        .db
                         .messages
                         .get_broadcast_status_by_flag(gid, flag)
                         .await
                         .unwrap_or(0);
                     if current == 0 {
-                        let _ = db
+                        let _ = timeout_context
+                            .db
                             .messages
                             .update_broadcast_status_by_flag(gid, flag, 2)
                             .await;
+                        if let Err(error) =
+                            publish_broadcast_by_flag(&timeout_context, gid, flag).await
+                        {
+                            tracing::warn!(
+                                group_id = gid,
+                                flag,
+                                error = %error,
+                                "Failed to publish timed-out broadcast status"
+                            );
+                        }
                         tracing::warn!(flag, group_id = gid, "Broadcast message timed out");
                     }
                 });
@@ -2258,27 +2386,27 @@ async fn run_one_broadcast_cycle(
                     .messages
                     .update_broadcast_status_by_flag(*group_id, flag, 2)
                     .await;
+                if let Err(error) = publish_broadcast_by_flag(context, *group_id, flag).await {
+                    tracing::warn!(
+                        group_id,
+                        flag,
+                        error = %error,
+                        "Failed to publish failed broadcast status"
+                    );
+                }
                 tracing::warn!(group_id = *group_id, error = %e, "Failed to send broadcast message (status set to failed)");
             }
         }
     }
 
-    // 9. 更新 current_issues
-    let mut updated_issues = config.current_issues.clone();
-    updated_issues.push(draw.pre_draw_issue);
-    let updated_at = chrono::Utc::now().timestamp_millis();
+    // 9. 无论各群发送结果如何，本期只处理一次；失败状态由消息卡明确呈现。
     if let Err(e) = context
         .db
-        .lottery_config
-        .upsert(&im_store::lottery_config::LotteryConfigRow {
-            uid,
-            api_url: config.api_url,
-            current_issues: updated_issues,
-            updated_at,
-        })
+        .lottery_template
+        .set_last_broadcast_issue(draw.pre_draw_issue, uid)
         .await
     {
-        tracing::warn!(error = %e, "Failed to update lottery config");
+        tracing::warn!(error = %e, "Failed to update broadcast issue cursor");
     }
 
     Ok(())
@@ -3310,18 +3438,19 @@ mod tests {
     use crate::state::{AuthSession, ConnectionCoordinator, InstalledClient};
 
     use super::{
-        begin_connection_attempt, cancel_connection_and_disconnect, disconnect_current_session,
-        disconnect_current_session_and_publish_with_timeout,
+        begin_connection_attempt, cancel_connection_and_disconnect, decide_broadcast_issue,
+        disconnect_current_session, disconnect_current_session_and_publish_with_timeout,
         disconnect_current_session_with_timeout, disconnect_owned_chat_client_with_timeout,
         encode_text_content, enqueue_incoming_frame, fail_initial_connection_and_publish,
         linked_cancellation, local_broadcast_msg_id, login_user_key_metadata,
         mark_connected_and_broadcast, mark_disconnected_and_broadcast, message_dto_from_row,
         publish_realtime_message, replace_message_channel, retry_automatic_connection,
         run_cancellable_with_timeout, run_message_worker_with_effects, stored_message_parts,
-        validate_message_page, ConnectionAttemptGuard, IncomingFrame, MessageCursorDto, MessageDto,
-        MessageEffects, MessagePageDto, TestGroupMessageAckWaiters, HEARTBEAT_INTERVAL,
-        MAX_QUEUED_MESSAGE_SIZE, MESSAGE_BATCH_MAX_MESSAGES, MESSAGE_DECRYPT_CONCURRENCY,
-        MESSAGE_PROJECTION_QUEUE_CAPACITY, MESSAGE_QUEUE_BYTE_BUDGET, MESSAGE_QUEUE_CAPACITY,
+        validate_message_page, BroadcastIssueDecision, ConnectionAttemptGuard, IncomingFrame,
+        MessageCursorDto, MessageDto, MessageEffects, MessagePageDto, TestGroupMessageAckWaiters,
+        HEARTBEAT_INTERVAL, MAX_QUEUED_MESSAGE_SIZE, MESSAGE_BATCH_MAX_MESSAGES,
+        MESSAGE_DECRYPT_CONCURRENCY, MESSAGE_PROJECTION_QUEUE_CAPACITY, MESSAGE_QUEUE_BYTE_BUDGET,
+        MESSAGE_QUEUE_CAPACITY,
     };
 
     fn installed_client(client: im_chat::ChatClient) -> InstalledClient {
@@ -3417,6 +3546,7 @@ mod tests {
                 stored_at: None,
                 matched: 0,
                 read_at: 0,
+                broadcast_status: 0,
             }],
         )
         .await
@@ -5889,6 +6019,27 @@ mod tests {
         );
     }
 
+    // 广播游标契约：首次启用只建立基线，之后仅处理严格更新的期号。
+    #[test]
+    fn broadcast_issue_decision_does_not_depend_on_message_matching_issues() {
+        assert_eq!(
+            decide_broadcast_issue(None, 20260914001),
+            BroadcastIssueDecision::EstablishBaseline(20260914001)
+        );
+        assert_eq!(
+            decide_broadcast_issue(Some(20260914001), 20260914001),
+            BroadcastIssueDecision::Skip
+        );
+        assert_eq!(
+            decide_broadcast_issue(Some(20260914001), 20260914002),
+            BroadcastIssueDecision::Broadcast(20260914002)
+        );
+        assert_eq!(
+            decide_broadcast_issue(Some(20260914002), 20260914001),
+            BroadcastIssueDecision::Skip
+        );
+    }
+
     // Base64 契约：实时和历史 DTO 对二进制正文编码一致，数据库保留原始 protobuf。
     #[test]
     fn realtime_and_stored_message_dtos_share_base64_content_contract() {
@@ -5918,10 +6069,12 @@ mod tests {
             group_name: "测试群".to_string(),
             content_text: record.content_text.clone(),
             read_at: 0,
+            broadcast_status: 1,
         });
 
         assert_eq!(realtime.content_b64, STANDARD.encode(&message.content));
         assert_eq!(stored.content_b64, realtime.content_b64);
+        assert_eq!(stored.broadcast_status, 1);
         assert_eq!(record.raw_proto, Some(message.encode_to_vec()));
         assert!(serde_json::to_value(stored)
             .unwrap()

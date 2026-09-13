@@ -73,6 +73,7 @@ function makeMessage(index: number): MessageDto {
     stored_at: null,
     matched: 0,
     read_at: 0,
+    broadcast_status: 0,
   }
 }
 

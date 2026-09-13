@@ -33,9 +33,9 @@ export interface DrawItem {
   preDrawCode: string
   /** 和值。 */
   sumNum: number
-  /** 大/小/中：1=大，0=小，-1=中。 */
+  /** 大/小/中：1=大，-1=小，其他值=中。 */
   sumBigSmall: number
-  /** 单/双/中：1=单，0=双，-1=中。 */
+  /** 单/双/中：1=单，-1=双，其他值=中。 */
   sumSingleDouble: number
 }
 

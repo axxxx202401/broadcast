@@ -22,6 +22,7 @@ const message = (msgId: string, sendTime: number): MessageDto => ({
   stored_at: null,
   matched: 0,
   read_at: 0,
+  broadcast_status: 0,
 })
 
 describe('消息正文解码', () => {
@@ -110,6 +111,16 @@ describe('持久消息索引', () => {
 
     expect(index.snapshot().map(({ msg_id }) => msg_id)).toEqual(['2', '1'])
     expect(index.get('1')).toBe(replacement)
+  })
+
+  it('广播状态更新以同一本地消息 ID 原位合并', () => {
+    const pending = { ...message('-101', 10), broadcast_status: 0 }
+    const index = new MessageIndex([pending])
+
+    index.merge([{ ...pending, broadcast_status: 1 }])
+
+    expect(index.size).toBe(1)
+    expect(index.get('-101')?.broadcast_status).toBe(1)
   })
 
   it('批内重复 ID 仅保留最后到达的对象', () => {

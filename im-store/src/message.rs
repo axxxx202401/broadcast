@@ -79,6 +79,8 @@ pub struct MessageRow {
     pub content_text: String,
     /// 已读时间戳（Unix ms）；0 表示未读。
     pub read_at: i64,
+    /// 广播发送状态；0=非广播或发送中，1=发送成功，2=发送失败。
+    pub broadcast_status: i32,
 }
 
 /// 一页按时间倒序排列的消息。
@@ -185,7 +187,7 @@ impl MessageStore {
         let rows = if let Some(cursor) = cursor {
             sqlx::query(
                 r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
-                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text, m.read_at
+                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text, m.read_at, m.broadcast_status
                    FROM messages m
                    LEFT JOIN groups g ON g.group_id = m.group_id
                    WHERE m.group_id = ?
@@ -205,7 +207,7 @@ impl MessageStore {
         } else {
             sqlx::query(
                 r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
-                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text, m.read_at
+                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text, m.read_at, m.broadcast_status
                    FROM messages m
                    LEFT JOIN groups g ON g.group_id = m.group_id
                    WHERE m.group_id = ?
@@ -237,7 +239,7 @@ impl MessageStore {
         let rows = if let Some(cursor) = cursor {
             sqlx::query(
                 r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
-                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text, m.read_at
+                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text, m.read_at, m.broadcast_status
                    FROM messages m
                    JOIN groups g ON g.group_id = m.group_id
                    WHERE g.monitored = 1 AND g.available = 1
@@ -256,7 +258,7 @@ impl MessageStore {
         } else {
             sqlx::query(
                 r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
-                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text, m.read_at
+                          m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text, m.read_at, m.broadcast_status
                    FROM messages m
                    JOIN groups g ON g.group_id = m.group_id
                    WHERE g.monitored = 1 AND g.available = 1
@@ -279,7 +281,7 @@ impl MessageStore {
     pub async fn get_by_id(&self, msg_id: i64) -> sqlx::Result<Option<MessageRow>> {
         let row = sqlx::query(
             r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
-                      m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text, m.read_at
+                      m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name, m.matched, m.content_text, m.read_at, m.broadcast_status
                FROM messages m
                LEFT JOIN groups g ON g.group_id = m.group_id
                WHERE m.msg_id = ?"#,
@@ -302,6 +304,44 @@ impl MessageStore {
             matched: row.get("matched"),
             content_text: row.get("content_text"),
             read_at: row.get("read_at"),
+            broadcast_status: row.get("broadcast_status"),
+        }))
+    }
+
+    /// 按群组和发送 flag 读取一条广播消息，供发送状态变化后推送前端更新。
+    pub async fn get_by_broadcast_flag(
+        &self,
+        group_id: i64,
+        flag: i64,
+    ) -> sqlx::Result<Option<MessageRow>> {
+        let row = sqlx::query(
+            r#"SELECT m.msg_id, m.group_id, m.send_uid, m.msg_type, m.content, m.send_time,
+                      m.content_md5, m.stored_at, m.raw_proto, COALESCE(g.name, '') AS group_name,
+                      m.matched, m.content_text, m.read_at, m.broadcast_status
+               FROM messages m
+               LEFT JOIN groups g ON g.group_id = m.group_id
+               WHERE m.group_id = ? AND m.broadcast_flag = ?"#,
+        )
+        .bind(group_id)
+        .bind(flag)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|row| MessageRow {
+            msg_id: row.get("msg_id"),
+            group_id: row.get("group_id"),
+            send_uid: row.get("send_uid"),
+            msg_type: row.get("msg_type"),
+            content: row.get("content"),
+            send_time: row.get("send_time"),
+            content_md5: row.get("content_md5"),
+            stored_at: row.get("stored_at"),
+            raw_proto: row.get("raw_proto"),
+            group_name: row.get("group_name"),
+            matched: row.get("matched"),
+            content_text: row.get("content_text"),
+            read_at: row.get("read_at"),
+            broadcast_status: row.get("broadcast_status"),
         }))
     }
 
@@ -413,12 +453,11 @@ impl MessageStore {
     ///
     /// 消息不存在时返回 `Ok(0)`。
     pub async fn get_broadcast_status(&self, msg_id: i64) -> sqlx::Result<i32> {
-        let status: Option<i32> = sqlx::query_scalar(
-            "SELECT broadcast_status FROM messages WHERE msg_id = ?",
-        )
-        .bind(msg_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let status: Option<i32> =
+            sqlx::query_scalar("SELECT broadcast_status FROM messages WHERE msg_id = ?")
+                .bind(msg_id)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(status.unwrap_or(0))
     }
 
@@ -431,7 +470,7 @@ impl MessageStore {
         flag: i64,
     ) -> sqlx::Result<i32> {
         let status: Option<i32> = sqlx::query_scalar(
-            "SELECT broadcast_status FROM messages WHERE group_id = ? AND broadcast_flag = ? AND broadcast_status = 0",
+            "SELECT broadcast_status FROM messages WHERE group_id = ? AND broadcast_flag = ?",
         )
         .bind(group_id)
         .bind(flag)
@@ -472,6 +511,7 @@ fn message_page(rows: Vec<sqlx::sqlite::SqliteRow>, limit: usize) -> MessagePage
             matched: row.get("matched"),
             content_text: row.get("content_text"),
             read_at: row.get("read_at"),
+            broadcast_status: row.get("broadcast_status"),
         })
         .collect::<Vec<_>>();
     let next_cursor = has_more && !messages.is_empty();

@@ -25,6 +25,14 @@ const isoTime = computed(() => {
     : props.message.send_time
   return new Date(milliseconds).toISOString()
 })
+
+/** 仅广播消息展示状态；普通消息的默认值 0 不额外占用视觉空间。 */
+const broadcastStatus = computed(() => {
+  if (props.message.broadcast_status === 1) return { text: '发送成功', className: 'is-success' }
+  if (props.message.broadcast_status === 2) return { text: '发送失败', className: 'is-failed' }
+  if (props.message.msg_id.startsWith('-')) return { text: '发送中', className: 'is-sending' }
+  return null
+})
 </script>
 
 <template>
@@ -34,6 +42,10 @@ const isoTime = computed(() => {
     </div>
     <div class="message-meta">
       <span class="message-sender">用户 {{ message.send_uid }}</span>
+      <span
+        v-if="broadcastStatus"
+        :class="['broadcast-status', broadcastStatus.className]"
+      >{{ broadcastStatus.text }}</span>
       <time :datetime="isoTime">{{ formatMessageTime(message.send_time) }}</time>
     </div>
     <div class="message-content">
@@ -41,3 +53,27 @@ const isoTime = computed(() => {
     </div>
   </article>
 </template>
+
+<style scoped>
+.broadcast-status {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.broadcast-status.is-sending {
+  color: var(--accent);
+  background: rgba(240, 180, 70, 0.12);
+}
+
+.broadcast-status.is-success {
+  color: var(--success);
+  background: rgba(63, 185, 80, 0.12);
+}
+
+.broadcast-status.is-failed {
+  color: var(--danger);
+  background: rgba(248, 81, 73, 0.12);
+}
+</style>
