@@ -66,6 +66,35 @@ const runtimeConfig = ref<{ persist_received_messages: boolean; match_lottery_me
   match_lottery_messages: true,
 })
 
+// 测试消息发送
+const testGroupId = ref('')
+const testText = ref('')
+const sendingTest = ref(false)
+const testResult = ref('')
+const testResultOk = ref(true)
+
+async function sendTestMessage() {
+  const groupId = testGroupId.value.trim()
+  const text = testText.value.trim()
+  if (!groupId || !text) {
+    testResult.value = '请填写群 ID 和消息内容'
+    testResultOk.value = false
+    return
+  }
+  sendingTest.value = true
+  testResult.value = ''
+  try {
+    await api.sendTestGroupMessage(parseInt(groupId, 10), text)
+    testResult.value = '发送成功，等待服务器回执 (2201)'
+    testResultOk.value = true
+  } catch (e) {
+    testResult.value = `发送失败: ${errorMessage(e)}`
+    testResultOk.value = false
+  } finally {
+    sendingTest.value = false
+  }
+}
+
 async function loadRuntimeConfig() {
   try {
     runtimeConfig.value = await api.getAppRuntimeConfig()
@@ -181,6 +210,37 @@ onMounted(() => {
     <button v-else class="btn-ghost btn-sm" type="button" @click="() => { templateEditValue = template.template; templateEditing = true }">
       编辑模板
     </button>
+
+    <!-- 测试发送 -->
+    <div class="test-send-section">
+      <div class="test-send-row">
+        <input
+          v-model="testGroupId"
+          class="test-input"
+          type="text"
+          placeholder="群 ID"
+          style="width: 140px"
+        />
+        <input
+          v-model="testText"
+          class="test-input"
+          type="text"
+          placeholder="测试消息内容"
+          style="flex: 1"
+        />
+        <button
+          class="btn-primary btn-sm"
+          type="button"
+          :disabled="sendingTest"
+          @click="sendTestMessage"
+        >
+          {{ sendingTest ? '发送中...' : '发送测试消息' }}
+        </button>
+      </div>
+      <span v-if="testResult" :class="['test-result', testResultOk ? 'ok' : 'err']">
+        {{ testResult }}
+      </span>
+    </div>
 
     <!-- 环境配置（编译期常量，仅展示） -->
     <div class="env-config">
@@ -438,6 +498,49 @@ onMounted(() => {
 .btn-icon:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.test-send-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.test-send-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.test-input {
+  font-size: 11px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  outline: none;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.test-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(240, 180, 70, 0.12);
+}
+
+.test-result {
+  font-size: 10px;
+  padding: 2px 0;
+}
+
+.test-result.ok {
+  color: var(--success);
+}
+
+.test-result.err {
+  color: var(--danger);
 }
 
 .env-config {

@@ -3064,6 +3064,69 @@ pub async fn mark_group_read(
         .map_err(|e| e.to_string())
 }
 
+/// 发送一条测试群消息，用于验证 TCP 通路与服务器是否正常响应。
+///
+/// 与广播链路共享同一份 `send_cancellable` + `build_client_frame` 路径，
+/// 但不触发任何定时循环或 DB 写入。成功（返回 `Ok(())`）仅表示 TCP 帧已写入 socket；
+/// 服务器是否真正处理消息依赖 2201 回执或连接错误。
+#[tauri::command]
+pub async fn send_test_group_message(
+    state: State<'_, AppState>,
+    group_id: i64,
+    text: String,
+) -> Result<(), String> {
+    let _session = authenticated_session_for_connect(&state.auth_session).await?;
+
+    // 从已安装客户端直接取 sender（不校验 key，测试用）
+    let sender = {
+        let slot = state.chat_client.lock().await;
+        slot.as_ref()
+            .and_then(|ic| ic.client.sender())
+            .ok_or("Chat not connected")?
+    };
+
+    let uid = _session.uid;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let flag = uid * 1_000_000_000 + now_ms as i64;
+    let msg_id = now_ms;
+
+    let group_msg = im_proto::GroupMessage {
+        send_uid: uid,
+        group_id,
+        msg_type: im_proto::MessageType::Text as i32,
+        content: text.as_bytes().to_vec(),
+        send_time: now_ms,
+        msg_id,
+        ..Default::default()
+    };
+    let send_msg = im_proto::SendGroupMessage {
+        group_msg: Some(group_msg),
+        flag,
+    };
+    let bytes = send_msg.encode_to_vec();
+
+    tracing::info!(
+        uid, group_id, msg_id, flag, byte_len = bytes.len(),
+        "send_test_group_message: about to send"
+    );
+
+    sender
+        .send_cancellable(
+            im_chat::heartbeat::SEND_GROUP_MESSAGE,
+            &bytes,
+            &CancellationToken::new(),
+            CHAT_SEND_TIMEOUT,
+        )
+        .await
+        .map_err(|e| {
+            tracing::warn!(uid, group_id, error = %e, "send_test_group_message: send failed");
+            e.to_string()
+        })?;
+
+    tracing::info!(uid, group_id, msg_id, "send_test_group_message: sent OK (waiting for 2201)");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;

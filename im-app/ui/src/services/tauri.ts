@@ -209,4 +209,7 @@ export const api = {
     invoke<{ persist_received_messages: boolean; match_lottery_messages: boolean }>(
       'get_app_runtime_config',
     ),
+  /** 发送一条测试群消息，验证 TCP 通路与服务器响应。 */
+  sendTestGroupMessage: (groupId: number, text: string) =>
+    invoke<void>('send_test_group_message', { groupId, text }),
 }
