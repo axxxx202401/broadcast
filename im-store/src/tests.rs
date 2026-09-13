@@ -19,6 +19,7 @@ fn batch_message(msg_id: i64, content: &str) -> MessageRecord {
         raw_proto: Some(vec![msg_id as u8]),
         content_text: content.to_string(),
         broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
     }
 }
@@ -49,6 +50,7 @@ async fn test_insert_and_fetch_message() {
             raw_proto: None,
             content_text: String::new(),
                 broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
         .await
@@ -213,6 +215,7 @@ async fn test_get_by_group() {
                 raw_proto: None,
                 content_text: String::new(),
                         broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
             .await
@@ -233,6 +236,7 @@ async fn test_get_by_group() {
             raw_proto: None,
             content_text: String::new(),
                 broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
         .await
@@ -298,6 +302,7 @@ async fn message_cursor_paginates_equal_send_times_without_duplicates_or_gaps() 
                 raw_proto: None,
                 content_text: String::new(),
                         broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
             .await
@@ -369,6 +374,7 @@ async fn test_get_recent_returns_all_groups_with_names() {
                 raw_proto: None,
                 content_text: String::new(),
                         broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
             .await
@@ -417,6 +423,7 @@ async fn test_get_message_by_id_keeps_raw_proto() {
             raw_proto: Some(vec![4, 5, 6]),
             content_text: String::new(),
                 broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
         .await
@@ -665,6 +672,7 @@ async fn remote_snapshot_hides_missing_group_without_deleting_history_and_restor
             raw_proto: None,
             content_text: String::new(),
                 broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
         .await
@@ -841,6 +849,7 @@ async fn test_message_content_and_md5() {
             raw_proto: Some(vec![0x08, 0x89, 0x27]),
             content_text: String::new(),
                 broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
         .await
@@ -1002,6 +1011,7 @@ async fn test_mark_read_updates_matching_unread_messages() {
                 raw_proto: None,
                 content_text: format!("msg-{msg_id}"),
                         broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
             .await
@@ -1021,6 +1031,7 @@ async fn test_mark_read_updates_matching_unread_messages() {
             raw_proto: None,
             content_text: "unmatched".to_string(),
                 broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
         .await
@@ -1072,6 +1083,7 @@ async fn test_mark_read_global_mode_ignores_group_boundary() {
                 raw_proto: None,
                 content_text: "x".to_string(),
                         broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
             .await
@@ -1154,6 +1166,7 @@ async fn test_cleanup_all_expired() {
                 raw_proto: None,
                 content_text: format!("msg-{msg_id}"),
                         broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
             .await
@@ -1206,6 +1219,7 @@ async fn test_cleanup_all_retained() {
                 raw_proto: None,
                 content_text: format!("msg-{msg_id}"),
                         broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
             .await
@@ -1259,6 +1273,7 @@ async fn test_cleanup_partial() {
                 raw_proto: None,
                 content_text: format!("old-{msg_id}"),
                         broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
             .await
@@ -1279,6 +1294,7 @@ async fn test_cleanup_partial() {
                 raw_proto: None,
                 content_text: format!("new-{msg_id}"),
                         broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
             .await
@@ -1329,6 +1345,7 @@ async fn test_cleanup_boundary_exact_send_time_preserved() {
             raw_proto: None,
             content_text: "boundary".to_string(),
                 broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
         .await
@@ -1347,6 +1364,7 @@ async fn test_cleanup_boundary_exact_send_time_preserved() {
             raw_proto: None,
             content_text: "expired".to_string(),
                 broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
         .await
@@ -1397,6 +1415,7 @@ async fn test_cleanup_batches_exceed_batch_size() {
                 raw_proto: None,
                 content_text: format!("batch-{msg_id}"),
                         broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
             .await
@@ -1439,6 +1458,7 @@ async fn test_migrate_messages_read_at_column() {
             raw_proto: None,
             content_text: String::new(),
                 broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
 })
         .await

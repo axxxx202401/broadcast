@@ -90,6 +90,7 @@ impl SqliteStore {
         migrate_index_group_matched_read(&pool).await?;
         migrate_index_group_time_matched(&pool).await?;
         migrate_messages_broadcast_status(&pool).await?;
+        migrate_messages_broadcast_flag(&pool).await?;
         // 每 5 分钟执行一次 WAL checkpoint(TRUNCATE)，防止 WAL 文件无限增长。
         let checkpoint_pool = pool.clone();
         tokio::spawn(async move {
@@ -279,6 +280,24 @@ async fn migrate_messages_broadcast_status(pool: &SqlitePool) -> Result<(), sqlx
         )
         .execute(pool)
         .await?;
+    }
+    Ok(())
+}
+
+/// 检查 `messages` 表，并在缺失时补充 `broadcast_flag` 列。
+///
+/// 广播消息使用服务端分配的 msg_id（而非客户端生成的 now_ms），因此通过
+/// `broadcast_flag` 匹配 2201 回执，避免误匹配其他群的消息记录。
+async fn migrate_messages_broadcast_flag(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let column_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'broadcast_flag'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if column_count == 0 {
+        sqlx::query("ALTER TABLE messages ADD COLUMN broadcast_flag INTEGER")
+            .execute(pool)
+            .await?;
     }
     Ok(())
 }

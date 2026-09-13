@@ -44,6 +44,8 @@ pub struct MessageRecord {
     pub content_text: String,
     /// 广播发送状态；0=待发送，1=发送成功，2=发送失败。对应 `messages.broadcast_status`。
     pub broadcast_status: i32,
+    /// 发送时使用的协议 flag；用于通过 2201 回执匹配对应记录。
+    pub broadcast_flag: Option<i64>,
     /// 是否匹配（0=未匹配，1=已匹配）。broadcast 消息默认为 1。
     pub matched: i32,
 }
@@ -131,8 +133,8 @@ impl MessageStore {
         for record in records {
             sqlx::query(
                 r#"INSERT INTO messages
-                   (msg_id, group_id, send_uid, msg_type, content, send_time, content_md5, stored_at, raw_proto, matched, content_text, broadcast_status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   (msg_id, group_id, send_uid, msg_type, content, send_time, content_md5, stored_at, raw_proto, matched, content_text, broadcast_status, broadcast_flag)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(msg_id) DO UPDATE SET
                      group_id = excluded.group_id,
                      send_uid = excluded.send_uid,
@@ -144,7 +146,8 @@ impl MessageStore {
                      raw_proto = excluded.raw_proto,
                      content_text = excluded.content_text,
                      matched = excluded.matched,
-                     broadcast_status = excluded.broadcast_status"#,
+                     broadcast_status = excluded.broadcast_status,
+                     broadcast_flag = excluded.broadcast_flag"#,
             )
             .bind(record.msg_id)
             .bind(record.group_id)
@@ -158,6 +161,7 @@ impl MessageStore {
             .bind(record.matched)
             .bind(&record.content_text)
             .bind(record.broadcast_status)
+            .bind(record.broadcast_flag)
             .execute(&mut *transaction)
             .await?;
         }
@@ -383,6 +387,28 @@ impl MessageStore {
         Ok(())
     }
 
+    /// 按 broadcast_flag 更新广播消息的发送状态。
+    ///
+    /// 仅在 `broadcast_status = 0`（发送中）的记录上更新，避免覆盖已成功或已失败的状态。
+    /// `status`: 1=成功, 2=失败。
+    pub async fn update_broadcast_status_by_flag(
+        &self,
+        group_id: i64,
+        flag: i64,
+        status: i32,
+    ) -> sqlx::Result<()> {
+        sqlx::query(
+            "UPDATE messages SET broadcast_status = ?
+             WHERE group_id = ? AND broadcast_flag = ? AND broadcast_status = 0",
+        )
+        .bind(status)
+        .bind(group_id)
+        .bind(flag)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// 查询指定消息的广播发送状态。
     ///
     /// 消息不存在时返回 `Ok(0)`。
@@ -391,6 +417,24 @@ impl MessageStore {
             "SELECT broadcast_status FROM messages WHERE msg_id = ?",
         )
         .bind(msg_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(status.unwrap_or(0))
+    }
+
+    /// 按 broadcast_flag 查询广播发送状态。
+    ///
+    /// 消息不存在或 flag 未匹配时返回 `Ok(0)`。
+    pub async fn get_broadcast_status_by_flag(
+        &self,
+        group_id: i64,
+        flag: i64,
+    ) -> sqlx::Result<i32> {
+        let status: Option<i32> = sqlx::query_scalar(
+            "SELECT broadcast_status FROM messages WHERE group_id = ? AND broadcast_flag = ? AND broadcast_status = 0",
+        )
+        .bind(group_id)
+        .bind(flag)
         .fetch_optional(&self.pool)
         .await?;
         Ok(status.unwrap_or(0))

@@ -192,6 +192,7 @@ fn stored_message_parts(
         raw_proto: Some(message.encode_to_vec()),
         content_text,
         broadcast_status: 0,
+        broadcast_flag: None,
         matched: 0,
     };
     (record, dto)
@@ -622,7 +623,8 @@ trait MessageEffects: Send + Sync {
         msg_ids: Vec<i64>,
     ) -> Result<(), im_common::error::AppError>;
     /// 收到 2201 确认后更新广播消息状态为成功。
-    async fn broadcast_ack_success(&self, msg_id: i64) -> Result<(), String>;
+    /// `group_id` 和 `flag` 来自 `PushGroupMessageSendSuccess`，用于精确匹配本端记录。
+    async fn broadcast_ack_success(&self, group_id: i64, flag: i64) -> Result<(), String>;
 }
 
 /// 使用真实应用状态执行监控查询、持久化、Channel 推送和回执副作用。
@@ -913,11 +915,11 @@ impl MessageEffects for ConnectionMessageEffects {
         true
     }
 
-    async fn broadcast_ack_success(&self, msg_id: i64) -> Result<(), String> {
+    async fn broadcast_ack_success(&self, group_id: i64, flag: i64) -> Result<(), String> {
         self.context
             .db
             .messages
-            .update_broadcast_status_by_msg_id(msg_id, 1)
+            .update_broadcast_status_by_flag(group_id, flag, 1)
             .await
             .map_err(|e| e.to_string())
     }
@@ -1859,8 +1861,11 @@ async fn run_message_worker_with_effects(
                         continue;
                     }
                 };
-                let msg_id = ack.msg_id;
-                if let Err(e) = effects.broadcast_ack_success(msg_id).await {
+                // 用 flag + group_id 匹配（服务端分配的 msg_id 与本端不同）。
+                if let Err(e) = effects
+                    .broadcast_ack_success(ack.group_id, ack.flag)
+                    .await
+                {
                     tracing::warn!("Failed to mark broadcast success: {e}");
                 }
             }
@@ -2081,12 +2086,14 @@ async fn run_one_broadcast_cycle(
     }
     tracing::debug!(uid, group_count = groups.len(), "Found monitored groups");
 
-    // 8. 逐群发送（每个群用独立 msg_id，避免 2201 ack 误匹配其他群记录）
+    // 8. 逐群发送（每个群用独立 flag，2201 回执通过 flag+group_id 精确匹配）
     let mut group_iter = groups.iter().peekable();
     while let Some(group_id) = group_iter.next() {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let flag = uid * 1_000_000_000 + now_ms as i64;
-        let msg_id = now_ms;
+        // msg_id=0：服务端按新消息处理并广播到群成员；2201 回执携带服务端分配的 msg_id，
+        // 通过 broadcast_flag 匹配本端记录。
+        let msg_id = 0;
 
         let group_msg = im_proto::GroupMessage {
             send_uid: uid,
@@ -2105,7 +2112,7 @@ async fn run_one_broadcast_cycle(
 
         let bytes = send_msg.encode_to_vec();
 
-        // 先入库（broadcast_status=0）
+        // 先入库（broadcast_status=0）；broadcast_flag 用于通过 2201 回执精确匹配。
         let record = im_store::message::MessageRecord {
             msg_id,
             group_id: *group_id,
@@ -2118,6 +2125,7 @@ async fn run_one_broadcast_cycle(
             content_text: text.clone(),
             matched: 1,
             broadcast_status: 0,
+            broadcast_flag: Some(flag),
         };
         if let Err(e) = context.db.messages.insert(&record).await {
             tracing::warn!(group_id, error = %e, "Failed to insert broadcast message");
@@ -2136,9 +2144,9 @@ async fn run_one_broadcast_cycle(
 
         match send_result {
             Ok(()) => {
-                // 发送成功，启动 30 秒超时协程
+                // 发送成功，启动 30 秒超时协程；通过 broadcast_flag 匹配（服务端分配了新的 msg_id）。
                 let db = context.db.clone();
-                let msg_id = msg_id;
+                let flag = flag;
                 let cancel = cancellation.clone();
                 let gid = *group_id;
                 tokio::spawn(async move {
@@ -2150,10 +2158,17 @@ async fn run_one_broadcast_cycle(
                     if result.is_ok() {
                         return;
                     }
-                    let current = db.messages.get_broadcast_status(msg_id).await.unwrap_or(0);
+                    let current = db
+                        .messages
+                        .get_broadcast_status_by_flag(gid, flag)
+                        .await
+                        .unwrap_or(0);
                     if current == 0 {
-                        let _ = db.messages.update_broadcast_status_by_msg_id(msg_id, 2).await;
-                        tracing::warn!(msg_id, group_id = gid, "Broadcast message timed out");
+                        let _ = db
+                            .messages
+                            .update_broadcast_status_by_flag(gid, flag, 2)
+                            .await;
+                        tracing::warn!(flag, group_id = gid, "Broadcast message timed out");
                     }
                 });
             }
@@ -2161,7 +2176,7 @@ async fn run_one_broadcast_cycle(
                 let _ = context
                     .db
                     .messages
-                    .update_broadcast_status_by_msg_id(msg_id, 2)
+                    .update_broadcast_status_by_flag(*group_id, flag, 2)
                     .await;
                 tracing::warn!(group_id = *group_id, error = %e, "Failed to send broadcast message (status set to failed)");
             }
@@ -3088,7 +3103,8 @@ pub async fn send_test_group_message(
     let uid = _session.uid;
     let now_ms = chrono::Utc::now().timestamp_millis();
     let flag = uid * 1_000_000_000 + now_ms as i64;
-    let msg_id = now_ms;
+    // msg_id=0：服务端按新消息处理并广播；服务端返回 2201 时会带自身分配的 msg_id。
+    let msg_id = 0;
 
     let group_msg = im_proto::GroupMessage {
         send_uid: uid,
@@ -3921,7 +3937,7 @@ mod tests {
             Ok(())
         }
 
-        async fn broadcast_ack_success(&self, _msg_id: i64) -> Result<(), String> {
+        async fn broadcast_ack_success(&self, _group_id: i64, _flag: i64) -> Result<(), String> {
             Ok(())
         }
     }
@@ -3957,7 +3973,7 @@ mod tests {
             Ok(())
         }
 
-        async fn broadcast_ack_success(&self, _msg_id: i64) -> Result<(), String> {
+        async fn broadcast_ack_success(&self, _group_id: i64, _flag: i64) -> Result<(), String> {
             Ok(())
         }
     }
@@ -4022,7 +4038,7 @@ mod tests {
             Ok(())
         }
 
-        async fn broadcast_ack_success(&self, _msg_id: i64) -> Result<(), String> {
+        async fn broadcast_ack_success(&self, _group_id: i64, _flag: i64) -> Result<(), String> {
             Ok(())
         }
     }
@@ -4056,7 +4072,7 @@ mod tests {
             Ok(())
         }
 
-        async fn broadcast_ack_success(&self, _msg_id: i64) -> Result<(), String> {
+        async fn broadcast_ack_success(&self, _group_id: i64, _flag: i64) -> Result<(), String> {
             Ok(())
         }
     }
@@ -4088,7 +4104,7 @@ mod tests {
             Ok(())
         }
 
-        async fn broadcast_ack_success(&self, _msg_id: i64) -> Result<(), String> {
+        async fn broadcast_ack_success(&self, _group_id: i64, _flag: i64) -> Result<(), String> {
             Ok(())
         }
     }
@@ -4117,7 +4133,7 @@ mod tests {
             Ok(())
         }
 
-        async fn broadcast_ack_success(&self, _msg_id: i64) -> Result<(), String> {
+        async fn broadcast_ack_success(&self, _group_id: i64, _flag: i64) -> Result<(), String> {
             Ok(())
         }
     }
