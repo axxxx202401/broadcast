@@ -439,7 +439,13 @@ async fn run_complete_account_login(
         return Err("Connection generation changed before opening account database".into());
     }
     state.legacy_migrator.migrate_if_needed(uid).await?;
-    let db = state.account_db.open(uid, generation).await?;
+    let db = match state.account_db.open(uid, generation).await {
+        Ok(db) => db,
+        Err(e) => {
+            tracing::warn!(error = %e, uid, "打开账号数据库失败");
+            return Err(e.into());
+        }
+    };
     let groups =
         finish_login_after_opening_account(state, generation, uid, token.to_string(), async {
             crate::commands::groups::apply_remote_groups(&db, &remote_groups).await

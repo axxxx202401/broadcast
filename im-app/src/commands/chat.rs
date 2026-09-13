@@ -19,6 +19,7 @@
 //! 连接，2202 解码失败仅丢弃当前帧。
 
 use std::{
+    collections::HashMap,
     fmt::Display,
     future::Future,
     pin::Pin,
@@ -66,6 +67,60 @@ const MAX_GROUP_MESSAGES_PER_PUSH: usize = 10_000;
 const MESSAGE_DECRYPT_CONCURRENCY: usize = 8;
 /// 主消息 worker 与投影 worker 之间最多排队 8 个已提交并已回执的消息批次。
 const MESSAGE_PROJECTION_QUEUE_CAPACITY: usize = 8;
+/// 测试群消息等待服务端 2201 回执的最长时间。
+const TEST_GROUP_MESSAGE_ACK_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 以 `(group_id, flag)` 关联测试发送命令与异步到达的 2201 回执。
+///
+/// 等待项只驻留内存，不参与广播消息持久化；发送失败、超时或收到精确匹配回执时都会移除。
+#[derive(Default)]
+pub struct TestGroupMessageAckWaiters {
+    waiters: tokio::sync::Mutex<HashMap<(i64, i64), tokio::sync::oneshot::Sender<i64>>>,
+}
+
+impl TestGroupMessageAckWaiters {
+    /// 注册一次测试发送并返回服务端消息 ID 接收端；重复键会被拒绝。
+    async fn register(
+        &self,
+        group_id: i64,
+        flag: i64,
+    ) -> Result<tokio::sync::oneshot::Receiver<i64>, String> {
+        let key = (group_id, flag);
+        let mut waiters = self.waiters.lock().await;
+        if waiters.contains_key(&key) {
+            return Err("相同群组测试消息正在等待服务器回执".to_string());
+        }
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        waiters.insert(key, sender);
+        Ok(receiver)
+    }
+
+    /// 完成精确匹配的等待项，并把服务端分配的消息 ID 交还发送命令。
+    async fn resolve(&self, group_id: i64, flag: i64, msg_id: i64) -> bool {
+        let sender = self.waiters.lock().await.remove(&(group_id, flag));
+        sender.is_some_and(|sender| sender.send(msg_id).is_ok())
+    }
+
+    /// 在发送失败或等待超时后清除尚未完成的等待项。
+    async fn remove(&self, group_id: i64, flag: i64) {
+        self.waiters.lock().await.remove(&(group_id, flag));
+    }
+}
+
+/// 按群消息正文协议把可见文本封装为 `TextObj`。
+fn encode_text_content(text: &str) -> Vec<u8> {
+    im_proto::TextObj {
+        content: text.to_string(),
+        r#ref: None,
+    }
+    .encode_to_vec()
+}
+
+/// 生成仅用于 SQLite 的随机负数主键，避免 wire `msg_id=0` 及同毫秒多群发送互相覆盖。
+fn local_broadcast_msg_id() -> i64 {
+    let magnitude = (uuid::Uuid::new_v4().as_u128() & i64::MAX as u128) as i64;
+    magnitude.max(1).saturating_neg()
+}
 
 /// 暴露给前端的群消息。
 ///
@@ -395,6 +450,7 @@ struct ConnectionContext {
     http: Arc<im_http::http_clients::AppHttpClients>,
     message_crypto: Arc<crate::message_content::MessageCryptoState>,
     message_channel: Arc<MessageChannelSlot>,
+    test_group_message_ack_waiters: Arc<TestGroupMessageAckWaiters>,
     connected: Arc<tokio::sync::RwLock<bool>>,
     shutdown: CancellationToken,
     app_handle: tauri::AppHandle,
@@ -422,6 +478,7 @@ impl ConnectionContext {
             http: state.http.clone(),
             message_crypto: state.message_crypto.clone(),
             message_channel: state.message_channel.clone(),
+            test_group_message_ack_waiters: state.test_group_message_ack_waiters.clone(),
             connected: state.connected.clone(),
             shutdown: state.shutdown.clone(),
             app_handle: state.app_handle().clone(),
@@ -624,7 +681,12 @@ trait MessageEffects: Send + Sync {
     ) -> Result<(), im_common::error::AppError>;
     /// 收到 2201 确认后更新广播消息状态为成功。
     /// `group_id` 和 `flag` 来自 `PushGroupMessageSendSuccess`，用于精确匹配本端记录。
-    async fn broadcast_ack_success(&self, group_id: i64, flag: i64) -> Result<(), String>;
+    async fn broadcast_ack_success(
+        &self,
+        group_id: i64,
+        flag: i64,
+        msg_id: i64,
+    ) -> Result<(), String>;
 }
 
 /// 使用真实应用状态执行监控查询、持久化、Channel 推送和回执副作用。
@@ -915,7 +977,16 @@ impl MessageEffects for ConnectionMessageEffects {
         true
     }
 
-    async fn broadcast_ack_success(&self, group_id: i64, flag: i64) -> Result<(), String> {
+    async fn broadcast_ack_success(
+        &self,
+        group_id: i64,
+        flag: i64,
+        msg_id: i64,
+    ) -> Result<(), String> {
+        self.context
+            .test_group_message_ack_waiters
+            .resolve(group_id, flag, msg_id)
+            .await;
         self.context
             .db
             .messages
@@ -1861,9 +1932,16 @@ async fn run_message_worker_with_effects(
                         continue;
                     }
                 };
+                tracing::info!(
+                    flag = ack.flag,
+                    group_id = ack.group_id,
+                    msg_id = ack.msg_id,
+                    member_count = ack.member_count,
+                    "2201 PushGroupMessageSendSuccess"
+                );
                 // 用 flag + group_id 匹配（服务端分配的 msg_id 与本端不同）。
                 if let Err(e) = effects
-                    .broadcast_ack_success(ack.group_id, ack.flag)
+                    .broadcast_ack_success(ack.group_id, ack.flag, ack.msg_id)
                     .await
                 {
                     tracing::warn!("Failed to mark broadcast success: {e}");
@@ -2091,17 +2169,19 @@ async fn run_one_broadcast_cycle(
     while let Some(group_id) = group_iter.next() {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let flag = uid * 1_000_000_000 + now_ms as i64;
-        // msg_id=0：服务端按新消息处理并广播到群成员；2201 回执携带服务端分配的 msg_id，
-        // 通过 broadcast_flag 匹配本端记录。
-        let msg_id = 0;
+        // wire msg_id 必须为 0，服务端才按新消息处理；SQLite 使用随机负数本地主键，
+        // 避免多群广播都以 0 入库后互相覆盖。
+        let wire_msg_id = 0;
+        let local_msg_id = local_broadcast_msg_id();
+        let encoded_content = encode_text_content(&text);
 
         let group_msg = im_proto::GroupMessage {
             send_uid: uid,
             group_id: *group_id,
             msg_type: im_proto::MessageType::Text as i32,
-            content: text.as_bytes().to_vec(),
+            content: encoded_content.clone(),
             send_time: now_ms,
-            msg_id,
+            msg_id: wire_msg_id,
             ..Default::default()
         };
 
@@ -2114,13 +2194,13 @@ async fn run_one_broadcast_cycle(
 
         // 先入库（broadcast_status=0）；broadcast_flag 用于通过 2201 回执精确匹配。
         let record = im_store::message::MessageRecord {
-            msg_id,
+            msg_id: local_msg_id,
             group_id: *group_id,
             send_uid: uid,
             msg_type: im_proto::MessageType::Text as i32,
-            content: text.as_bytes().to_vec(),
+            content: encoded_content.clone(),
             send_time: now_ms,
-            content_md5: format!("{:x}", Md5::digest(text.as_bytes())),
+            content_md5: format!("{:x}", Md5::digest(&encoded_content)),
             raw_proto: Some(group_msg.encode_to_vec()),
             content_text: text.clone(),
             matched: 1,
@@ -3081,15 +3161,15 @@ pub async fn mark_group_read(
 
 /// 发送一条测试群消息，用于验证 TCP 通路与服务器是否正常响应。
 ///
-/// 与广播链路共享同一份 `send_cancellable` + `build_client_frame` 路径，
-/// 但不触发任何定时循环或 DB 写入。成功（返回 `Ok(())`）仅表示 TCP 帧已写入 socket；
-/// 服务器是否真正处理消息依赖 2201 回执或连接错误。
+/// 与广播链路共享同一份 `send_cancellable` + `build_client_frame` 路径，但不触发任何
+/// 定时循环或 DB 写入。命令发送前登记 `(group_id, flag)`，并等待精确匹配的 2201；
+/// 成功返回服务端分配的消息 ID，发送失败、连接关闭或 30 秒未回执均返回错误。
 #[tauri::command]
 pub async fn send_test_group_message(
     state: State<'_, AppState>,
     group_id: i64,
     text: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let _session = authenticated_session_for_connect(&state.auth_session).await?;
 
     // 从已安装客户端直接取 sender（不校验 key，测试用）
@@ -3105,28 +3185,68 @@ pub async fn send_test_group_message(
     let flag = uid * 1_000_000_000 + now_ms as i64;
     // msg_id=0：服务端按新消息处理并广播；服务端返回 2201 时会带自身分配的 msg_id。
     let msg_id = 0;
+    let encoded_content = encode_text_content(&text);
+    let ack_receiver = state
+        .test_group_message_ack_waiters
+        .register(group_id, flag)
+        .await?;
+
+    // 1. 记录输入文本（原始字节）
+    let input_bytes = text.as_bytes();
+    tracing::info!(
+        uid,
+        group_id,
+        input_text = %text,
+        input_byte_len = input_bytes.len(),
+        input_hex = %hex::encode(input_bytes),
+        "send_test_group_message: received input"
+    );
 
     let group_msg = im_proto::GroupMessage {
         send_uid: uid,
         group_id,
         msg_type: im_proto::MessageType::Text as i32,
-        content: text.as_bytes().to_vec(),
+        content: encoded_content,
         send_time: now_ms,
         msg_id,
         ..Default::default()
     };
     let send_msg = im_proto::SendGroupMessage {
-        group_msg: Some(group_msg),
+        group_msg: Some(group_msg.clone()),
         flag,
     };
     let bytes = send_msg.encode_to_vec();
 
+    // 2. 解码验证：从发出的 bytes 中重新解码，确认 content 没有丢失
+    let decoded_send = im_proto::SendGroupMessage::decode(bytes.as_slice())
+        .expect("self-decode SendGroupMessage should succeed");
+    let decoded_group = decoded_send
+        .group_msg
+        .as_ref()
+        .expect("group_msg must be set");
+    let decoded_text = im_proto::TextObj::decode(decoded_group.content.as_slice())
+        .expect("self-decode TextObj should succeed")
+        .content;
     tracing::info!(
-        uid, group_id, msg_id, flag, byte_len = bytes.len(),
-        "send_test_group_message: about to send"
+        uid,
+        group_id,
+        msg_id,
+        flag,
+        byte_len = bytes.len(),
+        input_text = %text,
+        encoded_content = %decoded_text,
+        content_match = text == decoded_text,
+        "send_test_group_message: about to send | content={decoded_text:?}"
+    );
+    tracing::debug!(
+        uid,
+        group_id,
+        flag,
+        raw_bytes = %hex::encode(&bytes),
+        "send_test_group_message: raw wire bytes"
     );
 
-    sender
+    if let Err(e) = sender
         .send_cancellable(
             im_chat::heartbeat::SEND_GROUP_MESSAGE,
             &bytes,
@@ -3134,13 +3254,42 @@ pub async fn send_test_group_message(
             CHAT_SEND_TIMEOUT,
         )
         .await
-        .map_err(|e| {
-            tracing::warn!(uid, group_id, error = %e, "send_test_group_message: send failed");
-            e.to_string()
-        })?;
+    {
+        state
+            .test_group_message_ack_waiters
+            .remove(group_id, flag)
+            .await;
+        tracing::warn!(uid, group_id, error = %e, "send_test_group_message: send failed");
+        return Err(e.to_string());
+    }
 
-    tracing::info!(uid, group_id, msg_id, "send_test_group_message: sent OK (waiting for 2201)");
-    Ok(())
+    tracing::info!(
+        uid,
+        group_id,
+        msg_id,
+        flag,
+        "send_test_group_message: sent OK (waiting for 2201)"
+    );
+    match tokio::time::timeout(TEST_GROUP_MESSAGE_ACK_TIMEOUT, ack_receiver).await {
+        Ok(Ok(server_msg_id)) => {
+            tracing::info!(
+                uid,
+                group_id,
+                flag,
+                server_msg_id,
+                "send_test_group_message: server acknowledged"
+            );
+            Ok(server_msg_id.to_string())
+        }
+        Ok(Err(_)) => Err("等待服务器回执时连接已关闭".to_string()),
+        Err(_) => {
+            state
+                .test_group_message_ack_waiters
+                .remove(group_id, flag)
+                .await;
+            Err("等待服务器回执 (2201) 超时".to_string())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3164,18 +3313,51 @@ mod tests {
         begin_connection_attempt, cancel_connection_and_disconnect, disconnect_current_session,
         disconnect_current_session_and_publish_with_timeout,
         disconnect_current_session_with_timeout, disconnect_owned_chat_client_with_timeout,
-        enqueue_incoming_frame, fail_initial_connection_and_publish, linked_cancellation,
-        login_user_key_metadata, mark_connected_and_broadcast, mark_disconnected_and_broadcast,
-        message_dto_from_row, publish_realtime_message, replace_message_channel,
-        retry_automatic_connection, run_cancellable_with_timeout, run_message_worker_with_effects,
-        stored_message_parts, validate_message_page, ConnectionAttemptGuard, IncomingFrame,
-        MessageCursorDto, MessageDto, MessageEffects, MessagePageDto, HEARTBEAT_INTERVAL,
+        encode_text_content, enqueue_incoming_frame, fail_initial_connection_and_publish,
+        linked_cancellation, local_broadcast_msg_id, login_user_key_metadata,
+        mark_connected_and_broadcast, mark_disconnected_and_broadcast, message_dto_from_row,
+        publish_realtime_message, replace_message_channel, retry_automatic_connection,
+        run_cancellable_with_timeout, run_message_worker_with_effects, stored_message_parts,
+        validate_message_page, ConnectionAttemptGuard, IncomingFrame, MessageCursorDto, MessageDto,
+        MessageEffects, MessagePageDto, TestGroupMessageAckWaiters, HEARTBEAT_INTERVAL,
         MAX_QUEUED_MESSAGE_SIZE, MESSAGE_BATCH_MAX_MESSAGES, MESSAGE_DECRYPT_CONCURRENCY,
         MESSAGE_PROJECTION_QUEUE_CAPACITY, MESSAGE_QUEUE_BYTE_BUDGET, MESSAGE_QUEUE_CAPACITY,
     };
 
     fn installed_client(client: im_chat::ChatClient) -> InstalledClient {
         InstalledClient::new(crate::state::ConnectionAttemptKey::new(0, 1), client)
+    }
+
+    // 文本正文必须包含 TextObj 外层，接收端才能从 field 1 取回可见字符串。
+    #[test]
+    fn text_content_uses_text_obj_wire_envelope() {
+        let content = encode_text_content("测试消息");
+        let decoded = im_proto::TextObj::decode(content.as_slice()).unwrap();
+
+        assert_eq!(decoded.content, "测试消息");
+        assert!(decoded.r#ref.is_none());
+    }
+
+    // 测试发送只接受 group_id 与 flag 同时匹配的 2201，避免其他广播误唤醒页面。
+    #[tokio::test]
+    async fn test_group_message_ack_waiter_resolves_exact_request() {
+        let waiters = TestGroupMessageAckWaiters::default();
+        let receiver = waiters.register(7, 11).await.unwrap();
+
+        assert!(!waiters.resolve(7, 12, 100).await);
+        assert!(waiters.resolve(7, 11, 101).await);
+        assert_eq!(receiver.await.unwrap(), 101);
+    }
+
+    // wire msg_id 保持 0 时，本地记录仍须使用不同的负数主键，不能互相覆盖。
+    #[test]
+    fn local_broadcast_ids_are_negative_and_distinct() {
+        let first = local_broadcast_msg_id();
+        let second = local_broadcast_msg_id();
+
+        assert!(first < 0);
+        assert!(second < 0);
+        assert_ne!(first, second);
     }
 
     fn full_monitored_batch_frame(batch_id: i64) -> IncomingFrame {
@@ -3937,7 +4119,12 @@ mod tests {
             Ok(())
         }
 
-        async fn broadcast_ack_success(&self, _group_id: i64, _flag: i64) -> Result<(), String> {
+        async fn broadcast_ack_success(
+            &self,
+            _group_id: i64,
+            _flag: i64,
+            _msg_id: i64,
+        ) -> Result<(), String> {
             Ok(())
         }
     }
@@ -3973,7 +4160,12 @@ mod tests {
             Ok(())
         }
 
-        async fn broadcast_ack_success(&self, _group_id: i64, _flag: i64) -> Result<(), String> {
+        async fn broadcast_ack_success(
+            &self,
+            _group_id: i64,
+            _flag: i64,
+            _msg_id: i64,
+        ) -> Result<(), String> {
             Ok(())
         }
     }
@@ -4038,7 +4230,12 @@ mod tests {
             Ok(())
         }
 
-        async fn broadcast_ack_success(&self, _group_id: i64, _flag: i64) -> Result<(), String> {
+        async fn broadcast_ack_success(
+            &self,
+            _group_id: i64,
+            _flag: i64,
+            _msg_id: i64,
+        ) -> Result<(), String> {
             Ok(())
         }
     }
@@ -4072,7 +4269,12 @@ mod tests {
             Ok(())
         }
 
-        async fn broadcast_ack_success(&self, _group_id: i64, _flag: i64) -> Result<(), String> {
+        async fn broadcast_ack_success(
+            &self,
+            _group_id: i64,
+            _flag: i64,
+            _msg_id: i64,
+        ) -> Result<(), String> {
             Ok(())
         }
     }
@@ -4104,7 +4306,12 @@ mod tests {
             Ok(())
         }
 
-        async fn broadcast_ack_success(&self, _group_id: i64, _flag: i64) -> Result<(), String> {
+        async fn broadcast_ack_success(
+            &self,
+            _group_id: i64,
+            _flag: i64,
+            _msg_id: i64,
+        ) -> Result<(), String> {
             Ok(())
         }
     }
@@ -4133,7 +4340,12 @@ mod tests {
             Ok(())
         }
 
-        async fn broadcast_ack_success(&self, _group_id: i64, _flag: i64) -> Result<(), String> {
+        async fn broadcast_ack_success(
+            &self,
+            _group_id: i64,
+            _flag: i64,
+            _msg_id: i64,
+        ) -> Result<(), String> {
             Ok(())
         }
     }

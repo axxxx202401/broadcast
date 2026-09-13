@@ -211,5 +211,5 @@ export const api = {
     ),
   /** 发送一条测试群消息，验证 TCP 通路与服务器响应。 */
   sendTestGroupMessage: (groupId: number, text: string) =>
-    invoke<void>('send_test_group_message', { groupId, text }),
+    invoke<string>('send_test_group_message', { groupId, text }),
 }

@@ -158,6 +158,9 @@ async fn main() {
                 http,
                 message_crypto: Arc::new(message_content::MessageCryptoState::default()),
                 message_channel: Arc::new(tokio::sync::RwLock::new(None)),
+                test_group_message_ack_waiters: Arc::new(
+                    commands::chat::TestGroupMessageAckWaiters::default(),
+                ),
                 connected: Arc::new(tokio::sync::RwLock::new(false)),
                 shutdown: tokio_util::sync::CancellationToken::new(),
                 app_handle: Some(app_handle.clone()),

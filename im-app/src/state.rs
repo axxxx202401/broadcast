@@ -795,6 +795,8 @@ pub struct AppState {
     pub message_crypto: Arc<crate::message_content::MessageCryptoState>,
     /// 当前监控页面登记的实时消息批量 Channel；页面重载会替换旧接收端。
     pub message_channel: Arc<crate::commands::chat::MessageChannelSlot>,
+    /// 测试群消息命令等待 2201 回执时使用的内存关联表。
+    pub test_group_message_ack_waiters: Arc<crate::commands::chat::TestGroupMessageAckWaiters>,
     /// 保护供命令和前端状态通知读取的连接布尔快照。
     pub connected: Arc<tokio::sync::RwLock<bool>>,
     /// 应用级取消令牌；从 setup 创建到退出请求触发取消。
@@ -875,6 +877,9 @@ pub(crate) async fn test_state_with_credentials(
         http,
         message_crypto: Arc::new(crate::message_content::MessageCryptoState::default()),
         message_channel: Arc::new(tokio::sync::RwLock::new(None)),
+        test_group_message_ack_waiters: Arc::new(
+            crate::commands::chat::TestGroupMessageAckWaiters::default(),
+        ),
         connected: Arc::new(tokio::sync::RwLock::new(false)),
         shutdown: CancellationToken::new(),
         app_handle: None,

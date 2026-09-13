@@ -2042,7 +2042,28 @@
 
 /* 开奖横条，内嵌在标题栏统计信息右侧。 */
 .header-lottery {
+  flex: 0 1 460px;
+  width: clamp(360px, 40vw, 460px);
+  min-width: 360px;
   margin-left: 16px;
   padding-left: 16px;
   border-left: 1px solid var(--border-subtle);
+}
+
+/* 窄屏下占满标题行，避免固定最小宽度撑出消息区域。 */
+@media (max-width: 900px) {
+  .message-header-row {
+    flex-wrap: wrap;
+  }
+
+  .header-lottery {
+    flex-basis: 100%;
+    width: 100%;
+    min-width: 0;
+    margin-left: 0;
+    padding-top: 10px;
+    padding-left: 0;
+    border-top: 1px solid var(--border-subtle);
+    border-left: 0;
+  }
 }

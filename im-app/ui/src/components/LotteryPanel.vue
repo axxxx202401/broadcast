@@ -82,10 +82,10 @@ async function sendTestMessage() {
     return
   }
   sendingTest.value = true
-  testResult.value = ''
+  testResult.value = '发送成功，等待服务器回执 (2201)'
   try {
-    await api.sendTestGroupMessage(parseInt(groupId, 10), text)
-    testResult.value = '发送成功，等待服务器回执 (2201)'
+    const serverMsgId = await api.sendTestGroupMessage(parseInt(groupId, 10), text)
+    testResult.value = `服务器已确认送达 (2201)，消息 ID: ${serverMsgId}`
     testResultOk.value = true
   } catch (e) {
     testResult.value = `发送失败: ${errorMessage(e)}`
@@ -212,7 +212,7 @@ onMounted(() => {
     </button>
 
     <!-- 测试发送 -->
-    <div class="test-send-section">
+    <!-- <div class="test-send-section">
       <div class="test-send-row">
         <input
           v-model="testGroupId"
@@ -240,10 +240,10 @@ onMounted(() => {
       <span v-if="testResult" :class="['test-result', testResultOk ? 'ok' : 'err']">
         {{ testResult }}
       </span>
-    </div>
+    </div> -->
 
     <!-- 环境配置（编译期常量，仅展示） -->
-    <div class="env-config">
+    <!-- <div class="env-config">
       <div class="config-row">
         <span class="config-label">消息入库</span>
         <span class="config-value">{{ runtimeConfig.persist_received_messages ? '是' : '否' }}</span>
@@ -254,7 +254,7 @@ onMounted(() => {
         <span class="config-value">{{ runtimeConfig.match_lottery_messages ? '是' : '否' }}</span>
         <span class="config-note">（编译期配置）</span>
       </div>
-    </div>
+    </div> -->
   </div>
 </template>
 
