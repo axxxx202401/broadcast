@@ -142,9 +142,10 @@ pub async fn set_lottery_config(
     Ok(())
 }
 
-/// 从远端拉取开奖历史，返回按期号降序排列的最新若干条。
+/// 从远端拉取开奖历史，持久化匹配期号，并返回按期号降序排列的最新若干条。
 ///
-/// 使用当前账号配置的 API URL；URL 为空时返回错误。
+/// 使用当前账号配置或构建期默认 API URL；URL 为空时返回错误。第三方请求与后台
+/// 统一轮询共用串行锁，因此手动刷新不会和周期请求重叠。
 #[tauri::command]
 pub async fn fetch_lottery_history(state: State<'_, AppState>) -> Result<Vec<DrawItemDto>, String> {
     let session = state
@@ -173,6 +174,19 @@ pub async fn fetch_lottery_history(state: State<'_, AppState>) -> Result<Vec<Dra
         return Err("Lottery API URL not configured".to_string());
     }
     let items = lottery::fetch_draw_history(&api_url).await?;
+    // 空列表可能是第三方接口的瞬时状态，不用它覆盖仍可用于消息匹配的最近期号。
+    if !items.is_empty() {
+        let current_issues = items.iter().map(|item| item.pre_draw_issue).collect();
+        db.lottery_config
+            .upsert(&LotteryConfigRow {
+                uid: session.uid,
+                api_url,
+                current_issues,
+                updated_at: Utc::now().timestamp_millis(),
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     tracing::debug!(
         uid = session.uid,
         count = items.len(),

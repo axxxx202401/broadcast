@@ -1,17 +1,15 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 import { api } from '../services/tauri'
 import type { DrawItem, LotteryConfig } from '../services/tauri'
 import { errorMessage } from '../utils/protocol'
 
-/** 开奖历史轮询间隔（毫秒）。 */
-const POLL_INTERVAL_MS = 30_000
-
 /**
  * 管理当前账号的开奖配置与开奖历史面板状态。
  *
- * - 挂载时自动加载配置并拉取一次历史。
- * - 每 30 秒轮询一次，并在收到含"开奖"的消息时额外触发一次。
+ * - 挂载时加载已持久化配置，并监听后端统一开奖轮询事件。
+ * - 周期请求只由后端执行；前端仅在用户手动刷新时主动调用一次。
  * - 历史只显示最新两条（本期 / 上期），配置变更立即生效于消息匹配。
  */
 export function useLottery(loggedIn?: { value: boolean }) {
@@ -58,17 +56,9 @@ export function useLottery(loggedIn?: { value: boolean }) {
     error.value = ''
     try {
       const items = await api.fetchLotteryHistory()
-      drawHistory.value = items.slice(0, 20)
-      // 同步最新期号到 DB，确保消息匹配使用最新期号列表。
-      // 注意：此处不依赖前端 config.value.api_url，因为 fetchLotteryHistory
-      // 后端已自行处理 DB → 默认值的 fallback。items 非空说明 URL 可用。
-      if (items.length > 0) {
-        const issues = items.map(item => item.preDrawIssue)
-        // 用后端已解析的 URL（DB 值或默认值）写库，避免用前端空字符串覆盖。
-        const url = config.value.api_url
-        await api.setLotteryConfig(url, issues)
-        await loadConfig()
-      }
+      applyDrawHistory(items)
+      // 手动刷新命令已在后端同步 URL 与 current_issues，这里只重读最终配置。
+      if (items.length > 0) await loadConfig()
     } catch (reason) {
       const msg = errorMessage(reason)
       if (!msg.includes('URL not configured')) {
@@ -80,15 +70,12 @@ export function useLottery(loggedIn?: { value: boolean }) {
   }
 
   /**
-   * 挂载/登录后首次触发：加载配置 → 拉取历史 → 写库（若有数据）。
-   * 已登录且 DB 已有期号时直接跳过，避免重复 I/O。
+   * 挂载或登录后读取配置，并用已保存期号提供事件到达前的轻量占位数据。
+   * 完整号码和值只来自后端 `lottery_history_updated` 事件。
    */
   async function prefetchWithDefault() {
-    // 先加载配置（包含后端注入的默认值）。
     await loadConfig()
-    // DB 已有期号则无需重复拉取 API，但需要从 DB 重建 drawHistory。
     if (config.value.current_issues.length > 0) {
-      // 从 current_issues 重建 drawHistory（按降序排列）
       const issues = config.value.current_issues.slice(0, 20)
       drawHistory.value = issues.map(issue => ({
         preDrawIssue: issue,
@@ -98,21 +85,19 @@ export function useLottery(loggedIn?: { value: boolean }) {
         sumBigSmall: -1,
         sumSingleDouble: -1,
       }))
-      schedulePoll()
-      return
     }
-    void fetchHistory().then(() => schedulePoll())
   }
 
-  let timer: ReturnType<typeof setTimeout> | null = null
-
-  function schedulePoll() {
-    if (timer) clearTimeout(timer)
-    timer = setTimeout(async () => {
-      await fetchHistory()
-      schedulePoll()
-    }, POLL_INTERVAL_MS)
+  /** 应用后端单次轮询结果，并让本地匹配期号与该批数据保持一致。 */
+  function applyDrawHistory(items: DrawItem[]) {
+    drawHistory.value = items.slice(0, 20)
+    config.value = {
+      ...config.value,
+      current_issues: items.map(item => item.preDrawIssue),
+    }
   }
+
+  let historyUnlisten: Promise<UnlistenFn> | null = null
 
   /** 登录后（含恢复登录成功）触发一次拉取；未登录时静默跳过。 */
   function runPrefetch() {
@@ -121,6 +106,12 @@ export function useLottery(loggedIn?: { value: boolean }) {
   }
 
   onMounted(() => {
+    historyUnlisten = listen<DrawItem[]>('lottery_history_updated', ({ payload }) => {
+      applyDrawHistory(payload)
+    })
+    historyUnlisten.catch((reason) => {
+      console.error('Failed to listen for lottery history updates:', errorMessage(reason))
+    })
     void runPrefetch()
   })
 
@@ -136,7 +127,8 @@ export function useLottery(loggedIn?: { value: boolean }) {
   }
 
   onBeforeUnmount(() => {
-    if (timer) clearTimeout(timer)
+    historyUnlisten?.then((unlisten) => unlisten()).catch(() => {})
+    historyUnlisten = null
   })
 
   return {
@@ -148,7 +140,5 @@ export function useLottery(loggedIn?: { value: boolean }) {
     loadConfig,
     saveConfig,
     fetchHistory,
-    /** 当收到含"开奖"的消息时手动触发一次刷新。 */
-    refreshOnDrawMessage: fetchHistory,
   }
 }

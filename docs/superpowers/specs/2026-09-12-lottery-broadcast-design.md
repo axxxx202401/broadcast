@@ -143,14 +143,14 @@ message PushGroupMessageSendSuccess {
 
 ## 架构设计
 
-### 后台广播任务
+### 后台统一开奖任务
 
-广播任务随聊天连接启动，跟随连接生命周期运行；连接断开或用户切换账号时自动停止。
+开奖任务随聊天连接启动，跟随连接生命周期运行；连接断开或用户切换账号时自动停止。它是第三方开奖 API 的唯一周期调用方，同一份返回数据用于更新消息匹配期号、推送前端页面和可选广播。
 
 #### 任务结构
 
 ```
-start_lottery_broadcast(
+start_lottery_polling(
     context: ConnectionContext,
     auth_session: AuthSession,
     generation: u64,
@@ -171,26 +171,28 @@ loop {
         _ = connection_cancellation.cancelled() => return,
         _ = ticker.tick() => {}  // 上一轮结束后每 5 秒触发一次
     }
-    if let Err(e) = run_one_broadcast_cycle(&context, &auth_session).await {
-        tracing::warn!(error = %e, "Lottery broadcast cycle failed");
+    if let Err(e) = run_one_lottery_cycle(&context, &auth_session).await {
+        tracing::warn!(error = %e, "Lottery polling cycle failed");
     }
 }
 ```
 
-循环中直接 `await run_one_broadcast_cycle`，并把 `MissedTickBehavior` 设为 `Delay`，因此同一连接只存在一个串行检查，不会因远端 API 响应慢而叠加请求。
+循环中直接 `await run_one_lottery_cycle`，并把 `MissedTickBehavior` 设为 `Delay`，因此同一连接只存在一个串行检查，不会因远端 API 响应慢而叠加请求。手动刷新与后台任务还共用进程级异步锁，确保两类请求不会重叠。
 
-#### 单次轮询逻辑（`run_one_broadcast_cycle`）
+#### 单次轮询逻辑（`run_one_lottery_cycle`）
 
-1. 读取 `lottery_template.get(uid)`：模板为空或 `enabled=0` 则跳过本轮。
-2. 读取 `lottery_config.get(uid)` 获取 `api_url`；`current_issues` 仅供接收消息匹配，不参与广播判重。
-3. 调用 `im_http::lottery::fetch_draw_history(url)` 获取最新历史列表（降序）。
-4. 将最新一期与 `lottery_message_templates.last_broadcast_issue` 比较：
+1. 读取 `lottery_config.get(uid)` 并解析数据库值或构建期默认 `api_url`。
+2. 调用 `im_http::lottery::fetch_draw_history(url)` 获取最新历史列表（降序）；本轮只请求一次。
+3. 把所有返回期号写入 `current_issues`，供实时消息匹配使用。
+4. 通过 `lottery_history_updated` 事件把同一份完整 `DrawItem` 列表推送前端。
+5. 读取 `lottery_template.get(uid)`；模板为空或 `enabled=0` 时只跳过广播，不影响前述配置与页面更新。
+6. 将最新一期与 `lottery_message_templates.last_broadcast_issue` 比较：
    - 游标为 `NULL`：写入当前最新期号作为首次启用基线并结束，不补发历史期；
    - 最新期号不大于游标：结束本轮；
    - 最新期号大于游标：只处理 API 当前最新一期。
-5. 若没有需广播的新期号，跳过本轮。
-6. 若存在新期号：
-   a. 从步骤3获取的历史列表中取前10条，把各条 `sum_num` 格式化为至少两位后，以空格拼接 `${lastTenDraws}`。
+7. 若没有需广播的新期号，跳过本轮。
+8. 若存在新期号：
+   a. 从步骤2获取的历史列表中取前10条，把各条 `sum_num` 格式化为至少两位后，以空格拼接 `${lastTenDraws}`。
    b. 用 `DrawItem` 字段及 `${lastTenDraws}` 填充模板占位符，生成消息文本。
    c. 读取当前监控群组列表（`monitoring_groups.read().await`）。
    d. 遍历每个监控群组：
@@ -252,7 +254,8 @@ im_chat::heartbeat::PUSH_GROUP_MESSAGE_SEND_SUCCESS => {
 1. **广播开关**：使用带轨道、滑块、状态色和焦点样式的 toggle switch，控制模板的 `enabled` 字段并即时生效；保留原生 checkbox 的键盘与无障碍语义。
 2. **模板编辑器**：使用约 720px 的响应式模态框与大面积多行文本框；窄屏占满可用宽度，支持遮罩、取消、保存和 Escape 关闭。
 3. **实时发送状态**：广播消息与普通消息共用消息列表；Channel 先推送发送中，再以相同本地 ID 原位合并成功或失败状态。
-4. **环境配置区**（设置面板或广播面板内）：
+4. **开奖数据源**：`useLottery` 不再创建 30 秒前端定时器，只监听后端 `lottery_history_updated`；用户点击刷新时仍可主动请求一次。
+5. **环境配置区**（设置面板或广播面板内）：
    - 「消息入库」开关：对应 `persist_received_messages`，关闭后收到的消息不入库、不进 Channel，直接发 2102 回执。
    - 「消息匹配」开关：对应 `match_lottery_messages`，关闭后收到的消息不再进行开奖匹配，`matched` 不设置为 1。
 
@@ -318,16 +321,17 @@ ${preDrawCode}=${sumNum}  ${sumBigSmall}${sumSingleDouble}${patternDesc}
 | `im-proto/src/lib.rs` | 修改 | 导出 `SendGroupMessage` 和 `PushGroupMessageSendSuccess` |
 | `im-chat/src/heartbeat.rs` | 修改 | 新增常量 `SEND_GROUP_MESSAGE = 2101`、`PUSH_GROUP_MESSAGE_SEND_SUCCESS = 2201` |
 | `im-common/src/config.rs` | 修改 | 新增 `persist_received_messages` 和 `match_lottery_messages` 字段及环境变量读取 |
-| `im-http/src/lottery.rs` | 修改 | 扩展 `DrawItem` 字段 |
+| `im-http/src/lottery.rs` | 修改 | 扩展 `DrawItem` 字段，并串行化后台轮询与手动刷新请求 |
 | `im-store/src/schema.rs` | 修改 | 新增 `lottery_message_templates` 表及 `last_broadcast_issue` |
 | `im-store/src/lottery_template.rs` | 新增 | 模板读写与独立广播游标 store |
 | `im-store/src/lib.rs` | 修改 | 导出新模块；迁移消息状态、flag 与广播游标 |
 | `im-store/src/message.rs` | 修改 | 查询链路返回 `broadcast_status`，并按 `(group_id, flag)` 更新和读取广播消息 |
-| `im-app/src/commands/lottery.rs` | 修改 | 新增模板命令并完整返回 `DrawItemDto` 字段 |
-| `im-app/src/commands/chat.rs` | 修改 | 5 秒串行检查；TextObj 编码、本地负数 ID、独立游标、2201/失败/超时 Channel 状态更新 |
+| `im-app/src/commands/lottery.rs` | 修改 | 新增模板命令；手动刷新完整返回 `DrawItemDto` 并同步匹配期号 |
+| `im-app/src/commands/chat.rs` | 修改 | 统一 5 秒开奖数据源；同步匹配期号、推送页面，并按需广播和更新状态 |
 | `im-app/src/main.rs` | 修改 | 注册新 Tauri 命令 |
 | `im-app/ui/src/components/LotteryPanel.vue` | 修改 | 新增广播开关与响应式模板编辑模态框 |
 | `im-app/ui/src/components/MessageCard.vue` | 修改 | 展示发送中、成功和失败状态 |
+| `im-app/ui/src/composables/useLottery.ts` | 修改 | 移除前端 30 秒轮询，监听后端开奖更新事件 |
 | `im-app/ui/src/services/tauri.ts` | 修改 | 完整定义 `DrawItem` 字段及 ±1 枚举语义 |
 
 ---

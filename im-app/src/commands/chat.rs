@@ -1319,7 +1319,7 @@ async fn connect_chat_inner(state: &AppState) -> Result<(), String> {
                     server_user_key_pair,
                     generation_cancellation.clone(),
                 );
-                start_lottery_broadcast(
+                start_lottery_polling(
                     context.clone(),
                     auth_session.clone(),
                     generation,
@@ -2053,10 +2053,10 @@ fn start_heartbeat(
     });
 }
 
-/// 启动彩票广播后台任务。
+/// 启动统一开奖轮询后台任务。
 ///
-/// 随聊天连接生命周期运行；连接断开或账号切换时自动停止。
-fn start_lottery_broadcast(
+/// 同一轮请求同时更新匹配期号、推送页面数据并按需广播；连接断开或切换账号时停止。
+fn start_lottery_polling(
     context: ConnectionContext,
     _auth_session: crate::state::AuthSession,
     _generation: u64,
@@ -2076,10 +2076,9 @@ fn start_lottery_broadcast(
                 _ = connection_cancellation.cancelled() => break,
                 _ = ticker.tick() => {}
             }
-            if let Err(e) =
-                run_one_broadcast_cycle(&context, &sender, &connection_cancellation).await
+            if let Err(e) = run_one_lottery_cycle(&context, &sender, &connection_cancellation).await
             {
-                tracing::warn!(error = %e, "Lottery broadcast cycle failed");
+                tracing::warn!(error = %e, "Lottery polling cycle failed");
             }
         }
     });
@@ -2109,8 +2108,8 @@ fn decide_broadcast_issue(
     }
 }
 
-/// 执行一轮广播检测与发送。
-async fn run_one_broadcast_cycle(
+/// 执行一次开奖请求，并复用结果完成配置同步、页面推送和可选广播。
+async fn run_one_lottery_cycle(
     context: &ConnectionContext,
     sender: &im_chat::ChatSender,
     cancellation: &CancellationToken,
@@ -2122,44 +2121,28 @@ async fn run_one_broadcast_cycle(
         .clone()
         .ok_or("Not logged in")?;
     let uid = session.uid;
-    tracing::debug!(uid, "Lottery broadcast cycle start");
+    tracing::debug!(uid, "Lottery polling cycle start");
 
-    // 1. 读取模板
-    let template_row = context
-        .db
-        .lottery_template
-        .get(uid)
-        .await
-        .map_err(|e| format!("Failed to load template: {e}"))?;
-    if !template_row.enabled {
-        tracing::info!(uid, "Lottery broadcast skipped: template disabled");
-        return Ok(());
-    }
-    if template_row.template.is_empty() {
-        tracing::info!(uid, "Lottery broadcast skipped: template empty");
-        return Ok(());
-    }
-    tracing::debug!(
-        uid,
-        template_len = template_row.template.len(),
-        "Template loaded"
-    );
-
-    // 2. 读取开奖配置
+    // 1. 无论广播开关状态如何都读取开奖配置，使页面展示和消息匹配共用后台数据源。
     let config = context
         .db
         .lottery_config
         .get(uid)
         .await
         .map_err(|e| format!("Failed to load lottery config: {e}"))?;
-    if config.api_url.is_empty() {
-        tracing::info!(uid, "Lottery broadcast skipped: api_url empty");
+    let api_url = if config.api_url.is_empty() {
+        context.config.read().await.lottery_default_api_url.clone()
+    } else {
+        config.api_url.clone()
+    };
+    if api_url.is_empty() {
+        tracing::info!(uid, "Lottery polling skipped: api_url empty");
         return Ok(());
     }
     tracing::debug!(uid, "Config loaded");
 
-    // 3. 获取历史列表
-    let draws = match im_http::lottery::fetch_draw_history(&config.api_url).await {
+    // 2. 本轮只请求一次；同一份结果依次用于匹配期号、页面事件和可选广播。
+    let draws = match im_http::lottery::fetch_draw_history(&api_url).await {
         Ok(d) => d,
         Err(e) => {
             tracing::warn!(uid, error = %e, "Failed to fetch lottery history");
@@ -2172,7 +2155,50 @@ async fn run_one_broadcast_cycle(
     }
     tracing::debug!(uid, draw_count = draws.len(), "Fetched lottery history");
 
-    // 4. 只以持久化广播游标判断新期号；current_issues 继续专用于消息匹配。
+    // 3. 后台统一维护消息匹配期号，前端不再周期写回相同数据。
+    let current_issues = draws
+        .iter()
+        .map(|draw| draw.pre_draw_issue)
+        .collect::<Vec<_>>();
+    if config.api_url != api_url || config.current_issues != current_issues {
+        context
+            .db
+            .lottery_config
+            .upsert(&im_store::lottery_config::LotteryConfigRow {
+                uid,
+                api_url: api_url.clone(),
+                current_issues,
+                updated_at: chrono::Utc::now().timestamp_millis(),
+            })
+            .await
+            .map_err(|e| format!("Failed to synchronize lottery config: {e}"))?;
+    }
+
+    // 4. 页面只消费该事件，不再运行自己的 30 秒轮询。
+    if let Err(error) = context
+        .app_handle
+        .emit("lottery_history_updated", draws.clone())
+    {
+        tracing::warn!(uid, error = %error, "Failed to emit lottery history update");
+    }
+
+    // 5. 广播只是统一轮询结果的可选消费者；关闭时仍保持页面和匹配期号更新。
+    let template_row = context
+        .db
+        .lottery_template
+        .get(uid)
+        .await
+        .map_err(|e| format!("Failed to load template: {e}"))?;
+    if !template_row.enabled {
+        tracing::debug!(uid, "Lottery broadcast skipped: template disabled");
+        return Ok(());
+    }
+    if template_row.template.is_empty() {
+        tracing::info!(uid, "Lottery broadcast skipped: template empty");
+        return Ok(());
+    }
+
+    // 6. 只以持久化广播游标判断新期号；current_issues 继续专用于消息匹配。
     let latest_issue = draws[0].pre_draw_issue;
     let issue_to_broadcast =
         match decide_broadcast_issue(template_row.last_broadcast_issue, latest_issue) {
@@ -2214,7 +2240,7 @@ async fn run_one_broadcast_cycle(
         "New draw detected, preparing broadcast"
     );
 
-    // 5. 准备近10期和值
+    // 7. 准备近10期和值
     let last_ten: Vec<String> = draws
         .iter()
         .take(10)
@@ -2222,7 +2248,7 @@ async fn run_one_broadcast_cycle(
         .collect();
     let last_ten_draws = last_ten.join(" ");
 
-    // 6. 渲染模板
+    // 8. 渲染模板
     let text = template_row
         .template
         .replace("${preDrawIssue}", &draw.pre_draw_issue.to_string())
@@ -2264,7 +2290,7 @@ async fn run_one_broadcast_cycle(
         )
         .replace("${lastTenDraws}", &last_ten_draws);
 
-    // 7. 获取监控群组列表
+    // 9. 获取监控群组列表
     let groups = context.monitoring_groups.read().await;
     if groups.is_empty() {
         tracing::info!(uid, "Lottery broadcast skipped: no monitored groups");
@@ -2272,7 +2298,7 @@ async fn run_one_broadcast_cycle(
     }
     tracing::debug!(uid, group_count = groups.len(), "Found monitored groups");
 
-    // 8. 逐群发送（每个群用独立 flag，2201 回执通过 flag+group_id 精确匹配）
+    // 10. 逐群发送（每个群用独立 flag，2201 回执通过 flag+group_id 精确匹配）
     let mut group_iter = groups.iter().peekable();
     while let Some(group_id) = group_iter.next() {
         let now_ms = chrono::Utc::now().timestamp_millis();
@@ -2399,7 +2425,7 @@ async fn run_one_broadcast_cycle(
         }
     }
 
-    // 9. 无论各群发送结果如何，本期只处理一次；失败状态由消息卡明确呈现。
+    // 11. 无论各群发送结果如何，本期只处理一次；失败状态由消息卡明确呈现。
     if let Err(e) = context
         .db
         .lottery_template
@@ -2565,7 +2591,7 @@ async fn run_reconnect_loop(
                     server_user_key_pair,
                     generation_cancellation.clone(),
                 );
-                start_lottery_broadcast(
+                start_lottery_polling(
                     context.clone(),
                     auth_session.clone(),
                     generation,

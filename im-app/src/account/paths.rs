@@ -18,9 +18,15 @@ impl AppPaths {
 
     /// 解析默认数据根目录：Unix 为 `~/.im-monitor`，Windows 为 `%USERPROFILE%\.im-monitor`。
     ///
+    /// 当环境变量 `IM_DATA_DIR` 已设置时优先使用其值，便于 test/production 多环境共存时
+    /// 隔离各自的数据目录（例如 `~/.im-monitor-test`）。
+    ///
     /// 不创建目录；调用方负责 `create_dir_all`。Tauri setup 之前可用此方法打开凭据库，
     /// 避免在已有 Tokio runtime 内嵌套 `block_on`。
     pub fn default_data_root() -> Result<PathBuf, std::io::Error> {
+        if let Some(dir) = std::env::var_os("IM_DATA_DIR") {
+            return Ok(PathBuf::from(dir));
+        }
         let home = std::env::var_os("HOME")
             .or_else(|| std::env::var_os("USERPROFILE"))
             .ok_or_else(|| {

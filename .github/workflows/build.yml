@@ -63,6 +63,7 @@ jobs:
       IM_PERSIST_RECEIVED_MESSAGES: ${{ secrets.IM_PERSIST_RECEIVED_MESSAGES }}
       # 是否匹配开奖消息（可选）；未配置时默认 false。
       IM_MATCH_LOTTERY_MESSAGES: ${{ secrets.IM_MATCH_LOTTERY_MESSAGES }}
+      IM_BUNDLE_IDENTIFIER: ${{ secrets.IM_BUNDLE_IDENTIFIER }}
 
     steps:
       - name: Check out source
@@ -156,6 +157,7 @@ jobs:
       IM_PERSIST_RECEIVED_MESSAGES: ${{ secrets.IM_PERSIST_RECEIVED_MESSAGES }}
       # 是否匹配开奖消息（可选）；未配置时默认 false。
       IM_MATCH_LOTTERY_MESSAGES: ${{ secrets.IM_MATCH_LOTTERY_MESSAGES }}
+      IM_BUNDLE_IDENTIFIER: ${{ secrets.IM_BUNDLE_IDENTIFIER }}
 
     steps:
       - name: Check out source
@@ -239,6 +241,7 @@ jobs:
       IM_PERSIST_RECEIVED_MESSAGES: ${{ secrets.IM_PERSIST_RECEIVED_MESSAGES }}
       # 是否匹配开奖消息（可选）；未配置时默认 false。
       IM_MATCH_LOTTERY_MESSAGES: ${{ secrets.IM_MATCH_LOTTERY_MESSAGES }}
+      IM_BUNDLE_IDENTIFIER: ${{ secrets.IM_BUNDLE_IDENTIFIER }}
 
     steps:
       - name: Check out source

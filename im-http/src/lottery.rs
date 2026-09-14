@@ -1,15 +1,19 @@
 //! 第三方开奖历史 API 客户端。
 //!
 //! 调用方提供完整的 API URL；本模块负责发起请求并解析返回的 JSON 为 [`DrawItem`] 列表。
-//! 使用模块级静态 `reqwest::Client` 复用连接池，避免每次调用重新建立连接。
+//! 使用模块级静态 `reqwest::Client` 复用连接池，并以异步互斥锁串行化后台轮询和手动刷新，
+//! 避免同一进程对第三方接口发起重叠请求。
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
 static LOTTERY_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+/// 进程内所有开奖请求共用串行锁，避免后台轮询与用户手动刷新重叠访问第三方 API。
+static LOTTERY_FETCH_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 /// 开奖历史列表中的一条记录。
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DrawItem {
     /// 期号，例如 `3477887`。
     #[serde(rename = "preDrawIssue")]
@@ -36,6 +40,7 @@ pub struct DrawItem {
 /// `url` 应为完整的 API 地址（如 `https://go124.com/api/hash/get28HistoryList/10091`）；
 /// 请求失败或响应 JSON 结构不匹配时返回错误。
 pub async fn fetch_draw_history(url: &str) -> Result<Vec<DrawItem>, String> {
+    let _fetch_guard = LOTTERY_FETCH_LOCK.lock().await;
     let resp = LOTTERY_CLIENT
         .get(url)
         .send()
@@ -190,6 +195,23 @@ mod tests {
         assert_eq!(lottery_sum_to_display(5), "05");
         assert_eq!(lottery_sum_to_display(9), "09");
         assert_eq!(lottery_sum_to_display(18), "18");
+    }
+
+    #[test]
+    fn draw_item_serializes_for_frontend_event_with_camel_case_fields() {
+        let draw = DrawItem {
+            pre_draw_issue: 101,
+            pre_draw_time: "2026-09-14 13:00:00".to_string(),
+            pre_draw_code: "1,3,5".to_string(),
+            sum_num: 9,
+            sum_big_small: -1,
+            sum_single_double: 1,
+        };
+
+        let json = serde_json::to_value(draw).unwrap();
+        assert_eq!(json["preDrawIssue"], 101);
+        assert_eq!(json["preDrawCode"], "1,3,5");
+        assert_eq!(json["sumNum"], 9);
     }
 
     #[test]
